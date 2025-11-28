@@ -1,0 +1,52 @@
+
+services:
+  api:
+    image: node:lts
+    container_name: al-tool-api
+    # Mount the whole repo into the container so workspace packages (packages/*)
+    # are available during development. The API will run with working_dir set
+    # to the apps/api folder.
+    working_dir: /home/app/apps/api
+    volumes:
+      - ./:/home/app
+
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+    # Install at repo root (will install workspaces) and run the API workspace dev script
+    command: sh -c "cd /home/app && npm install --silent && npm --workspace=apps/api run dev"
+
+    tty: true
+
+  converter:
+    image: python:3.11-slim
+    container_name: al-tool-converter
+    working_dir: /home/app
+    volumes:
+      - ./:/home/app
+    environment:
+      - DB_PATH=/home/app/apps/api/db/dev.sqlite3
+      - POLL_INTERVAL=5
+      - INGESTS_DIR=/home/app/storage/ingests
+    command: sh -c "pip install --no-cache-dir -r scripts/requirements.txt || true && python3 scripts/conversion_worker.py"
+    depends_on:
+      - api
+    tty: true
+
+  client:
+    image: node:lts
+    container_name: al-tool-client
+    working_dir: /home/app/apps/client
+    volumes:
+      - ./:/home/app
+    ports:
+      - "8081:8080"
+    environment:
+      - NODE_ENV=development
+      - PORT=8080
+    command: sh -c "cd /home/app && npm install --silent && npm --workspace=apps/client run dev"
+    depends_on:
+      - api
+    tty: true

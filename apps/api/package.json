@@ -1,0 +1,36 @@
+{
+    "name": "@al-tool/api",
+    "version": "0.1.0",
+    "private": true,
+    "main": "dist/server.js",
+    "scripts": {
+        "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+        "build": "tsc -p .",
+        "start": "node dist/server.js",
+        "migrate": "knex --knexfile knexfile.js migrate:latest",
+        "migrate:make": "knex --knexfile knexfile.js migrate:make"
+    },
+    "dependencies": {
+        "archiver": "^5.3.2",
+        "better-sqlite3": "^12.4.6",
+        "cors": "^2.8.5",
+        "exceljs": "^4.4.0",
+        "express": "^5.1.0",
+        "knex": "^3.1.0",
+        "multer": "^2.0.2",
+        "xlsx": "^0.18.5"
+    },
+    "devDependencies": {
+        "@types/archiver": "^7.0.0",
+        "@types/better-sqlite3": "^7.6.13",
+        "@types/cors": "^2.8.19",
+        "@types/express": "^5.0.5",
+        "@types/knex": "^0.15.2",
+        "@types/multer": "^2.0.0",
+        "@types/node": "^24.10.1",
+        "@types/xlsx": "^0.0.35",
+        "ts-node": "^10.9.2",
+        "ts-node-dev": "^2.0.0",
+        "typescript": "^5.9.3"
+    }
+}

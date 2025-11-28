@@ -1,0 +1,239 @@
+import { Router, Request, Response } from 'express';
+import db from '../db/knex';
+import pipeline from '../pipeline/integration';
+import * as jobsRepo from '../repos/jobsRepository';
+import * as exportService from '../services/ConciliacaoExportService';
+import path from 'path';
+
+const router = Router();
+
+router.post('/', async (req: Request, res: Response) => {
+    try {
+        const { configConciliacaoId, configEstornoId, configCancelamentoId, nome } = req.body;
+        const cfgId = Number(configConciliacaoId);
+        if (!cfgId || Number.isNaN(cfgId)) return res.status(400).json({ error: 'configConciliacaoId is required and must be a number' });
+
+        // fetch config conciliacao
+        const cfg = await db('configs_conciliacao').where({ id: cfgId }).first();
+        if (!cfg) return res.status(404).json({ error: 'config conciliacao not found' });
+
+        // create job with PENDING
+        const jobRow = await jobsRepo.createJob({
+            nome: nome || `Job for config ${cfgId}`,
+            config_conciliacao_id: cfgId,
+            config_estorno_id: configEstornoId ?? null,
+            config_cancelamento_id: configCancelamentoId ?? null,
+            status: 'PENDING',
+            erro: null,
+            created_at: db.fn.now(),
+            updated_at: db.fn.now()
+        });
+
+        const jobId = jobRow.id as number;
+
+        // Job enqueued for background processing by the worker
+        res.status(201).json(jobRow);
+    } catch (err: any) {
+        console.error(err);
+        res.status(500).json({ error: 'Erro ao criar job' });
+    }
+});
+
+// GET /conciliacoes - list jobs (paginated)
+router.get('/', async (req: Request, res: Response) => {
+    try {
+        const page = Math.max(1, Number(req.query.page ? Number(req.query.page) : 1));
+        const pageSize = Math.max(1, Math.min(100, Number(req.query.pageSize ? Number(req.query.pageSize) : 20)));
+        const status = req.query.status as string | undefined;
+
+        // count total
+        const baseCountQuery = db('jobs_conciliacao').modify((qb) => {
+            if (status) qb.where('status', status);
+        });
+        const countRaw: any = await baseCountQuery.count({ count: '*' }).first();
+        const total = countRaw ? Number(countRaw.count || countRaw['count(*)'] || 0) : 0;
+
+        const offset = (page - 1) * pageSize;
+        const rows = await db('jobs_conciliacao')
+            .modify((qb) => { if (status) qb.where('status', status); })
+            .select('*')
+            .orderBy('created_at', 'desc')
+            .limit(pageSize)
+            .offset(offset);
+
+        const totalPages = Math.ceil(total / pageSize);
+        return res.json({ page, pageSize, total, totalPages, data: rows });
+    } catch (err: any) {
+        console.error(err);
+        res.status(500).json({ error: 'Erro ao listar conciliacoes' });
+    }
+});
+
+export default router;
+
+// POST /conciliacoes/:id/exportar - generate XLSX (if missing) and return metadata
+router.post('/:id/exportar', async (req: Request, res: Response) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id || Number.isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+
+        const job = await jobsRepo.getJobById(id);
+        if (!job) return res.status(404).json({ error: 'job not found' });
+        if (job.status !== 'DONE') return res.status(409).json({ error: 'job not completed yet' });
+
+        // if export already exists and file accessible, return immediately
+        try {
+            const existing = await exportService.getExportFilePathForJob(id);
+            if (existing) {
+                const abs = path.resolve(process.cwd(), existing);
+                try {
+                    await require('fs').promises.access(abs);
+                    return res.json({ path: existing, filename: path.basename(abs) });
+                } catch (e) {
+                    // file missing, we'll regenerate in background
+                }
+            }
+        } catch (e) {
+            // ignore and attempt background generation
+        }
+
+        // Start background export task to avoid long-running request / socket timeouts
+        (async () => {
+            try {
+                const info = await exportService.exportJobResultToZip(id);
+                console.log('Background export finished for job', id, info.path);
+            } catch (bgErr) {
+                console.error('Background export failed for job', id, bgErr);
+            }
+        })();
+
+        return res.status(202).json({ jobId: id, status: 'export_started' });
+    } catch (err: any) {
+        console.error(err);
+        res.status(500).json({ error: 'Erro ao exportar' });
+    }
+});
+
+// GET /conciliacoes/:id/download - download XLSX file
+router.get('/:id/download', async (req: Request, res: Response) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id || Number.isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+
+        const job = await jobsRepo.getJobById(id);
+        if (!job) return res.status(404).json({ error: 'job not found' });
+
+        const arquivo = job.arquivo_exportado;
+        if (!arquivo) return res.status(404).json({ error: 'arquivo exportado não encontrado, please run export' });
+
+        const abs = require('path').resolve(process.cwd(), arquivo);
+        const fs = require('fs');
+        try {
+            await require('fs').promises.access(abs);
+        } catch (e) {
+            return res.status(404).json({ error: 'arquivo exportado não encontrado no disco' });
+        }
+
+        // choose content type based on extension
+        const ext = path.extname(abs).toLowerCase();
+        let contentType = 'application/octet-stream';
+        if (ext === '.zip') contentType = 'application/zip';
+        else if (ext === '.xlsx') contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="${path.basename(abs)}"`);
+
+        const stream = fs.createReadStream(abs);
+        stream.on('error', (err: any) => {
+            console.error('Error streaming file', err);
+            if (!res.headersSent) res.status(500).end('Erro ao ler arquivo');
+        });
+        stream.pipe(res);
+    } catch (err: any) {
+        console.error(err);
+        res.status(500).json({ error: 'Erro ao baixar arquivo' });
+    }
+});
+
+// GET /conciliacoes/:id - job details + summary metrics
+router.get('/:id', async (req: Request, res: Response) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id || Number.isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+
+        const job = await jobsRepo.getJobById(id);
+        if (!job) return res.status(404).json({ error: 'job not found' });
+
+        const resultTable = `conciliacao_result_${id}`;
+        const hasTable = await db.schema.hasTable(resultTable);
+
+        let totalRows = 0;
+        let byStatus: Array<{ status: string | null; count: number }> = [];
+        let byGroup: Array<{ grupo: string | null; count: number }> = [];
+
+        if (hasTable) {
+            const c: any = await db(resultTable).count<{ count: number }[]>({ count: '*' }).first();
+            // knex/sqlite returns count as string sometimes
+            totalRows = c ? Number((c as any).count || (c as any)['count(*)'] || 0) : 0;
+
+            const statuses = await db(resultTable).select('status').count('* as count').groupBy('status');
+            byStatus = statuses.map((s: any) => ({ status: s.status, count: Number(s.count) }));
+
+            const groups = await db(resultTable).select('grupo').count('* as count').groupBy('grupo');
+            byGroup = groups.map((g: any) => ({ grupo: g.grupo, count: Number(g.count) }));
+        }
+
+        return res.json({ job, metrics: { totalRows, byStatus, byGroup } });
+    } catch (err: any) {
+        console.error(err);
+        res.status(500).json({ error: 'Erro ao buscar conciliacao' });
+    }
+});
+
+// GET /conciliacoes/:id/resultado - paginated results
+router.get('/:id/resultado', async (req: Request, res: Response) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id || Number.isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+
+        const page = Math.max(1, Number(req.query.page ? Number(req.query.page) : 1));
+        const pageSize = Math.max(1, Number(req.query.pageSize ? Number(req.query.pageSize) : 50));
+        const offset = (page - 1) * pageSize;
+
+        const resultTable = `conciliacao_result_${id}`;
+        const hasTable = await db.schema.hasTable(resultTable);
+        if (!hasTable) return res.status(200).json({ page, pageSize, total: 0, totalPages: 0, data: [] });
+
+        const totalRaw: any = await db(resultTable).count({ count: '*' }).first();
+        const total = totalRaw ? Number(totalRaw.count || totalRaw['count(*)'] || 0) : 0;
+        const totalPages = Math.ceil(total / pageSize);
+
+        const rows = await db(resultTable).select('*').orderBy('id', 'asc').limit(pageSize).offset(offset);
+
+        // parse JSON columns a_values and b_values
+        const data = rows.map((r: any) => ({
+            id: r.id,
+            job_id: r.job_id,
+            chave: r.chave,
+            status: r.status,
+            grupo: r.grupo,
+            a_row_id: r.a_row_id,
+            b_row_id: r.b_row_id,
+            value_a: r.value_a,
+            value_b: r.value_b,
+            difference: r.difference,
+            a_values: r.a_values ? safeJsonParse(r.a_values) : null,
+            b_values: r.b_values ? safeJsonParse(r.b_values) : null,
+            created_at: r.created_at
+        }));
+
+        return res.json({ page, pageSize, total, totalPages, data });
+    } catch (err: any) {
+        console.error(err);
+        res.status(500).json({ error: 'Erro ao buscar resultado' });
+    }
+});
+
+function safeJsonParse(input: any) {
+    try { return JSON.parse(input); } catch { return input; }
+}

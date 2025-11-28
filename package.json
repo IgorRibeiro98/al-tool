@@ -1,0 +1,14 @@
+{
+    "name": "al-tool",
+    "private": true,
+    "version": "0.0.0",
+    "workspaces": [
+        "apps/*",
+        "packages/*"
+    ],
+    "scripts": {
+        "dev:api": "npm --workspace=apps/api run dev",
+        "build:api": "npm --workspace=apps/api run build",
+        "install:all": "npm install"
+    }
+}
