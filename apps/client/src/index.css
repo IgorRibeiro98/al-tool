@@ -58,51 +58,45 @@ All colors MUST be HSL.
     }
 
     .dark {
-        --background: 222 47% 11%;
-        --foreground: 210 40% 98%;
-
-        --card: 217 33% 17%;
-        --card-foreground: 210 40% 98%;
-
-        --popover: 217 33% 17%;
-        --popover-foreground: 210 40% 98%;
-
+        /* Fundo em azul acinzentado bem escuro, mas não preto */
+        --background: 220 18% 10%;
+        --foreground: 210 20% 96%;
+        --card: 220 16% 14%;
+        --card-foreground: 210 20% 96%;
+        --popover: 220 16% 14%;
+        --popover-foreground: 210 20% 96%;
+        /* MANTIDO: primary original */
         --primary: 162 100% 40%;
         --primary-foreground: 0 0% 100%;
-
-        --secondary: 217 33% 17%;
-        --secondary-foreground: 210 40% 98%;
-
-        --muted: 217 33% 17%;
-        --muted-foreground: 215 20% 65%;
-
-        --accent: 217 33% 17%;
-        --accent-foreground: 210 40% 98%;
-
+        /* Tons neutros azul-acinzentados */
+        --secondary: 220 14% 18%;
+        --secondary-foreground: 210 20% 96%;
+        --muted: 220 12% 22%;
+        --muted-foreground: 220 10% 70%;
+        --accent: 220 16% 24%;
+        --accent-foreground: 210 20% 96%;
+        /* Semânticos: mantive os originais pra não quebrar tua linguagem de cor */
         --destructive: 0 63% 31%;
         --destructive-foreground: 210 40% 98%;
-
         --success: 142 70% 45%;
         --success-foreground: 0 0% 100%;
-
         --warning: 38 92% 50%;
         --warning-foreground: 0 0% 100%;
-
         --info: 199 89% 48%;
         --info-foreground: 0 0% 100%;
-
-        --border: 217 33% 17%;
-        --input: 217 33% 17%;
-        --ring: 217 91% 60%;
-
-        --sidebar-background: 222 47% 11%;
-        --sidebar-foreground: 210 40% 98%;
-        --sidebar-primary: 217 91% 60%;
+        /* Bordas e inputs discretos, ainda em azul acinzentado */
+        --border: 220 12% 26%;
+        --input: 220 12% 26%;
+        --ring: 220 40% 60%;
+        /* Sidebar levemente mais escura que o background geral */
+        --sidebar-background: 220 20% 9%;
+        --sidebar-foreground: 210 20% 96%;
+        --sidebar-primary: 162 100% 40%;
         --sidebar-primary-foreground: 0 0% 100%;
-        --sidebar-accent: 217 33% 17%;
-        --sidebar-accent-foreground: 210 40% 98%;
-        --sidebar-border: 217 33% 17%;
-        --sidebar-ring: 217 91% 60%;
+        --sidebar-accent: 220 14% 18%;
+        --sidebar-accent-foreground: 210 20% 96%;
+        --sidebar-border: 220 12% 26%;
+        --sidebar-ring: 220 40% 60%;
     }
 }
 

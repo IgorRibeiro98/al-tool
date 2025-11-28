@@ -1,12 +1,15 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ArrowLeft } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useEffect, useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import { fetchBases } from '@/services/baseService';
 import { fetchConfigsConciliacao, fetchConfigsEstorno, fetchConfigsCancelamento } from '@/services/configsService';
 import { createConciliacao } from '@/services/conciliacaoService';
@@ -19,10 +22,28 @@ const NewConciliacao = () => {
     const [estornos, setEstornos] = useState<ConfigEstorno[]>([]);
     const [cancelamentos, setCancelamentos] = useState<ConfigCancelamento[]>([]);
 
-    const [nome, setNome] = useState<string>('');
-    const [configConciliacaoId, setConfigConciliacaoId] = useState<number | null>(null);
-    const [configEstornoId, setConfigEstornoId] = useState<number | null>(null);
-    const [configCancelamentoId, setConfigCancelamentoId] = useState<number | null>(null);
+    const [loading, setLoading] = useState(false);
+
+    const schema = z.object({
+        nome: z.string().min(1, { message: 'Nome é obrigatório' }),
+        configConciliacaoId: z.number({ message: 'Configuração é obrigatória', invalid_type_error: 'Configuração é obrigatória' }).int().positive(),
+        configEstornoId: z.number().int().positive().nullable().optional(),
+        configCancelamentoId: z.number().int().positive().nullable().optional(),
+    });
+
+    type FormValues = z.infer<typeof schema>;
+
+    const form = useForm<FormValues>({
+        resolver: zodResolver(schema),
+        defaultValues: {
+            nome: '',
+            configConciliacaoId: undefined as any,
+            configEstornoId: null,
+            configCancelamentoId: null,
+        },
+    });
+
+    const { control, watch } = form;
 
     useEffect(() => {
         fetchBases().then(r => setBases(r.data || [])).catch(() => setBases([]));
@@ -31,16 +52,22 @@ const NewConciliacao = () => {
         fetchConfigsCancelamento().then(r => setCancelamentos(r.data || [])).catch(() => setCancelamentos([]));
     }, []);
 
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!configConciliacaoId) return toast.error('Selecione a configuração de conciliação');
+    const onSubmit = async (data: any) => {
+        setLoading(true);
         try {
-            await createConciliacao({ nome, configConciliacaoId, configEstornoId: configEstornoId || null, configCancelamentoId: configCancelamentoId || null });
+            await createConciliacao({
+                nome: data.nome,
+                configConciliacaoId: Number(data.configConciliacaoId),
+                configEstornoId: data.configEstornoId ? Number(data.configEstornoId) : null,
+                configCancelamentoId: data.configCancelamentoId ? Number(data.configCancelamentoId) : null,
+            });
             toast.success('Conciliação criada');
             navigate('/conciliacoes');
         } catch (err: any) {
             console.error('create conciliacao failed', err);
             toast.error(err?.response?.data?.error || 'Falha ao criar conciliação');
+        } finally {
+            setLoading(false);
         }
     };
 
@@ -61,65 +88,103 @@ const NewConciliacao = () => {
                     <CardTitle>Configuração do Job</CardTitle>
                 </CardHeader>
                 <CardContent>
-                    <form onSubmit={handleSubmit} className="space-y-6">
-                        <div className="space-y-2">
-                            <Label htmlFor="nome">Nome do Job *</Label>
-                            <Input id="nome" placeholder="Ex: Conciliação Janeiro 2024" required value={nome} onChange={(e) => setNome(e.target.value)} />
-                        </div>
+                    <Form {...form}>
+                        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+                            <FormField
+                                control={control}
+                                name="nome"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel>Nome do Job *</FormLabel>
+                                        <FormControl>
+                                            <Input placeholder="Ex: Conciliação Janeiro 2024" {...field} />
+                                        </FormControl>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
 
-                        <div className="space-y-2">
-                            <Label htmlFor="config">Configuração de Conciliação *</Label>
-                            <Select required value={String(configConciliacaoId ?? '')} onValueChange={(v) => setConfigConciliacaoId(v ? Number(v) : null)}>
-                                <SelectTrigger>
-                                    <SelectValue placeholder="Selecione a configuração" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {configs.map((c) => (
-                                        <SelectItem key={c.id} value={String(c.id)}>{c.nome}</SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        </div>
+                            <FormField
+                                control={control}
+                                name="configConciliacaoId"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel>Configuração de Conciliação *</FormLabel>
+                                        <FormControl>
+                                            <Select value={field.value ? String(field.value) : ''} onValueChange={(v) => field.onChange(v ? Number(v) : undefined)}>
+                                                <SelectTrigger>
+                                                    <SelectValue placeholder="Selecione a configuração" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {configs.map((c) => (
+                                                        <SelectItem key={c.id} value={String(c.id)}>{c.nome}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </FormControl>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
 
-                        <div className="space-y-2">
-                            <Label htmlFor="estorno">Configuração de Estorno (Opcional)</Label>
-                            <Select value={configEstornoId != null ? String(configEstornoId) : 'none'} onValueChange={(v) => setConfigEstornoId(v === 'none' ? null : Number(v))}>
-                                <SelectTrigger>
-                                    <SelectValue placeholder="Nenhuma" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="none">Nenhuma</SelectItem>
-                                    {estornos.map((e) => (
-                                        <SelectItem key={e.id} value={String(e.id)}>{e.nome}</SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        </div>
+                            <FormField
+                                control={control}
+                                name="configEstornoId"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel>Configuração de Estorno (Opcional)</FormLabel>
+                                        <FormControl>
+                                            <Select value={field.value != null ? String(field.value) : 'none'} onValueChange={(v) => field.onChange(v === 'none' ? null : Number(v))}>
+                                                <SelectTrigger>
+                                                    <SelectValue placeholder="Nenhuma" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="none">Nenhuma</SelectItem>
+                                                    {estornos.map((e) => (
+                                                        <SelectItem key={e.id} value={String(e.id)}>{e.nome}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </FormControl>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
 
-                        <div className="space-y-2">
-                            <Label htmlFor="cancelamento">Configuração de Cancelamento (Opcional)</Label>
-                            <Select value={configCancelamentoId != null ? String(configCancelamentoId) : 'none'} onValueChange={(v) => setConfigCancelamentoId(v === 'none' ? null : Number(v))}>
-                                <SelectTrigger>
-                                    <SelectValue placeholder="Nenhuma" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="none">Nenhuma</SelectItem>
-                                    {cancelamentos.map((c) => (
-                                        <SelectItem key={c.id} value={String(c.id)}>{c.nome}</SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        </div>
+                            <FormField
+                                control={control}
+                                name="configCancelamentoId"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel>Configuração de Cancelamento (Opcional)</FormLabel>
+                                        <FormControl>
+                                            <Select value={field.value != null ? String(field.value) : 'none'} onValueChange={(v) => field.onChange(v === 'none' ? null : Number(v))}>
+                                                <SelectTrigger>
+                                                    <SelectValue placeholder="Nenhuma" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="none">Nenhuma</SelectItem>
+                                                    {cancelamentos.map((c) => (
+                                                        <SelectItem key={c.id} value={String(c.id)}>{c.nome}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </FormControl>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
 
-                        <div className="flex gap-3 justify-end pt-4">
-                            <Button type="button" variant="outline" onClick={() => navigate("/conciliacoes")}>
-                                Cancelar
-                            </Button>
-                            <Button type="submit">
-                                Criar Conciliação
-                            </Button>
-                        </div>
-                    </form>
+                            <div className="flex gap-3 justify-end pt-4">
+                                <Button type="button" variant="outline" onClick={() => navigate("/conciliacoes")}>
+                                    Cancelar
+                                </Button>
+                                <Button type="submit">
+                                    Criar Conciliação
+                                </Button>
+                            </div>
+                        </form>
+                    </Form>
                 </CardContent>
             </Card>
         </div>

@@ -1,48 +1,57 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ArrowLeft, Upload } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useState } from "react";
 import { toast } from "sonner";
 import { createBase } from '@/services/baseService';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 
 type TipoOption = 'CONTABIL' | 'FISCAL';
 
+const schema = z.object({
+    tipo: z.enum(['CONTABIL', 'FISCAL'], { required_error: 'Tipo é obrigatório' }),
+    nome: z.string().min(1, { message: 'Nome é obrigatório' }),
+    periodo: z.string().min(1, { message: 'Período é obrigatório' }),
+    arquivo: z.instanceof(File, { message: 'Arquivo é obrigatório' }),
+    header_linha_inicial: z.number().min(1).optional().default(1),
+    header_coluna_inicial_letter: z.string().min(1).optional().default('A'),
+});
+
+type FormValues = z.infer<typeof schema>;
+
 const NewBase = () => {
     const navigate = useNavigate();
-    const [selectedFile, setSelectedFile] = useState<File | null>(null);
-    const [tipo, setTipo] = useState<TipoOption | ''>('');
-    const [nome, setNome] = useState('');
-    const [periodo, setPeriodo] = useState('');
-    const [headerLinhaInicial, setHeaderLinhaInicial] = useState<number>(1);
-    // column as letter A-Z for the UI; will be converted to number before submit
-    const [headerColunaInicialLetter, setHeaderColunaInicialLetter] = useState<string>('A');
     const [submitting, setSubmitting] = useState(false);
 
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files[0]) {
-            setSelectedFile(e.target.files[0]);
-        }
-    };
+    const form = useForm<FormValues>({
+        resolver: zodResolver(schema),
+        defaultValues: {
+            header_linha_inicial: 1,
+            header_coluna_inicial_letter: 'A',
+        },
+    });
 
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!tipo || !nome || !selectedFile) {
-            toast.error('Preencha tipo, nome e selecione um arquivo.');
-            return;
-        }
+    const { control, watch } = form;
 
+    const selectedFile = watch('arquivo');
+
+    const onSubmit = async (values: FormValues) => {
+        // values validated by zod
         const fd = new FormData();
-        fd.append('tipo', tipo);
-        fd.append('nome', nome);
-        fd.append('periodo', periodo || '');
-        fd.append('arquivo', selectedFile);
-        fd.append('header_linha_inicial', String(headerLinhaInicial));
+        fd.append('tipo', values.tipo);
+        fd.append('nome', values.nome);
+        fd.append('periodo', values.periodo || '');
+        fd.append('arquivo', values.arquivo as File);
+        fd.append('header_linha_inicial', String(values.header_linha_inicial ?? 1));
+
         // convert column letter (A-Z) to 1-based index
-        const letter = (headerColunaInicialLetter || 'A').toUpperCase();
+        const letter = (values.header_coluna_inicial_letter || 'A').toUpperCase();
         const letterToNumber = (l: string) => {
             const base = 'A'.charCodeAt(0);
             const c = l.charCodeAt(0);
@@ -57,7 +66,6 @@ const NewBase = () => {
         try {
             const resp = await createBase(fd);
             toast.success('Base cadastrada com sucesso!');
-            // navigate to bases list or the created base detail
             const created: Base = resp.data;
             navigate('/bases');
         } catch (err: any) {
@@ -86,86 +94,149 @@ const NewBase = () => {
                     <CardTitle>Informações da Base</CardTitle>
                 </CardHeader>
                 <CardContent>
-                    <form onSubmit={handleSubmit} className="space-y-6">
-                        <div className="space-y-2">
-                            <Label htmlFor="tipo">Tipo *</Label>
-                            <Select required value={tipo} onValueChange={(v) => setTipo(v as TipoOption)}>
-                                <SelectTrigger>
-                                    <SelectValue placeholder="Selecione o tipo" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="CONTABIL">CONTÁBIL</SelectItem>
-                                    <SelectItem value="FISCAL">FISCAL</SelectItem>
-                                </SelectContent>
-                            </Select>
-                        </div>
+                    <Form {...form}>
+                        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+                            <FormField
+                                control={control}
+                                name="tipo"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel>Tipo *</FormLabel>
+                                        <FormControl>
+                                            <Select value={field.value} onValueChange={field.onChange}>
+                                                <SelectTrigger>
+                                                    <SelectValue placeholder="Selecione o tipo" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="CONTABIL">CONTÁBIL</SelectItem>
+                                                    <SelectItem value="FISCAL">FISCAL</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </FormControl>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
 
-                        <div className="space-y-2">
-                            <Label htmlFor="nome">Nome *</Label>
-                            <Input id="nome" value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Ex: Base Contábil Janeiro" required />
-                        </div>
+                            <FormField
+                                control={control}
+                                name="nome"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel>Nome *</FormLabel>
+                                        <FormControl>
+                                            <Input placeholder="Ex: Base Contábil Janeiro" {...field} />
+                                        </FormControl>
+                                        <FormDescription>Nome identificador da base</FormDescription>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
 
-                        <div className="space-y-2">
-                            <Label htmlFor="periodo">Período *</Label>
-                            <Input id="periodo" value={periodo} onChange={(e) => setPeriodo(e.target.value)} placeholder="Ex: 01/2024" required />
-                        </div>
+                            <FormField
+                                control={control}
+                                name="periodo"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel>Período *</FormLabel>
+                                        <FormControl>
+                                            <Input placeholder="Ex: 01/2024" {...field} />
+                                        </FormControl>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
 
-                        <div className="space-y-2">
-                            <Label htmlFor="arquivo">Arquivo *</Label>
-                            <div className="border-2 border-dashed rounded-lg p-8 text-center hover:border-primary transition-colors cursor-pointer">
-                                <input
-                                    type="file"
-                                    id="arquivo"
-                                    className="hidden"
-                                    onChange={handleFileChange}
-                                    accept=".xlsx,.xls,.csv,.xlsb"
-                                />
-                                <label htmlFor="arquivo" className="cursor-pointer">
-                                    <Upload className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
-                                    {selectedFile ? (
-                                        <p className="text-sm font-medium">{selectedFile.name}</p>
-                                    ) : (
-                                        <>
-                                            <p className="text-sm font-medium">Clique ou arraste um arquivo</p>
-                                            <p className="text-xs text-muted-foreground mt-1">
-                                                Formatos aceitos: .xlsx, .xls, .csv
-                                            </p>
-                                        </>
-                                    )}
-                                </label>
+                            <FormField
+                                control={control}
+                                name="arquivo"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel>Arquivo *</FormLabel>
+                                        <FormControl>
+                                            <div className="border-2 border-dashed rounded-lg p-8 text-center hover:border-primary transition-colors cursor-pointer">
+                                                <input
+                                                    type="file"
+                                                    id="arquivo"
+                                                    className="hidden"
+                                                    onChange={(e) => {
+                                                        const f = e.target.files && e.target.files[0];
+                                                        if (f) field.onChange(f);
+                                                    }}
+                                                    accept=".xlsx,.xls,.csv,.xlsb"
+                                                />
+                                                <label htmlFor="arquivo" className="cursor-pointer">
+                                                    <Upload className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
+                                                    {selectedFile ? (
+                                                        <p className="text-sm font-medium">{(selectedFile as File).name}</p>
+                                                    ) : (
+                                                        <>
+                                                            <p className="text-sm font-medium">Clique ou arraste um arquivo</p>
+                                                            <p className="text-xs text-muted-foreground mt-1">Formatos aceitos: .xlsx, .xls, .csv</p>
+                                                        </>
+                                                    )}
+                                                </label>
+                                            </div>
+                                        </FormControl>
+                                        <FormDescription>Formate o arquivo em Excel ou CSV</FormDescription>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <FormField
+                                        control={control}
+                                        name="header_linha_inicial"
+                                        render={({ field }) => (
+                                            <FormItem>
+                                                <FormLabel>Linha inicial do cabeçalho</FormLabel>
+                                                <FormControl>
+                                                    <Input type="number" min={1} value={String(field.value ?? 1)} onChange={(e) => field.onChange(Number(e.target.value || 1))} />
+                                                </FormControl>
+                                                <FormMessage />
+                                            </FormItem>
+                                        )}
+                                    />
+                                </div>
+                                <div>
+                                    <FormField
+                                        control={control}
+                                        name="header_coluna_inicial_letter"
+                                        render={({ field }) => (
+                                            <FormItem>
+                                                <FormLabel>Coluna inicial do cabeçalho</FormLabel>
+                                                <FormControl>
+                                                    <Select value={field.value} onValueChange={field.onChange}>
+                                                        <SelectTrigger>
+                                                            <SelectValue />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {Array.from({ length: 26 }).map((_, i) => {
+                                                                const letter = String.fromCharCode('A'.charCodeAt(0) + i);
+                                                                return <SelectItem key={letter} value={letter}>{letter}</SelectItem>;
+                                                            })}
+                                                        </SelectContent>
+                                                    </Select>
+                                                </FormControl>
+                                                <FormMessage />
+                                            </FormItem>
+                                        )}
+                                    />
+                                </div>
                             </div>
-                        </div>
 
-                        <div className="grid grid-cols-2 gap-4">
-                            <div>
-                                <Label htmlFor="headerLinha">Linha inicial do cabeçalho</Label>
-                                <Input id="headerLinha" type="number" value={headerLinhaInicial} min={1} onChange={(e) => setHeaderLinhaInicial(Number(e.target.value || 1))} />
+                            <div className="flex gap-3 justify-end">
+                                <Button type="button" variant="outline" onClick={() => navigate("/bases")}>
+                                    Cancelar
+                                </Button>
+                                <Button type="submit" disabled={submitting}>
+                                    {submitting ? 'Enviando...' : 'Salvar Base'}
+                                </Button>
                             </div>
-                            <div>
-                                <Label htmlFor="headerCol">Coluna inicial do cabeçalho</Label>
-                                <Select value={headerColunaInicialLetter} onValueChange={(v) => setHeaderColunaInicialLetter(v)}>
-                                    <SelectTrigger>
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {Array.from({ length: 26 }).map((_, i) => {
-                                            const letter = String.fromCharCode('A'.charCodeAt(0) + i);
-                                            return <SelectItem key={letter} value={letter}>{letter}</SelectItem>;
-                                        })}
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                        </div>
-
-                        <div className="flex gap-3 justify-end">
-                            <Button type="button" variant="outline" onClick={() => navigate("/bases")}>
-                                Cancelar
-                            </Button>
-                            <Button type="submit" disabled={submitting}>
-                                {submitting ? 'Enviando...' : 'Salvar Base'}
-                            </Button>
-                        </div>
-                    </form>
+                        </form>
+                    </Form>
                 </CardContent>
             </Card>
         </div>
