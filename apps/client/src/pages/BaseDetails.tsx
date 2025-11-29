@@ -1,29 +1,43 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, CheckCircle } from "lucide-react";
+import { ArrowLeft, CheckCircle, Clock, Trash } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useEffect, useState } from 'react';
-import { getBase, fetchBasePreview } from '@/services/baseService';
+import { getBase, fetchBasePreview, getBaseColumns, deleteBase } from '@/services/baseService';
 import { toast } from 'sonner';
+import {
+    AlertDialog,
+    AlertDialogContent,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogAction,
+    AlertDialogCancel,
+} from '@/components/ui/alert-dialog';
 
 const BaseDetails = () => {
     const navigate = useNavigate();
     const { id } = useParams();
     const [base, setBase] = useState<Base | null>(null);
     const [preview, setPreview] = useState<BasePreview | null>(null);
+    const [baseColumns, setBaseColumns] = useState<any[] | null>(null);
     const [loading, setLoading] = useState(false);
+    const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+    const [pendingDelete, setPendingDelete] = useState<number | null>(null);
 
     useEffect(() => {
         let mounted = true;
         if (!id) return;
         const numId = Number(id);
         setLoading(true);
-        Promise.all([getBase(numId), fetchBasePreview(numId)])
-            .then(([baseRes, previewRes]) => {
+        Promise.all([getBase(numId), fetchBasePreview(numId), getBaseColumns(numId)])
+            .then(([baseRes, previewRes, colsRes]) => {
                 if (!mounted) return;
                 setBase(baseRes.data);
                 setPreview(previewRes.data);
+                setBaseColumns(colsRes.data.data ?? []);
             })
             .catch((err) => {
                 console.error('Failed to load base details', err);
@@ -36,13 +50,24 @@ const BaseDetails = () => {
 
     return (
         <div className="space-y-6">
-            <div className="flex items-center gap-4">
-                <Button variant="ghost" size="icon" onClick={() => navigate("/bases")}>
-                    <ArrowLeft className="h-4 w-4" />
-                </Button>
-                <div className="flex-1">
-                    <h1 className="text-3xl font-bold">Detalhes da Base</h1>
-                    <p className="text-muted-foreground">Base Contábil Janeiro</p>
+            <div className="flex items-center gap-4 justify-between">
+                <div className="flex items-center gap-4">
+                    <Button variant="ghost" size="icon" onClick={() => navigate("/bases")}>
+                        <ArrowLeft className="h-4 w-4" />
+                    </Button>
+                    <div className="flex-1">
+                        <h1 className="text-3xl font-bold">Detalhes da Base</h1>
+                        <p className="text-muted-foreground">Base Contábil Janeiro</p>
+                    </div>
+                </div>
+                <div>
+                    <Button variant="destructive" size="icon" onClick={() => {
+                        if (!id) return;
+                        setPendingDelete(Number(id));
+                        setDeleteDialogOpen(true);
+                    }} aria-label="Deletar base">
+                        <Trash className="h-4 w-4" />
+                    </Button>
                 </div>
             </div>
 
@@ -65,7 +90,7 @@ const BaseDetails = () => {
                             </div>
                             <div>
                                 <p className="text-sm text-muted-foreground">Data Criação</p>
-                                <p className="font-medium">{base?.created_at ? new Date(base.created_at).toLocaleString() : '-'}</p>
+                                <p className="font-medium">{base?.created_at ? new Date(base.created_at).toLocaleDateString('pt-BR') : '-'}</p>
                             </div>
                             <div>
                                 <p className="text-sm text-muted-foreground">Status</p>
@@ -77,11 +102,53 @@ const BaseDetails = () => {
                                 ) : (
                                     <div className="text-sm text-muted-foreground">Não ingerida</div>
                                 )}
+
+                                {/* conversion status */}
+                                {base?.conversion_status && base.conversion_status !== 'READY' && (
+                                    <div className="mt-2">
+                                        {base.conversion_status === 'PENDING' && <span className="text-sm text-yellow-600">Aguardando conversão</span>}
+                                        {base.conversion_status === 'RUNNING' && <span className="text-sm text-blue-600">Convertendo</span>}
+                                        {base.conversion_status === 'FAILED' && <span className="text-sm text-red-600">Falha na conversão</span>}
+                                    </div>
+                                )}
+
+                                {/* ingest status */}
+                                {base?.ingest_in_progress && (
+                                    <div className="mt-2 text-sm text-muted-foreground flex items-center gap-2">
+                                        <Clock className="h-4 w-4" />
+                                        Ingestão em andamento
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )}
                 </CardContent>
             </Card>
+            <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Confirmação de Exclusão</AlertDialogTitle>
+                        <AlertDialogDescription>Deseja realmente deletar esta base? Esta ação removerá tabela e arquivos e não pode ser desfeita.</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel onClick={() => { setDeleteDialogOpen(false); setPendingDelete(null); }}>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction onClick={async () => {
+                            if (!pendingDelete) return;
+                            try {
+                                await deleteBase(pendingDelete);
+                                toast.success('Base deletada');
+                                navigate('/bases');
+                            } catch (e) {
+                                console.error('Delete base failed', e);
+                                toast.error('Falha ao deletar base');
+                            } finally {
+                                setDeleteDialogOpen(false);
+                                setPendingDelete(null);
+                            }
+                        }}>Excluir</AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
 
             <Card>
                 <CardHeader>
@@ -95,9 +162,11 @@ const BaseDetails = () => {
                             <table className="min-w-max text-sm">
                                 <thead className="border-b bg-muted/50">
                                     <tr>
-                                        {preview.columns.map((col) => (
-                                            <th key={col} className="px-4 py-3 text-left font-medium">{col}</th>
-                                        ))}
+                                        {preview.columns.map((col) => {
+                                            const found = baseColumns?.find(bc => bc.sqlite_name === col);
+                                            const label = found ? (found.excel_name || col) : col;
+                                            return (<th key={col} className="px-4 py-3 text-left font-medium">{label}</th>);
+                                        })}
                                     </tr>
                                 </thead>
                                 <tbody>

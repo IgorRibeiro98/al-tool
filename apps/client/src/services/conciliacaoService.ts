@@ -23,4 +23,8 @@ export function exportConciliacao(id: number) {
     return api.post(`/conciliacoes/${id}/exportar`);
 }
 
+export function deleteConciliacao(id: number) {
+    return api.delete(`/conciliacoes/${id}`);
+}
+
 export default { fetchConciliacoes, createConciliacao, getConciliacao, fetchConciliacaoResultado, exportConciliacao };

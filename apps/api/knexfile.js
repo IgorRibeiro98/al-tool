@@ -18,6 +18,7 @@ module.exports = {
         },
         useNullAsDefault: true,
         migrations: {
+            // project keeps migrations under src/migrations — point knex there
             directory: path.resolve(__dirname, './migrations')
         }
     }

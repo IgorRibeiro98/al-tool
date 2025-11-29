@@ -3,8 +3,10 @@ import multer from 'multer';
 import { fileStorage } from '../infra/storage/FileStorage';
 import db from '../db/knex';
 import ExcelIngestService from '../services/ExcelIngestService';
+import * as ingestRepo from '../repos/ingestJobsRepository';
 import { spawn } from 'child_process';
 import path from 'path';
+import fs from 'fs/promises';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -25,7 +27,21 @@ router.get('/', async (req: Request, res: Response) => {
 
         const rows = await qb.offset((page - 1) * pageSize).limit(pageSize);
 
-        res.json({ data: rows, page, pageSize, total: Number(count) });
+        // determine ingest status for the returned bases (whether there is any PENDING/RUNNING ingest job)
+        const baseIds = rows.map((r: any) => r.id).filter(Boolean);
+        let ingestInProgressSet = new Set<number>();
+        if (baseIds.length > 0) {
+            const active = await db('ingest_jobs')
+                .whereIn('base_id', baseIds)
+                .whereIn('status', ['PENDING', 'RUNNING'])
+                .select('base_id')
+                .groupBy('base_id');
+            ingestInProgressSet = new Set(active.map((a: any) => a.base_id));
+        }
+
+        const enriched = rows.map((r: any) => ({ ...r, ingest_in_progress: ingestInProgressSet.has(r.id) }));
+
+        res.json({ data: enriched, page, pageSize, total: Number(count) });
     } catch (err: any) {
         console.error(err);
         res.status(500).json({ error: 'Erro ao listar bases' });
@@ -42,6 +58,23 @@ router.get('/:id', async (req: Request, res: Response) => {
         if (!base) return res.status(404).json({ error: 'Base not found' });
 
         const result: any = { ...base };
+        // attach latest ingest job info (if any)
+        try {
+            const latest = await db('ingest_jobs').where({ base_id: id }).orderBy('id', 'desc').first();
+            if (latest) {
+                result.ingest_job = latest;
+                result.ingest_status = latest.status;
+                result.ingest_in_progress = latest.status === 'PENDING' || latest.status === 'RUNNING';
+            } else {
+                result.ingest_job = null;
+                result.ingest_status = null;
+                result.ingest_in_progress = false;
+            }
+        } catch (e) {
+            result.ingest_job = null;
+            result.ingest_status = null;
+            result.ingest_in_progress = false;
+        }
         if (base.tabela_sqlite) {
             // try to count rows in the table if it exists
             try {
@@ -140,11 +173,61 @@ router.post('/:id/ingest', async (req: Request, res: Response) => {
         const id = Number(req.params.id);
         if (Number.isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
 
-        const result = await ExcelIngestService.ingest(id);
-        res.json({ table: result.tableName, rows: result.rowsInserted });
+        // create an ingest job to be processed by background worker
+        const job = await ingestRepo.createJob({ base_id: id, status: 'PENDING' });
+        res.status(202).json({ jobId: job.id, status: job.status });
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: err.message || 'Ingest failed' });
+        res.status(400).json({ error: err.message || 'Enqueue ingest failed' });
+    }
+});
+
+// DELETE /bases/:id - remove base, its metadata, files and sqlite table
+router.delete('/:id', async (req: Request, res: Response) => {
+    try {
+        const id = Number(req.params.id);
+        if (Number.isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
+
+        const base = await db('bases').where({ id }).first();
+        if (!base) return res.status(404).json({ error: 'Base not found' });
+
+        // attempt to drop the sqlite table if present
+        if (base.tabela_sqlite) {
+            try {
+                const exists = await db.schema.hasTable(base.tabela_sqlite);
+                if (exists) await db.schema.dropTableIfExists(base.tabela_sqlite);
+            } catch (e) {
+                console.error('Error dropping base table', e);
+            }
+        }
+
+        // remove base_columns metadata
+        try { await db('base_columns').where({ base_id: id }).del(); } catch (e) { }
+
+        // remove ingest jobs for this base
+        try { await db('ingest_jobs').where({ base_id: id }).del(); } catch (e) { }
+
+        // attempt to delete stored files (arquivo_caminho, arquivo_jsonl_path)
+        try {
+            if (base.arquivo_caminho) {
+                const abs = path.resolve(process.cwd(), base.arquivo_caminho);
+                await fs.unlink(abs).catch(() => { /* ignore */ });
+            }
+            if (base.arquivo_jsonl_path) {
+                const abs2 = path.resolve(process.cwd(), base.arquivo_jsonl_path);
+                await fs.unlink(abs2).catch(() => { /* ignore */ });
+            }
+        } catch (e) {
+            console.error('Error deleting base files', e);
+        }
+
+        // finally remove base row
+        await db('bases').where({ id }).del();
+
+        return res.json({ success: true });
+    } catch (err: any) {
+        console.error(err);
+        res.status(500).json({ error: 'Erro ao deletar base' });
     }
 });
 

@@ -20,7 +20,8 @@ from datetime import datetime
 
 DB_PATH = os.environ.get('DB_PATH', '/home/app/apps/api/db/dev.sqlite3')
 POLL_INTERVAL = float(os.environ.get('POLL_INTERVAL', '5'))
-INGESTS_DIR = os.environ.get('INGESTS_DIR', '/home/app/storage/ingests')
+# Default to API storage path so converter writes artifacts where the API expects them
+INGESTS_DIR = os.environ.get('INGESTS_DIR', '/home/app/apps/api/storage/ingests')
 
 
 def ensure_ingests_dir():

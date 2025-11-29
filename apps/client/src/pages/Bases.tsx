@@ -1,16 +1,29 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Upload, Eye, CheckCircle, Clock } from "lucide-react";
+import { Plus, Upload, Eye, CheckCircle, Clock, Trash } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from 'react';
-import { fetchBases, ingestBase } from '@/services/baseService';
+import { fetchBases, ingestBase, deleteBase } from '@/services/baseService';
+import { toast } from 'sonner';
+import {
+    AlertDialog,
+    AlertDialogContent,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogAction,
+    AlertDialogCancel,
+} from '@/components/ui/alert-dialog';
 
 const Bases = () => {
     const navigate = useNavigate();
     const [bases, setBases] = useState<Base[]>([]);
     const [loading, setLoading] = useState<boolean>(true);
     const [ingesting, setIngesting] = useState<Record<number, boolean>>({});
+    const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+    const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
 
     useEffect(() => {
         let mounted = true;
@@ -36,6 +49,27 @@ const Bases = () => {
             console.error('Ingest failed', e);
         } finally {
             setIngesting(prev => ({ ...prev, [id]: false }));
+        }
+    }
+
+    const confirmDelete = (id: number) => {
+        setPendingDeleteId(id);
+        setDeleteDialogOpen(true);
+    };
+
+    const handleDelete = async (id: number | null) => {
+        if (id === null) return;
+        try {
+            await deleteBase(id);
+            toast.success('Base removida');
+            const res = await fetchBases();
+            setBases(res.data?.data || res.data || []);
+        } catch (e: any) {
+            console.error('Delete failed', e);
+            toast.error('Falha ao deletar base');
+        } finally {
+            setDeleteDialogOpen(false);
+            setPendingDeleteId(null);
         }
     }
 
@@ -87,17 +121,40 @@ const Bases = () => {
                                                 <span className="text-sm">Não ingerida</span>
                                             </div>
                                         )}
-                                        <span className="text-sm text-muted-foreground">{base.created_at ? new Date(base.created_at).toLocaleString() : '-'}</span>
+                                        {/* conversion status display */}
+                                        {base.conversion_status && base.conversion_status !== 'READY' && (
+                                            <div className="ml-4">
+                                                {base.conversion_status === 'PENDING' && <span className="text-sm text-yellow-600">Aguardando conversão</span>}
+                                                {base.conversion_status === 'PROCESSING' && <span className="text-sm text-blue-600">Convertendo</span>}
+                                                {base.conversion_status === 'FAILED' && <span className="text-sm text-red-600">Falha na conversão</span>}
+                                            </div>
+                                        )}
+                                        <span className="text-sm text-muted-foreground">{base.created_at ? new Date(base.created_at).toLocaleDateString('pt-BR') : '-'}</span>
                                         <div className="flex gap-2">
-                                            {!base.tabela_sqlite && base.conversion_status === 'READY' && (
+                                            {/* show ingest button only when not ingested, conversion ready and no ingest job in progress */}
+                                            {!base.tabela_sqlite && base.conversion_status === 'READY' && !base.ingest_in_progress && (
                                                 <Button variant="outline" size="sm" onClick={() => handleIngest(base.id)} disabled={!!ingesting[base.id]}>
                                                     <Upload className="mr-2 h-4 w-4" />
                                                     {ingesting[base.id] ? 'Ingerindo...' : 'Ingerir'}
                                                 </Button>
                                             )}
-                                            <Button variant="ghost" size="sm" onClick={() => navigate(`/bases/${base.id}`)}>
-                                                <Eye className="h-4 w-4" />
-                                            </Button>
+                                            {base.ingest_in_progress && (
+                                                <div className="text-sm text-muted-foreground flex items-center gap-2">
+                                                    <Clock className="h-4 w-4" />
+                                                    Ingestão em andamento
+                                                </div>
+                                            )}
+                                            <div className="ml-2">
+                                                <Button variant="ghost" size="icon" onClick={() => navigate(`/bases/${base.id}`)} aria-label="Ver base">
+                                                    <Eye className="h-4 w-4" />
+                                                </Button>
+                                            </div>
+                                            <div className="ml-2">
+                                                <Button variant="destructive" size="icon" onClick={() => confirmDelete(base.id)} aria-label="Deletar base">
+                                                    <Trash className="h-4 w-4" />
+                                                </Button>
+                                            </div>
+
                                         </div>
                                     </div>
                                 </div>
@@ -106,6 +163,18 @@ const Bases = () => {
                     </div>
                 </CardContent>
             </Card>
+            <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Confirmação de Exclusão</AlertDialogTitle>
+                        <AlertDialogDescription>Deseja realmente deletar esta base? Esta ação removerá tabela e arquivos e não pode ser desfeita.</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel onClick={() => { setDeleteDialogOpen(false); setPendingDeleteId(null); }}>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction onClick={() => handleDelete(pendingDeleteId)}>Excluir</AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </div>
     );
 };

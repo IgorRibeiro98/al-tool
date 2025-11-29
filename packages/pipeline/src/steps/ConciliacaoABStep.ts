@@ -105,17 +105,19 @@ export class ConciliacaoABStep implements PipelineStep {
                 }
             });
 
-        // Exclude A rows marked as estorno
-        qb.whereNotExists(function () {
-            this.select('*').from('conciliacao_marks').whereRaw('conciliacao_marks.base_id = ?', [baseAId]).andWhereRaw('conciliacao_marks.row_id = a.id').andWhere('grupo', 'Conciliado_Estorno');
-        });
-
-        // Exclude B rows marked as canceled when there is a match
-        qb.whereNotExists(function () {
-            this.select('*').from('conciliacao_marks').whereRaw('conciliacao_marks.base_id = ?', [baseBId]).andWhereRaw('conciliacao_marks.row_id = b.id').andWhere('grupo', 'NF Cancelada');
-        });
+        // NOTE: previously we excluded rows marked as estorno/cancelado here.
+        // Change: include marked rows in the reconciliation output and annotate them with their mark (status/grupo/chave).
 
         const rows = await qb;
+
+        // Load marks for both bases so we can include marked rows in the results
+        const marksRows: any[] = await this.db('conciliacao_marks').whereIn('base_id', [baseAId, baseBId]).select('*');
+        const marksA = new Map<number, any>();
+        const marksB = new Map<number, any>();
+        for (const m of marksRows) {
+            if (m.base_id === baseAId) marksA.set(m.row_id, m);
+            if (m.base_id === baseBId) marksB.set(m.row_id, m);
+        }
 
         const inserts: any[] = [];
 
@@ -132,9 +134,37 @@ export class ConciliacaoABStep implements PipelineStep {
             const valueB = inverter ? -valueB_raw : valueB_raw;
             const diff = valueA - valueB;
 
+            // check for marks (estorno on A, cancelamento on B) and prioritize emitting a mark-based result
+            const aMark = a_row_id ? marksA.get(a_row_id) : null;
+            const bMark = b_row_id ? marksB.get(b_row_id) : null;
+
             let status = null as string | null;
             let group = null as string | null;
             let chave = null as string | null;
+
+            if (aMark || bMark) {
+                // prefer A mark if present, otherwise B mark
+                const mark = aMark || bMark;
+                status = mark.status;
+                group = mark.grupo;
+                chave = mark.chave;
+                // push marked entry
+                inserts.push({
+                    job_id: jobId,
+                    chave,
+                    status,
+                    grupo: group,
+                    a_row_id,
+                    b_row_id,
+                    a_values: aRow ? JSON.stringify(aRow) : null,
+                    b_values: bRow ? JSON.stringify(bRow) : null,
+                    value_a: valueA,
+                    value_b: valueB,
+                    difference: diff,
+                    created_at: this.db.fn.now()
+                });
+                continue;
+            }
 
             if (aRow && bRow) {
                 if (Math.abs(diff) === 0) {
@@ -150,11 +180,11 @@ export class ConciliacaoABStep implements PipelineStep {
                     status = '02_Encontrado c/Diferença';
                     group = 'Encontrado com diferença, BASE B MAIOR';
                 }
-                chave = chavesContabil.map((k: string) => aRow[k]).join('|');
+                chave = chavesContabil.map((k: string) => aRow[k]).join('_');
             } else {
                 status = '03_Não Encontrado';
                 group = 'Não encontrado';
-                chave = aRow ? chavesContabil.map((k: string) => aRow[k]).join('|') : (bRow ? chavesFiscal.map((k: string) => bRow[k]).join('|') : null);
+                chave = aRow ? chavesContabil.map((k: string) => aRow[k]).join('_') : (bRow ? chavesFiscal.map((k: string) => bRow[k]).join('_') : null);
             }
 
             inserts.push({
@@ -189,10 +219,7 @@ export class ConciliacaoABStep implements PipelineStep {
             }
         }).whereNull('a.id');
 
-        // Exclude canceled B rows
-        qbBOnly.whereNotExists(function () {
-            this.select('*').from('conciliacao_marks').whereRaw('conciliacao_marks.base_id = ?', [baseBId]).andWhereRaw('conciliacao_marks.row_id = b.id').andWhere('grupo', 'NF Cancelada');
-        });
+        // NOTE: previously we excluded canceled B rows here; instead include them and mark accordingly
 
         const bOnlyRows = await qbBOnly;
         for (const r of bOnlyRows) {
@@ -202,9 +229,28 @@ export class ConciliacaoABStep implements PipelineStep {
             const valueB = inverter ? -valueB_raw : valueB_raw;
             const diff = valueA - valueB;
 
+            const bMark = marksB.get(r.b_row_id);
+            if (bMark) {
+                await this.db(resultTable).insert({
+                    job_id: jobId,
+                    chave: bMark.chave,
+                    status: bMark.status,
+                    grupo: bMark.grupo,
+                    a_row_id: null,
+                    b_row_id: r.b_row_id,
+                    a_values: null,
+                    b_values: JSON.stringify(bRow),
+                    value_a: valueA,
+                    value_b: valueB,
+                    difference: diff,
+                    created_at: this.db.fn.now()
+                });
+                continue;
+            }
+
             const status = '03_Não Encontrado';
             const group = 'Não encontrado';
-            const chave = chavesFiscal.map((k: string) => bRow[k]).join('|');
+            const chave = chavesFiscal.map((k: string) => bRow[k]).join('_');
 
             await this.db(resultTable).insert({
                 job_id: jobId,

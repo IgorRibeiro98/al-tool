@@ -8,6 +8,7 @@ import conciliacoesRouter from './routes/conciliacoes';
 import maintenanceRouter from './routes/maintenance';
 import './pipeline/integration';
 import { startConciliacaoWorker } from './worker/conciliacaoWorker';
+import { startIngestWorker } from './worker/ingestWorker';
 
 const app = express();
 const port = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -54,6 +55,12 @@ if (process.env.NODE_ENV !== 'test') {
         try {
             startConciliacaoWorker();
             console.log('Conciliacao worker started');
+            try {
+                startIngestWorker();
+                console.log('Ingest worker started');
+            } catch (err) {
+                console.error('Failed to start ingest worker', err);
+            }
         } catch (err) {
             console.error('Failed to start conciliacao worker', err);
         }

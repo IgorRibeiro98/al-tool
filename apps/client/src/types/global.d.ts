@@ -10,12 +10,23 @@ declare global {
         tabela_sqlite?: string | null;
         created_at?: string | null;
         updated_at?: string | null;
-        conversion_status?: 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED' | null;
+        conversion_status?: 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED' | 'RUNNING' | null;
         header_linha_inicial?: number | null;
         header_coluna_inicial?: number | null;
         conversion_started_at?: string | null;
         conversion_finished_at?: string | null;
         conversion_error?: string | null;
+        // ingest job info (added to support background ingestion status)
+        ingest_in_progress?: boolean;
+        ingest_status?: JobStatus | null;
+        ingest_job?: {
+            id: number;
+            base_id: number;
+            status: JobStatus;
+            erro?: string | null;
+            created_at?: string | null;
+            updated_at?: string | null;
+        } | null;
     }
 
     interface BaseColumn {
@@ -79,6 +90,9 @@ declare global {
         status: JobStatus;
         erro?: string | null;
         arquivo_exportado?: string | null;
+        // denormalized config names
+        config_estorno_nome?: string | null;
+        config_cancelamento_nome?: string | null;
         created_at?: string | null;
         updated_at?: string | null;
     }

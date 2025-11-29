@@ -26,6 +26,7 @@ import datetime as _dt
 from pyxlsb import open_workbook
 from openpyxl import Workbook
 from openpyxl import load_workbook
+import os
 
 
 def _normalize_value_for_json(v):
@@ -80,11 +81,23 @@ def convert_xlsb_to_xlsx(inpath: str, outpath: str, sheet_index: int = 1):
                 ws_out.append(out_row)
 
     wb_out.save(outpath)
+    # ensure parent dir exists when saving (some callers pass a path into nested storage)
+    try:
+        outdir = os.path.dirname(outpath)
+        if outdir:
+            os.makedirs(outdir, exist_ok=True)
+    except Exception:
+        # best-effort; if mkdir fails, let save raise the appropriate error
+        pass
 
 
 def convert_xlsb_to_jsonl(inpath: str, outpath: str, sheet_index: int = 1):
     # JSONL format: each line is a JSON array representing the row values
     # Numeric values are emitted as {"__num__": "<decimal-string>"} to preserve exact decimal representation
+    # ensure parent directory exists
+    outdir = os.path.dirname(outpath)
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
     with open(outpath, 'w', encoding='utf-8') as fout:
         with open_workbook(inpath) as wb:
             sheet_names = list(wb.sheets)
@@ -105,6 +118,10 @@ def convert_xlsb_to_jsonl(inpath: str, outpath: str, sheet_index: int = 1):
 
 def convert_xlsx_to_jsonl(inpath: str, outpath: str, sheet_index: int = 1):
     # Use openpyxl in read_only mode to stream rows and write JSONL
+    # ensure parent directory exists
+    outdir = os.path.dirname(outpath)
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
     with open(outpath, 'w', encoding='utf-8') as fout:
         wb = load_workbook(filename=inpath, read_only=True, data_only=True)
         sheets = wb.sheetnames

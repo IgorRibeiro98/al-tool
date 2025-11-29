@@ -20,6 +20,10 @@ export function ingestBase(id: number) {
     return api.post(`/bases/${id}/ingest`);
 }
 
+export function deleteBase(id: number) {
+    return api.delete(`/bases/${id}`);
+}
+
 export function createBase(formData: FormData) {
     // Let the browser/axios set the multipart boundary header
     return api.post('/bases', formData, {

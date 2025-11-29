@@ -1,17 +1,29 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusChip } from "@/components/StatusChip";
-import { Plus, Eye } from "lucide-react";
+import { Plus, Eye, Trash } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from 'react';
-import { fetchConciliacoes } from '@/services/conciliacaoService';
+import { fetchConciliacoes, deleteConciliacao } from '@/services/conciliacaoService';
 import { toast } from 'sonner';
 import api from '@/services/api';
+import {
+    AlertDialog,
+    AlertDialogContent,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogAction,
+    AlertDialogCancel,
+} from '@/components/ui/alert-dialog';
 
 const Conciliacoes = () => {
     const navigate = useNavigate();
     const [jobs, setJobs] = useState<JobConciliacao[]>([]);
     const [loading, setLoading] = useState<boolean>(true);
+    const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+    const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
 
     useEffect(() => {
         let mounted = true;
@@ -64,21 +76,21 @@ const Conciliacoes = () => {
                                         <div className="flex-1 space-y-1">
                                             <p className="font-medium">{job.nome ?? `Job ${job.id}`}</p>
                                             <div className="text-sm text-muted-foreground">
-                                                <span>Config: {String(job.config_conciliacao_id ?? '-')}</span>
+                                                <span>Config: {job.nome ?? String(job.config_conciliacao_id ?? '-')}</span>
                                                 <span className="mx-2">•</span>
-                                                <span>Estorno: {String(job.config_estorno_id ?? '-')}</span>
+                                                <span>Estorno: {job.config_estorno_nome ?? String(job.config_estorno_id ?? '-')}</span>
                                                 <span className="mx-2">•</span>
-                                                <span>Cancelamento: {String(job.config_cancelamento_id ?? '-')}</span>
+                                                <span>Cancelamento: {job.config_cancelamento_nome ?? String(job.config_cancelamento_id ?? '-')}</span>
                                             </div>
                                         </div>
                                         <div className="flex items-center gap-6">
                                             <div className="text-right">
                                                 <p className="text-xs text-muted-foreground">Criado</p>
-                                                <p className="text-sm font-mono">{job.created_at ? new Date(job.created_at).toLocaleString() : '-'}</p>
+                                                <p className="text-sm font-mono">{job.created_at ? new Date(job.created_at).toLocaleDateString('pt-BR') : '-'}</p>
                                             </div>
                                             <div className="text-right">
                                                 <p className="text-xs text-muted-foreground">Atualizado</p>
-                                                <p className="text-sm font-mono">{job.updated_at ? new Date(job.updated_at).toLocaleString() : '-'}</p>
+                                                <p className="text-sm font-mono">{job.updated_at ? new Date(job.updated_at).toLocaleDateString('pt-BR') : '-'}</p>
                                             </div>
                                             <div className="flex items-center gap-3">
                                                 <StatusChip status={(job.status || 'PENDING') as any} />
@@ -98,6 +110,9 @@ const Conciliacoes = () => {
                                                 <Button variant="ghost" size="sm" onClick={() => navigate(`/conciliacoes/${job.id}`)}>
                                                     <Eye className="h-4 w-4" />
                                                 </Button>
+                                                <Button variant="destructive" size="icon" onClick={() => { setPendingDeleteId(job.id); setDeleteDialogOpen(true); }} aria-label="Deletar conciliação">
+                                                    <Trash className="h-4 w-4" />
+                                                </Button>
                                             </div>
                                         </div>
                                     </div>
@@ -107,6 +122,31 @@ const Conciliacoes = () => {
                     )}
                 </CardContent>
             </Card>
+            <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Confirmação de Exclusão</AlertDialogTitle>
+                        <AlertDialogDescription>Deseja realmente deletar esta conciliação e seus resultados? Esta ação não pode ser desfeita.</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel onClick={() => { setDeleteDialogOpen(false); setPendingDeleteId(null); }}>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction onClick={async () => {
+                            if (!pendingDeleteId) return;
+                            try {
+                                await deleteConciliacao(pendingDeleteId);
+                                toast.success('Conciliação deletada');
+                                setJobs(prev => prev.filter(j => j.id !== pendingDeleteId));
+                            } catch (e) {
+                                console.error('Failed to delete conciliacao', e);
+                                toast.error('Falha ao deletar conciliação');
+                            } finally {
+                                setDeleteDialogOpen(false);
+                                setPendingDeleteId(null);
+                            }
+                        }}>Excluir</AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </div>
     );
 };

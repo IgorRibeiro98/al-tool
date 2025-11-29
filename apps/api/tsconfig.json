@@ -15,6 +15,9 @@
         ]
     },
     "include": [
-        "src/**/*"
+        "src/**/*",
+        "migrations/20251129_add_job_columns.js",
+        "migrations/20251129_create_conciliacao_marks.js",
+        "migrations/20251129_create_ingest_jobs.js"
     ]
 }

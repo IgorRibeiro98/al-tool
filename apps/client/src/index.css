@@ -69,8 +69,8 @@ All colors MUST be HSL.
         --primary: 162 100% 40%;
         --primary-foreground: 0 0% 100%;
         /* Tons neutros azul-acinzentados */
-        --secondary: 220 14% 18%;
-        --secondary-foreground: 210 20% 96%;
+        --secondary: 0 0% 98%;
+        --secondary-foreground: 222 47% 11%;
         --muted: 220 12% 22%;
         --muted-foreground: 220 10% 70%;
         --accent: 220 16% 24%;

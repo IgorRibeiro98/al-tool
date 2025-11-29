@@ -156,7 +156,7 @@ const Dashboard = () => {
                                     <p className="text-sm text-muted-foreground">Config: {job.config_conciliacao_id}</p>
                                 </div>
                                 <div className="flex items-center gap-4">
-                                    <span className="text-sm text-muted-foreground">{job.created_at || ''}</span>
+                                    <span className="text-sm text-muted-foreground">{job.created_at ? new Date(job.created_at).toLocaleDateString('pt-BR') : ''}</span>
                                     <StatusChip status={(job.status || 'PENDING') as any} />
                                 </div>
                             </div>

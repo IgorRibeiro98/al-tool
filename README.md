@@ -1,50 +1,35 @@
 # AL-Tool — Conciliação Contábil × Fiscal
 
-Versão: protótipo (Node.js + TypeScript + SQLite)
-
-Resumo: esta aplicação fornece uma API para ingerir bases (Excel), aplicar regras de conciliação (estorno, cancelamento, comparação A×B) e exportar resultados em XLSX.
-
----
-
 ## Sumário
-- Visão Geral
 - Arquitetura
 - Modelo de Domínio
 - Pipeline (steps)
 - Endpoints da API (referência)
 - Exemplos de uso (fluxos completos)
-- Diagramas (Mermaid)
 - Considerações de Performance
 - Referência Rápida
 
 ---
 
 # 1. Visão Geral do Sistema
-
 ## Objetivo
 Automatizar a conciliação entre uma **BASE A (CONTÁBIL)** e uma **BASE B (FISCAL)**:
 - Receber arquivos (Excel)
-- Ingerir para SQLite
 - Rodar uma pipeline de regras (nulos, estorno, cancelamento, conciliação)
 - Persistir resultados por job e permitir exportação para XLSX
 
-## O que é BASE A e BASE B
 - **BASE A (CONTÁBIL)**: representações de lançamentos contábeis (razão, débitos/créditos, montantes).
 - **BASE B (FISCAL)**: registros fiscais (notas fiscais, valores, indicadores de cancelamento).
 
 ## O que é uma conciliação
-Processo que combina linhas entre A e B usando chaves configuráveis e compara valores para classificar cenários (conciliado, diferença imaterial, diferença material, não encontrado, conciliado por estorno, NF cancelada).
 
 ## Fluxo macro
-1. Upload de bases (`POST /bases`)
 2. Ingestão para SQLite (`POST /bases/:id/ingest`)
 3. Pipeline de processamento (vários steps)
 4. Execução por job (`POST /conciliacoes`)
-5. Exportação do resultado para XLSX (`POST /conciliacoes/:id/exportar` / `GET /conciliacoes/:id/download`)
 
 ---
 
-# 2. Arquitetura
 
 Monorepo com os workspaces:
 
@@ -52,13 +37,9 @@ Monorepo com os workspaces:
 - `packages/pipeline` — engine da pipeline: `PipelineContext`, `PipelineStep`, e steps implementados.
 - `packages/domain` — (tipos / domínio) placeholder.
 - `packages/shared` — (utilitários) placeholder.
-
 ### SQLite
 - Banco local em arquivo: `apps/api/db/dev.sqlite3`.
 - Cada base ingerida vira uma tabela: `base_{id}`.
-- Tabelas auxiliares: `bases`, `configs_*`, `jobs_conciliacao`, `conciliacao_marks`, `conciliacao_result_{jobId}`.
-
-### PRAGMAs e tuning
 PRAGMAs aplicados em `apps/api/src/db/knex.ts` no startup (com overrides por env vars):
 
 - `journal_mode = WAL` — melhora concorrência leitura/escrita em operações de bulk.

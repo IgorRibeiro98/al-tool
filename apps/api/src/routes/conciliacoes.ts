@@ -4,6 +4,7 @@ import pipeline from '../pipeline/integration';
 import * as jobsRepo from '../repos/jobsRepository';
 import * as exportService from '../services/ConciliacaoExportService';
 import path from 'path';
+import fs from 'fs/promises';
 
 const router = Router();
 
@@ -17,12 +18,26 @@ router.post('/', async (req: Request, res: Response) => {
         const cfg = await db('configs_conciliacao').where({ id: cfgId }).first();
         if (!cfg) return res.status(404).json({ error: 'config conciliacao not found' });
 
-        // create job with PENDING
+        // fetch optional estorno and cancelamento configs to denormalize their names into job
+        let estornoNome: string | null = null;
+        let cancelamentoNome: string | null = null;
+        if (configEstornoId) {
+            const e = await db('configs_estorno').where({ id: Number(configEstornoId) }).first();
+            estornoNome = e ? e.nome || null : null;
+        }
+        if (configCancelamentoId) {
+            const c = await db('configs_cancelamento').where({ id: Number(configCancelamentoId) }).first();
+            cancelamentoNome = c ? c.nome || null : null;
+        }
+
+        // create job with PENDING; denormalize config names for easy display
         const jobRow = await jobsRepo.createJob({
-            nome: nome || `Job for config ${cfgId}`,
+            nome: nome || cfg.nome || `Job for config ${cfgId}`,
             config_conciliacao_id: cfgId,
             config_estorno_id: configEstornoId ?? null,
             config_cancelamento_id: configCancelamentoId ?? null,
+            config_estorno_nome: estornoNome,
+            config_cancelamento_nome: cancelamentoNome,
             status: 'PENDING',
             erro: null,
             created_at: db.fn.now(),
@@ -231,6 +246,44 @@ router.get('/:id/resultado', async (req: Request, res: Response) => {
     } catch (err: any) {
         console.error(err);
         res.status(500).json({ error: 'Erro ao buscar resultado' });
+    }
+});
+
+// DELETE /conciliacoes/:id - delete job, its result table and exported file
+router.delete('/:id', async (req: Request, res: Response) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id || Number.isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+
+        const job = await jobsRepo.getJobById(id);
+        if (!job) return res.status(404).json({ error: 'job not found' });
+
+        // attempt to delete exported file if exists
+        try {
+            if (job.arquivo_exportado) {
+                const abs = path.resolve(process.cwd(), job.arquivo_exportado);
+                await fs.unlink(abs).catch(() => { /* ignore */ });
+            }
+        } catch (e) {
+            console.error('Error deleting exported file', e);
+        }
+
+        // drop result table if exists
+        const resultTable = `conciliacao_result_${id}`;
+        try {
+            const exists = await db.schema.hasTable(resultTable);
+            if (exists) await db.schema.dropTableIfExists(resultTable);
+        } catch (e) {
+            console.error('Error dropping result table', e);
+        }
+
+        // delete job row
+        await db('jobs_conciliacao').where({ id }).del();
+
+        return res.json({ success: true });
+    } catch (err: any) {
+        console.error(err);
+        res.status(500).json({ error: 'Erro ao deletar conciliacao' });
     }
 });
 

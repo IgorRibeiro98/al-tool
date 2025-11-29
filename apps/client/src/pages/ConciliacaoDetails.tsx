@@ -1,11 +1,21 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusChip } from "@/components/StatusChip";
-import { ArrowLeft, Download } from "lucide-react";
+import { ArrowLeft, Download, Trash } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { useEffect, useState } from 'react';
-import { getConciliacao, fetchConciliacaoResultado, exportConciliacao } from '@/services/conciliacaoService';
+import { getConciliacao, fetchConciliacaoResultado, exportConciliacao, deleteConciliacao } from '@/services/conciliacaoService';
+import {
+    AlertDialog,
+    AlertDialogContent,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogAction,
+    AlertDialogCancel,
+} from '@/components/ui/alert-dialog';
 
 
 
@@ -21,6 +31,8 @@ const ConciliacaoDetails = () => {
     const [totalPages, setTotalPages] = useState<number>(1);
     const [loading, setLoading] = useState<boolean>(true);
     const [exporting, setExporting] = useState<boolean>(false);
+    const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+    const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
 
     useEffect(() => {
         if (!id) return;
@@ -119,10 +131,15 @@ const ConciliacaoDetails = () => {
                     <h1 className="text-3xl font-bold">Detalhes da Conciliação</h1>
                     <p className="text-muted-foreground">Conciliação Janeiro 2024</p>
                 </div>
-                <Button onClick={handleExport}>
-                    <Download className="mr-2 h-4 w-4" />
-                    Exportar ZIP
-                </Button>
+                <div className="flex items-center gap-2">
+                    <Button onClick={handleExport}>
+                        <Download className="mr-2 h-4 w-4" />
+                        Exportar ZIP
+                    </Button>
+                    <Button variant="destructive" size="icon" onClick={() => { if (!id) return; setPendingDeleteId(Number(id)); setDeleteDialogOpen(true); }} aria-label="Deletar conciliação">
+                        <Trash className="h-4 w-4" />
+                    </Button>
+                </div>
             </div>
 
             <div className="grid gap-4 md:grid-cols-2">
@@ -141,11 +158,11 @@ const ConciliacaoDetails = () => {
                         </div>
                         <div>
                             <p className="text-sm text-muted-foreground">Data de Criação</p>
-                            <p className="font-medium">{job?.created_at ?? '-'}</p>
+                            <p className="font-medium">{job?.created_at ? new Date(job.created_at).toLocaleDateString('pt-BR') : '-'}</p>
                         </div>
                         <div>
                             <p className="text-sm text-muted-foreground">Data de Conclusão</p>
-                            <p className="font-medium">{job?.updated_at ?? '-'}</p>
+                            <p className="font-medium">{job?.updated_at ? new Date(job.updated_at).toLocaleDateString('pt-BR') : '-'}</p>
                         </div>
                     </CardContent>
                 </Card>
@@ -242,6 +259,31 @@ const ConciliacaoDetails = () => {
                     </div>
                 </CardContent>
             </Card>
+            <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Confirmação de Exclusão</AlertDialogTitle>
+                        <AlertDialogDescription>Deseja realmente deletar esta conciliação e seus resultados? Esta ação não pode ser desfeita.</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel onClick={() => { setDeleteDialogOpen(false); setPendingDeleteId(null); }}>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction onClick={async () => {
+                            if (!pendingDeleteId) return;
+                            try {
+                                await deleteConciliacao(pendingDeleteId);
+                                toast.success('Conciliação deletada');
+                                navigate('/conciliacoes');
+                            } catch (e) {
+                                console.error('Failed to delete conciliacao', e);
+                                toast.error('Falha ao deletar conciliação');
+                            } finally {
+                                setDeleteDialogOpen(false);
+                                setPendingDeleteId(null);
+                            }
+                        }}>Excluir</AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </div>
     );
 };

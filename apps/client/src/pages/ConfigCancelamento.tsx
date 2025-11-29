@@ -37,7 +37,7 @@ const ConfigCancelamento = () => {
                 if (!mounted) return;
                 const cfgs = cfgResp.data || [];
                 setConfigs(cfgs);
-                const bases = basesResp.data || [];
+                const bases = basesResp.data.data || [];
                 const map: Record<number, string> = {};
                 bases.forEach((b: any) => { if (b.id) map[b.id] = b.nome ?? String(b.id); });
                 setBasesMap(map);

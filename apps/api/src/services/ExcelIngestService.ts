@@ -30,6 +30,78 @@ export class ExcelIngestService {
         }
     }
 
+    private async tryRemoveFileCandidate(baseId: number, relOrAbs: string) {
+        if (!relOrAbs) return false;
+        const tried: string[] = [];
+        try {
+            const candidates: string[] = [];
+            if (path.isAbsolute(relOrAbs)) {
+                candidates.push(relOrAbs);
+            } else {
+                candidates.push(path.resolve(process.cwd(), relOrAbs));
+                candidates.push(path.resolve(process.cwd(), '..', relOrAbs));
+                candidates.push(path.resolve(process.cwd(), '..', '..', relOrAbs));
+                candidates.push(path.resolve(__dirname, '..', '..', relOrAbs));
+                candidates.push(path.join(process.cwd(), 'apps', 'api', relOrAbs));
+                candidates.push(path.join(process.cwd(), relOrAbs.replace(/^\/+/, '')));
+            }
+
+            for (const c of candidates) {
+                if (!c) continue;
+                tried.push(c);
+                try {
+                    // check existence
+                    await fs.stat(c as any);
+                    // exists, attempt unlink
+                    await fs.unlink(c as any);
+                    await this.appendIngestLog('Removed ingest file', { baseId, requested: relOrAbs, removedPath: c });
+                    return true;
+                } catch (err) {
+                    // not found or unlink failed — continue
+                    continue;
+                }
+            }
+            // final attempt: try relOrAbs as-is
+            try {
+                await fs.stat(relOrAbs as any);
+                await fs.unlink(relOrAbs as any);
+                await this.appendIngestLog('Removed ingest file', { baseId, requested: relOrAbs, removedPath: relOrAbs });
+                return true;
+            } catch (e) {
+                // nothing
+            }
+        } catch (e) {
+            await this.appendIngestLog('Error while trying file removal candidates', { baseId, requested: relOrAbs, tried, error: (e as any && ((e as any).stack || (e as any).message)) || String(e) });
+        }
+        await this.appendIngestLog('Ingest cleanup: file not found', { baseId, requested: relOrAbs, tried });
+        return false;
+    }
+
+    private async performPostIngestCleanup(baseId: number, base: any) {
+        try {
+            const toRemove: string[] = [];
+            if (base.arquivo_jsonl_path) toRemove.push(base.arquivo_jsonl_path);
+            if (base.arquivo_caminho) toRemove.push(base.arquivo_caminho);
+
+            for (const relOrAbs of toRemove) {
+                try {
+                    if (!relOrAbs) continue;
+                    await this.tryRemoveFileCandidate(baseId, relOrAbs);
+                } catch (e) {
+                    await this.appendIngestLog('Error deleting ingest file', { baseId, file: relOrAbs, error: e && (((e as any).stack) || ((e as any).message) || String(e)) });
+                }
+            }
+
+            try {
+                await db('bases').where({ id: baseId }).update({ arquivo_jsonl_path: null, arquivo_caminho: null });
+            } catch (e) {
+                await this.appendIngestLog('Error clearing arquivo paths in DB', { baseId, error: e && (((e as any).stack) || ((e as any).message) || String(e)) });
+            }
+        } catch (e) {
+            await this.appendIngestLog('Error in post-ingest cleanup', { baseId, error: e && (((e as any).stack) || ((e as any).message) || String(e)) });
+        }
+    }
+
     async ingest(baseId: number): Promise<IngestResult> {
         const base = await db('bases').where({ id: baseId }).first();
         if (!base) throw new Error('Base not found');
@@ -229,6 +301,9 @@ export class ExcelIngestService {
             await db('bases').where({ id: baseId }).update({ tabela_sqlite: tableName });
 
             try { const idxHelpers = await import('../db/indexHelpers'); await idxHelpers.ensureIndicesForBaseFromConfigs(baseId); } catch (e: any) { await this.appendIngestLog('Error ensuring indices for base after ingest', { baseId, error: e && (e.stack || e.message || String(e)) }); }
+
+            // Perform synchronous post-ingest cleanup (delete files, clear DB fields)
+            await this.performPostIngestCleanup(baseId, base);
 
             return { tableName, rowsInserted: inserted };
         }
@@ -454,6 +529,9 @@ export class ExcelIngestService {
         } catch (e) {
             await this.appendIngestLog('Error ensuring indices for base after ingest', { baseId, error: e && (e instanceof Error ? (e.stack || e.message) : String(e)) });
         }
+
+        // Perform synchronous post-ingest cleanup (delete files, clear DB fields)
+        await this.performPostIngestCleanup(baseId, base);
 
         return { tableName, rowsInserted: inserted };
     }

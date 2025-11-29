@@ -145,7 +145,19 @@ export async function exportJobResultToZip(jobId: number) {
     // ensure exports dir
     const exportsDir = path.resolve(process.cwd(), 'storage', 'exports');
     await fs.mkdir(exportsDir, { recursive: true });
-    const zipFilename = `conciliacao_${jobId}.zip`;
+    // Use the job name as the zip filename (sanitized). Fallback to conciliacao_{jobId}.
+    const rawBaseName = (job.nome && String(job.nome).trim()) ? String(job.nome).trim() : `conciliacao_${jobId}`;
+    // normalize and remove diacritics, then remove unsafe chars and replace spaces with underscore
+    let safeBase = rawBaseName;
+    try {
+        safeBase = rawBaseName.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+    } catch (e) {
+        // ignore normalization errors and use rawBaseName
+        safeBase = rawBaseName;
+    }
+    // remove any character that's not alphanumeric, dash, underscore, dot or space; then collapse spaces to underscore
+    const sanitized = (safeBase || rawBaseName).replace(/[^a-zA-Z0-9\-_. ]+/g, '').replace(/\s+/g, '_');
+    const zipFilename = `${sanitized}.zip`;
     const zipAbs = path.join(exportsDir, zipFilename);
 
     // create zip using archiver and write to disk

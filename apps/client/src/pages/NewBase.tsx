@@ -19,7 +19,15 @@ const schema = z.object({
     nome: z.string().min(1, { message: 'Nome é obrigatório' }),
     periodo: z.string().min(1, { message: 'Período é obrigatório' }),
     arquivo: z.instanceof(File, { message: 'Arquivo é obrigatório' }),
-    header_linha_inicial: z.number().min(1).optional().default(1),
+    header_linha_inicial: z.preprocess((val) => {
+        if (typeof val === 'string') {
+            const s = val.trim();
+            if (s === '') return undefined;
+            const n = Number(s);
+            return Number.isNaN(n) ? val : n;
+        }
+        return val;
+    }, z.number().min(1).default(1)),
     header_coluna_inicial_letter: z.string().min(1).optional().default('A'),
 });
 
@@ -32,6 +40,10 @@ const NewBase = () => {
     const form = useForm<FormValues>({
         resolver: zodResolver(schema),
         defaultValues: {
+            tipo: undefined as any,
+            nome: '',
+            periodo: '',
+            arquivo: undefined as any,
             header_linha_inicial: 1,
             header_coluna_inicial_letter: 'A',
         },
@@ -103,7 +115,7 @@ const NewBase = () => {
                                     <FormItem>
                                         <FormLabel>Tipo *</FormLabel>
                                         <FormControl>
-                                            <Select value={field.value} onValueChange={field.onChange}>
+                                            <Select value={field.value ?? ''} onValueChange={(v) => field.onChange(v || undefined)}>
                                                 <SelectTrigger>
                                                     <SelectValue placeholder="Selecione o tipo" />
                                                 </SelectTrigger>
@@ -125,7 +137,11 @@ const NewBase = () => {
                                     <FormItem>
                                         <FormLabel>Nome *</FormLabel>
                                         <FormControl>
-                                            <Input placeholder="Ex: Base Contábil Janeiro" {...field} />
+                                            <Input
+                                                placeholder="Ex: Base Contábil Janeiro"
+                                                value={field.value ?? ''}
+                                                onChange={(e) => field.onChange(e.target.value)}
+                                            />
                                         </FormControl>
                                         <FormDescription>Nome identificador da base</FormDescription>
                                         <FormMessage />
@@ -140,7 +156,7 @@ const NewBase = () => {
                                     <FormItem>
                                         <FormLabel>Período *</FormLabel>
                                         <FormControl>
-                                            <Input placeholder="Ex: 01/2024" {...field} />
+                                            <Input placeholder="Ex: 01/2024" value={field.value ?? ''} onChange={(e) => field.onChange(e.target.value)} />
                                         </FormControl>
                                         <FormMessage />
                                     </FormItem>
@@ -193,7 +209,24 @@ const NewBase = () => {
                                             <FormItem>
                                                 <FormLabel>Linha inicial do cabeçalho</FormLabel>
                                                 <FormControl>
-                                                    <Input type="number" min={1} value={String(field.value ?? 1)} onChange={(e) => field.onChange(Number(e.target.value || 1))} />
+                                                    <Input
+                                                        type="text"
+                                                        value={field.value == null ? '' : String(field.value)}
+                                                        onFocus={(e) => {
+                                                            // clear the field for easy typing and select all
+                                                            (field.onChange as any)('');
+                                                            (e.target as HTMLInputElement).select();
+                                                        }}
+                                                        onChange={(e) => {
+                                                            (field.onChange as any)(e.target.value);
+                                                        }}
+                                                        onBlur={() => {
+                                                            const v = field.value as unknown;
+                                                            if (v == null || String(v).trim() === '') {
+                                                                (field.onChange as any)('1');
+                                                            }
+                                                        }}
+                                                    />
                                                 </FormControl>
                                                 <FormMessage />
                                             </FormItem>
@@ -208,7 +241,7 @@ const NewBase = () => {
                                             <FormItem>
                                                 <FormLabel>Coluna inicial do cabeçalho</FormLabel>
                                                 <FormControl>
-                                                    <Select value={field.value} onValueChange={field.onChange}>
+                                                    <Select value={field.value ?? ''} onValueChange={(v) => field.onChange(v || undefined)}>
                                                         <SelectTrigger>
                                                             <SelectValue />
                                                         </SelectTrigger>

@@ -29,7 +29,7 @@ services:
     environment:
       - DB_PATH=/home/app/apps/api/db/dev.sqlite3
       - POLL_INTERVAL=5
-      - INGESTS_DIR=/home/app/storage/ingests
+      - INGESTS_DIR=/home/app/apps/api/storage/ingests
     command: sh -c "pip install --no-cache-dir -r scripts/requirements.txt || true && python3 scripts/conversion_worker.py"
     depends_on:
       - api

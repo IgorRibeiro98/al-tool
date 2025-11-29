@@ -3,8 +3,31 @@ import db from '../db/knex';
 export type JobStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED';
 
 export async function createJob(payload: Partial<any>) {
-    const [id] = await db('jobs_conciliacao').insert(payload);
-    return await db('jobs_conciliacao').where({ id }).first();
+    try {
+        const [id] = await db('jobs_conciliacao').insert(payload);
+        return await db('jobs_conciliacao').where({ id }).first();
+    } catch (err: any) {
+        // If DB schema is missing denormalized columns (e.g., config_estorno_nome), try to add them and retry.
+        const msg = err && (err.message || String(err)) || '';
+        if (msg.includes('no such column') || msg.includes('no column named') || /no such column:/.test(msg)) {
+            // attempt to add common optional columns used by newer code paths
+            try {
+                await db.schema.table('jobs_conciliacao', t => {
+                    // add nullable textual columns if not present
+                    // use try/catch per column in case some already exist
+                    try { t.string('arquivo_exportado').nullable(); } catch (_) { }
+                    try { t.string('config_estorno_nome').nullable(); } catch (_) { }
+                    try { t.string('config_cancelamento_nome').nullable(); } catch (_) { }
+                });
+            } catch (addErr) {
+                // ignore and rethrow original error below
+            }
+            // retry insert once
+            const [id2] = await db('jobs_conciliacao').insert(payload);
+            return await db('jobs_conciliacao').where({ id: id2 }).first();
+        }
+        throw err;
+    }
 }
 
 export async function updateJobStatus(id: number, status: JobStatus, error?: string) {

@@ -28,15 +28,7 @@ export class EstornoBaseAStep implements PipelineStep {
     private async ensureMarksTable() {
         const exists = await this.db.schema.hasTable('conciliacao_marks');
         if (!exists) {
-            await this.db.schema.createTable('conciliacao_marks', table => {
-                table.increments('id').primary();
-                table.integer('base_id').notNullable();
-                table.integer('row_id').notNullable();
-                table.string('status').notNullable();
-                table.string('grupo').nullable();
-                table.string('chave').nullable();
-                table.timestamp('created_at').defaultTo(this.db.fn.now()).notNullable();
-            });
+            throw new Error("Missing DB table 'conciliacao_marks'. Run the API migrations (e.g. `npm --prefix apps/api run migrate`) to create required tables.");
         }
     }
 
