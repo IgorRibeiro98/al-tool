@@ -125,7 +125,7 @@ const Bases = () => {
                                         {base.conversion_status && base.conversion_status !== 'READY' && (
                                             <div className="ml-4">
                                                 {base.conversion_status === 'PENDING' && <span className="text-sm text-yellow-600">Aguardando conversão</span>}
-                                                {base.conversion_status === 'PROCESSING' && <span className="text-sm text-blue-600">Convertendo</span>}
+                                                {base.conversion_status === 'RUNNING' && <span className="text-sm text-blue-600">Convertendo</span>}
                                                 {base.conversion_status === 'FAILED' && <span className="text-sm text-red-600">Falha na conversão</span>}
                                             </div>
                                         )}

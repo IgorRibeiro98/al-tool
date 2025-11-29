@@ -136,11 +136,15 @@ const ConfigConciliacao = () => {
                                             <p className="font-medium">{basesMap[config.base_contabil_id] ?? String(config.base_contabil_id ?? '-')}</p>
                                             <p className="text-muted-foreground mt-2 mb-1">Chaves Contábeis</p>
                                             <div className="flex gap-1 flex-wrap">
-                                                {(config.chaves_contabil || []).map((chave: string) => (
-                                                    <Badge key={chave} variant="outline" className="font-mono text-xs">
-                                                        {chave}
-                                                    </Badge>
-                                                ))}
+                                                {config.chaves_contabil && typeof config.chaves_contabil === 'object' ? (
+                                                    Object.keys(config.chaves_contabil).map((k: string) => (
+                                                        <Badge key={k} variant="outline" className="font-mono text-xs">{k}</Badge>
+                                                    ))
+                                                ) : Array.isArray(config.chaves_contabil) ? (
+                                                    (config.chaves_contabil || []).map((chave: string) => (
+                                                        <Badge key={chave} variant="outline" className="font-mono text-xs">{chave}</Badge>
+                                                    ))
+                                                ) : null}
                                             </div>
                                         </div>
 
@@ -149,11 +153,15 @@ const ConfigConciliacao = () => {
                                             <p className="font-medium">{basesMap[config.base_fiscal_id] ?? String(config.base_fiscal_id ?? '-')}</p>
                                             <p className="text-muted-foreground mt-2 mb-1">Chaves Fiscais</p>
                                             <div className="flex gap-1 flex-wrap">
-                                                {(config.chaves_fiscal || []).map((chave: string) => (
-                                                    <Badge key={chave} variant="outline" className="font-mono text-xs">
-                                                        {chave}
-                                                    </Badge>
-                                                ))}
+                                                {config.chaves_fiscal && typeof config.chaves_fiscal === 'object' ? (
+                                                    Object.keys(config.chaves_fiscal).map((k: string) => (
+                                                        <Badge key={k} variant="outline" className="font-mono text-xs">{k}</Badge>
+                                                    ))
+                                                ) : Array.isArray(config.chaves_fiscal) ? (
+                                                    (config.chaves_fiscal || []).map((chave: string) => (
+                                                        <Badge key={chave} variant="outline" className="font-mono text-xs">{chave}</Badge>
+                                                    ))
+                                                ) : null}
                                             </div>
                                         </div>
                                     </div>

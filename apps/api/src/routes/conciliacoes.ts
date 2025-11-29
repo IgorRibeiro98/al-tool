@@ -225,24 +225,36 @@ router.get('/:id/resultado', async (req: Request, res: Response) => {
 
         const rows = await db(resultTable).select('*').orderBy('id', 'asc').limit(pageSize).offset(offset);
 
-        // parse JSON columns a_values and b_values
-        const data = rows.map((r: any) => ({
-            id: r.id,
-            job_id: r.job_id,
-            chave: r.chave,
-            status: r.status,
-            grupo: r.grupo,
-            a_row_id: r.a_row_id,
-            b_row_id: r.b_row_id,
-            value_a: r.value_a,
-            value_b: r.value_b,
-            difference: r.difference,
-            a_values: r.a_values ? safeJsonParse(r.a_values) : null,
-            b_values: r.b_values ? safeJsonParse(r.b_values) : null,
-            created_at: r.created_at
-        }));
+        // detect dynamic chave identifiers (CHAVE_1, CHAVE_2, ...)
+        let keyIds: string[] = [];
+        if (rows && rows.length > 0) {
+            keyIds = Object.keys(rows[0]).filter(k => /^CHAVE_\d+$/.test(k));
+        }
 
-        return res.json({ page, pageSize, total, totalPages, data });
+        // parse JSON columns a_values and b_values and include detected key columns
+        const data = rows.map((r: any) => {
+            const keyValues: Record<string, any> = {};
+            for (const k of keyIds) keyValues[k] = r[k];
+
+            return {
+                id: r.id,
+                job_id: r.job_id,
+                chave: r.chave,
+                status: r.status,
+                grupo: r.grupo,
+                a_row_id: r.a_row_id,
+                b_row_id: r.b_row_id,
+                value_a: r.value_a,
+                value_b: r.value_b,
+                difference: r.difference,
+                a_values: r.a_values ? safeJsonParse(r.a_values) : null,
+                b_values: r.b_values ? safeJsonParse(r.b_values) : null,
+                created_at: r.created_at,
+                ...keyValues
+            };
+        });
+
+        return res.json({ page, pageSize, total, totalPages, data, keys: keyIds });
     } catch (err: any) {
         console.error(err);
         res.status(500).json({ error: 'Erro ao buscar resultado' });

@@ -17,22 +17,39 @@ export async function exportJobResultToXlsx(jobId: number) {
     if (!hasTable) throw new Error('result table not found');
 
     const rows = await db(resultTable).select('*').orderBy('id', 'asc');
+    // parse chaves map to include dynamic key columns in export
+    const parseChaves = (raw: any) => {
+        try {
+            const p = raw ? JSON.parse(raw) : {};
+            if (Array.isArray(p)) return { CHAVE_1: p } as Record<string, string[]>;
+            if (p && typeof p === 'object') return p as Record<string, string[]>;
+            return {} as Record<string, string[]>;
+        } catch { return {} as Record<string, string[]>; }
+    };
 
-    // Prepare rows for sheet: include status, grupo, chave, value_a, value_b, difference, a_values, b_values
-    const sheetData = rows.map((r: any) => ({
-        id: r.id,
-        chave: r.chave,
-        status: r.status,
-        grupo: r.grupo,
-        a_row_id: r.a_row_id,
-        b_row_id: r.b_row_id,
-        value_a: r.value_a,
-        value_b: r.value_b,
-        difference: r.difference,
-        a_values: typeof r.a_values === 'string' ? r.a_values : JSON.stringify(r.a_values || null),
-        b_values: typeof r.b_values === 'string' ? r.b_values : JSON.stringify(r.b_values || null),
-        created_at: r.created_at
-    }));
+    const chavesContabil = parseChaves((await db('configs_conciliacao').where({ id: job.config_conciliacao_id }).first())?.chaves_contabil);
+    const chavesFiscal = parseChaves((await db('configs_conciliacao').where({ id: job.config_conciliacao_id }).first())?.chaves_fiscal);
+    const keyIdentifiers = Array.from(new Set([...Object.keys(chavesContabil || {}), ...Object.keys(chavesFiscal || {})]));
+
+    // Prepare rows for sheet: include dynamic key columns + status, grupo, chave, value_a, value_b, difference, a_values, b_values
+    const sheetData = rows.map((r: any) => {
+        const base: any = {
+            id: r.id,
+            chave: r.chave,
+            status: r.status,
+            grupo: r.grupo,
+            a_row_id: r.a_row_id,
+            b_row_id: r.b_row_id,
+            value_a: r.value_a,
+            value_b: r.value_b,
+            difference: r.difference,
+            a_values: typeof r.a_values === 'string' ? r.a_values : JSON.stringify(r.a_values || null),
+            b_values: typeof r.b_values === 'string' ? r.b_values : JSON.stringify(r.b_values || null),
+            created_at: r.created_at
+        };
+        for (const kid of keyIdentifiers) base[kid] = r[kid] ?? null;
+        return base;
+    });
 
     const ws = XLSX.utils.json_to_sheet(sheetData);
     const wb = XLSX.utils.book_new();
@@ -103,16 +120,31 @@ export async function exportJobResultToZip(jobId: number) {
         const sheetName = side === 'A' ? 'Base_A' : 'Base_B';
         const ws = workbook.addWorksheet(sheetName);
 
-        // write header
-        const finalHeaders = headers.concat(['status', 'chave', 'grupo']);
+        // write header: original headers + dynamic CHAVE columns + status/chave/grupo
+        const keyIds = (() => {
+            try {
+                const cfgRow = cfg;
+                const parseChavesLocal = (raw: any) => { try { const p = raw ? JSON.parse(raw) : {}; if (Array.isArray(p)) return { CHAVE_1: p }; if (p && typeof p === 'object') return p; return {}; } catch { return {}; } };
+                const kc = parseChavesLocal(cfgRow.chaves_contabil);
+                const kf = parseChavesLocal(cfgRow.chaves_fiscal);
+                return Array.from(new Set([...Object.keys(kc || {}), ...Object.keys(kf || {})]));
+            } catch { return []; }
+        })();
+
+        const keyHeaders = keyIds.map(k => k.replace('_', ' '));
+        const finalHeaders = headers.concat(keyHeaders, ['status', 'chave', 'grupo']);
         ws.addRow(finalHeaders).commit();
 
         // build select columns and left join to result table
         const selectCols = sqliteCols.map((c: string) => `${tableName}.${c}`);
         const joinCondition = side === 'A' ? `${resultTable}.a_row_id = ${tableName}.id` : `${resultTable}.b_row_id = ${tableName}.id`;
 
+        // include dynamic key columns from result table as aliases _{key}
+        const keyIdsForSelect = keyIds;
+        const keySelects = keyIdsForSelect.map(k => `${resultTable}.${k} as _${k}`);
+
         // use stream to avoid loading all rows in memory
-        const query = db.select(selectCols.concat([`${resultTable}.status as _status`, `${resultTable}.chave as _chave`, `${resultTable}.grupo as _grupo`]))
+        const query = db.select(selectCols.concat(keySelects).concat([`${resultTable}.status as _status`, `${resultTable}.chave as _chave`, `${resultTable}.grupo as _grupo`]))
             .from(tableName)
             .leftJoin(resultTable, db.raw(joinCondition))
             .orderBy(`${tableName}.id`, 'asc');
@@ -124,6 +156,8 @@ export async function exportJobResultToZip(jobId: number) {
                     const v = r[c];
                     return v === undefined ? null : v;
                 });
+                // append dynamic key columns
+                for (const kid of keyIdsForSelect) rowArr.push(r[`_${kid}`] ?? null);
                 rowArr.push(r._status ?? null);
                 rowArr.push(r._chave ?? null);
                 rowArr.push(r._grupo ?? null);

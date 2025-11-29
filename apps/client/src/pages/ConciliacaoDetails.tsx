@@ -26,6 +26,7 @@ const ConciliacaoDetails = () => {
     const [job, setJob] = useState<JobConciliacao | null>(null);
     const [metrics, setMetrics] = useState<any>(null);
     const [results, setResults] = useState<ConciliacaoResultRow[]>([]);
+    const [keyIds, setKeyIds] = useState<string[]>([]);
     const [page, setPage] = useState<number>(1);
     const [pageSize] = useState<number>(50);
     const [totalPages, setTotalPages] = useState<number>(1);
@@ -58,7 +59,16 @@ const ConciliacaoDetails = () => {
                 .then(r => {
                     if (!mounted) return;
                     const b = r.data;
-                    setResults(b.data || []);
+                    const rows = b.data || [];
+                    setResults(rows);
+                    // detect dynamic key identifiers (e.g. CHAVE_1, CHAVE_2)
+                    if (rows && rows.length > 0) {
+                        const first = rows[0];
+                        const keys = Object.keys(first).filter(k => /^CHAVE_\d+/.test(k));
+                        setKeyIds(keys);
+                    } else {
+                        setKeyIds([]);
+                    }
                     setPage(b.page || p);
                     setTotalPages(b.totalPages || 1);
                 })
@@ -101,7 +111,13 @@ const ConciliacaoDetails = () => {
         fetchConciliacaoResultado(Number(id), newPage, pageSize)
             .then(r => {
                 const b = r.data;
-                setResults(b.data || []);
+                const rows = b.data || [];
+                setResults(rows);
+                if (rows && rows.length > 0) {
+                    const first = rows[0];
+                    const keys = Object.keys(first).filter(k => /^CHAVE_\d+/.test(k));
+                    setKeyIds(keys);
+                } else setKeyIds([]);
                 setPage(b.page || newPage);
                 setTotalPages(b.totalPages || 1);
             })
@@ -119,6 +135,36 @@ const ConciliacaoDetails = () => {
         const vals = Object.values(values);
         if (vals.length === 0) return rowId ? `#${rowId}` : '-';
         return String(vals[0]);
+    };
+
+    const getPageList = () => {
+        const pages: Array<number | string> = [];
+        const total = totalPages || 1;
+        const maxButtons = 10; // total buttons shown (including first and last)
+
+        if (total <= maxButtons) {
+            for (let i = 1; i <= total; i++) pages.push(i);
+            return pages;
+        }
+
+        pages.push(1);
+
+        // compute a sliding window of middle pages (reserve first + last + possible ellipses)
+        const middleCount = maxButtons - 2; // exclude first and last
+        let start = Math.max(2, page - Math.floor((middleCount - 1) / 2));
+        let end = start + middleCount - 1;
+
+        if (end >= total) {
+            end = total - 1;
+            start = Math.max(2, end - (middleCount - 1));
+        }
+
+        if (start > 2) pages.push('...');
+        for (let i = start; i <= end; i++) pages.push(i);
+        if (end < total - 1) pages.push('...');
+
+        pages.push(total);
+        return pages;
     };
 
     return (
@@ -223,6 +269,9 @@ const ConciliacaoDetails = () => {
                                     <th className="px-4 py-3 text-right font-medium">Valor Contábil</th>
                                     <th className="px-4 py-3 text-left font-medium">Conta Fiscal</th>
                                     <th className="px-4 py-3 text-right font-medium">Valor Fiscal</th>
+                                    {keyIds.map(k => (
+                                        <th key={k} className="px-4 py-3 text-left font-medium">{k.replace('_', ' ')}</th>
+                                    ))}
                                     <th className="px-4 py-3 text-center font-medium">Status</th>
                                     <th className="px-4 py-3 text-center font-medium">Grupo</th>
                                     <th className="px-4 py-3 text-center font-medium">Chave</th>
@@ -239,6 +288,9 @@ const ConciliacaoDetails = () => {
                                         <td className="px-4 py-3 text-right font-mono">
                                             {row.value_b != null ? Number(row.value_b).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : "-"}
                                         </td>
+                                        {keyIds.map(k => (
+                                            <td key={k} className="px-4 py-3 font-mono">{row[k] ?? '-'}</td>
+                                        ))}
                                         <td className="px-4 py-3 text-center">
                                             <StatusChip status={String(row.status ?? '').toLowerCase() || 'pending'} label={String(row.status ?? '')} />
                                         </td>
@@ -250,12 +302,44 @@ const ConciliacaoDetails = () => {
                         </table>
                     </div>
 
-                    <div className="flex items-center justify-between mt-4">
-                        <div>
-                            <button className="btn" onClick={() => handlePageChange(Math.max(1, page - 1))} disabled={page <= 1 || loading}>Anterior</button>
-                            <button className="btn ml-2" onClick={() => handlePageChange(Math.min(totalPages, page + 1))} disabled={page >= totalPages || loading}>Próxima</button>
+                    <div className="flex items-center justify-center mt-4">
+                        <div className="flex items-center gap-3">
+                            <button
+                                onClick={() => handlePageChange(Math.max(1, page - 1))}
+                                disabled={page <= 1 || loading}
+                                className="inline-flex items-center px-3 py-1 rounded-md border text-sm"
+                                aria-label="Página anterior"
+                            >
+                                Anterior
+                            </button>
+
+                            <nav className="flex items-center gap-2" aria-label="Páginas">
+                                {getPageList().map((p, i) => (
+                                    p === '...' ? (
+                                        <span key={`dots-${i}`} className="px-2 text-sm text-muted-foreground">{p}</span>
+                                    ) : (
+                                        <button
+                                            key={p}
+                                            onClick={() => handlePageChange(Number(p))}
+                                            className={`inline-flex items-center justify-center min-w-[44px] px-3 h-9 text-sm rounded-md border ${Number(p) === page ? 'bg-primary text-white' : 'bg-stone text-white-700'}`}
+                                            aria-current={Number(p) === page ? 'page' : undefined}
+                                            disabled={loading}
+                                        >
+                                            {p}
+                                        </button>
+                                    )
+                                ))}
+                            </nav>
+
+                            <button
+                                onClick={() => handlePageChange(Math.min(totalPages, page + 1))}
+                                disabled={page >= totalPages || loading}
+                                className="inline-flex items-center px-3 py-1 rounded-md border text-sm"
+                                aria-label="Próxima página"
+                            >
+                                Próxima
+                            </button>
                         </div>
-                        <div className="text-sm text-muted-foreground">Página {page} de {totalPages}</div>
                     </div>
                 </CardContent>
             </Card>

@@ -68,9 +68,9 @@ declare global {
         nome?: string | null;
         base_contabil_id: number;
         base_fiscal_id: number;
-        // arrays representam nomes das colunas que compõem a chave
-        chaves_contabil: string[] | any;
-        chaves_fiscal: string[] | any;
+        // agora é um mapa de identificadores para array de nomes de colunas
+        chaves_contabil: Record<string, string[]> | any;
+        chaves_fiscal: Record<string, string[]> | any;
         coluna_conciliacao_contabil: string | null;
         coluna_conciliacao_fiscal: string | null;
         inverter_sinal_fiscal?: boolean;

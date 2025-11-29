@@ -21,8 +21,6 @@ const formSchema = z.object({
     nome: z.string().min(1, "Nome é obrigatório"),
     baseContabilId: z.string().min(1, "Base contábil é obrigatória"),
     baseFiscalId: z.string().min(1, "Base fiscal é obrigatória"),
-    chavesContabeis: z.array(z.string()).min(1, "Selecione ao menos uma chave contábil"),
-    chavesFiscais: z.array(z.string()).min(1, "Selecione ao menos uma chave fiscal"),
     colunaConciliacaoContabil: z.string().min(1, "Coluna de conciliação contábil é obrigatória"),
     colunaConciliacaoFiscal: z.string().min(1, "Coluna de conciliação fiscal é obrigatória"),
     inverterSinal: z.boolean().default(false),
@@ -37,6 +35,8 @@ const NewConfigConciliacao = () => {
     const [bases, setBases] = useState<Base[]>([]);
     const [colsContabeis, setColsContabeis] = useState<Array<{ excel?: string; sqlite?: string; index: string }>>([]);
     const [colsFiscais, setColsFiscais] = useState<Array<{ excel?: string; sqlite?: string; index: string }>>([]);
+    type ChaveCombination = { id: string; label: string; colunasContabil: string[]; colunasFiscal: string[] };
+    const [chaves, setChaves] = useState<ChaveCombination[]>([{ id: 'CHAVE_1', label: 'Chave 1', colunasContabil: [], colunasFiscal: [] }]);
 
     // Note: using Select for column autocomplete (like NewConfigEstorno)
 
@@ -46,8 +46,6 @@ const NewConfigConciliacao = () => {
             nome: "",
             baseContabilId: "",
             baseFiscalId: "",
-            chavesContabeis: [],
-            chavesFiscais: [],
             colunaConciliacaoContabil: "",
             colunaConciliacaoFiscal: "",
             inverterSinal: false,
@@ -104,12 +102,25 @@ const NewConfigConciliacao = () => {
 
     const onSubmit = async (data: FormValues) => {
         try {
+            // validate chaves combinations
+            if (!chaves || chaves.length === 0) throw new Error('Adicione ao menos uma combinação de chaves');
+            const hasValid = chaves.some(c => (c.colunasContabil?.length || 0) > 0 && (c.colunasFiscal?.length || 0) > 0);
+            if (!hasValid) throw new Error('Pelo menos uma combinação deve ter colunas contábeis e fiscais');
+
+            const chaves_contabil: Record<string, string[]> = {};
+            const chaves_fiscal: Record<string, string[]> = {};
+            chaves.forEach((c, idx) => {
+                const id = c.id || `CHAVE_${idx + 1}`;
+                chaves_contabil[id] = c.colunasContabil || [];
+                chaves_fiscal[id] = c.colunasFiscal || [];
+            });
+
             const payload = {
                 nome: data.nome,
                 base_contabil_id: Number(data.baseContabilId),
                 base_fiscal_id: Number(data.baseFiscalId),
-                chaves_contabil: data.chavesContabeis,
-                chaves_fiscal: data.chavesFiscais,
+                chaves_contabil,
+                chaves_fiscal,
                 coluna_conciliacao_contabil: data.colunaConciliacaoContabil,
                 coluna_conciliacao_fiscal: data.colunaConciliacaoFiscal,
                 inverter_sinal_fiscal: !!data.inverterSinal,
@@ -213,119 +224,109 @@ const NewConfigConciliacao = () => {
                                 />
                             </div>
 
-                            <FormField
-                                control={form.control}
-                                name="chavesContabeis"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <div className="mb-4">
-                                            <FormLabel className="text-base">Chaves Contábeis</FormLabel>
-                                            <FormDescription>
-                                                Selecione as colunas que serão usadas como chave na base contábil
-                                            </FormDescription>
-                                        </div>
-                                        <div>
-                                            <div className="flex items-center gap-2 flex-wrap mb-2">
-                                                {(field.value || []).map((val: string) => {
-                                                    const item = colsContabeis.find(c => (c.sqlite || c.excel || c.index) === val);
-                                                    const label = item?.excel || item?.sqlite || val;
-                                                    return (
-                                                        <Badge key={val} variant="secondary" className="flex items-center gap-2">
-                                                            <span className="font-mono text-xs">{label}</span>
-                                                            <button type="button" className="p-1" onClick={() => field.onChange((field.value || []).filter((v: string) => v !== val))}>
-                                                                <X className="h-3 w-3" />
-                                                            </button>
-                                                        </Badge>
-                                                    );
-                                                })}
-                                            </div>
+                            {/* Combinações de chaves: uma lista de combinações (CHAVE_1, CHAVE_2, ...) */}
+                            <div>
+                                <div className="mb-2 flex items-center justify-between">
+                                    <div>
+                                        <FormLabel className="text-base">Combinações de Chaves</FormLabel>
+                                        <FormDescription>Defina uma ou mais combinações de colunas entre Base A e Base B</FormDescription>
+                                    </div>
+                                    <div>
+                                        <Button type="button" onClick={() => {
+                                            const next = chaves.length + 1;
+                                            setChaves([...chaves, { id: `CHAVE_${next}`, label: `Chave ${next}`, colunasContabil: [], colunasFiscal: [] }]);
+                                        }}>Adicionar combinação de chave</Button>
+                                    </div>
+                                </div>
 
-                                            <div>
-                                                {colsContabeis.length > 0 ? (
-                                                    <FormControl>
-                                                        <Select onValueChange={(val) => {
-                                                            if (!(field.value || []).includes(val)) {
-                                                                field.onChange([...(field.value || []), val]);
-                                                            }
-                                                        }}>
-                                                            <SelectTrigger>
-                                                                <span>{(field.value || []).length > 0 ? `${(field.value || []).length} selecionadas` : 'Selecione colunas'}</span>
-                                                            </SelectTrigger>
-                                                            <SelectContent>
-                                                                {colsContabeis.map((c) => (
-                                                                    <SelectItem key={c.index} value={c.sqlite || c.excel || c.index}>{c.excel || c.sqlite || c.index}</SelectItem>
-                                                                ))}
-                                                            </SelectContent>
-                                                        </Select>
-                                                    </FormControl>
-                                                ) : (
-                                                    <FormControl>
-                                                        <Input placeholder="Escolha uma base para carregar colunas" />
-                                                    </FormControl>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
+                                <div className="space-y-4">
+                                    {chaves.map((c, idx) => (
+                                        <Card key={c.id}>
+                                            <CardHeader>
+                                                <div className="flex items-center justify-between w-full">
+                                                    <CardTitle>{c.label}</CardTitle>
+                                                    <div className="flex gap-2">
+                                                        {chaves.length > 1 && (
+                                                            <Button variant="destructive" size="sm" onClick={() => setChaves(chaves.filter(x => x.id !== c.id))}>Remover</Button>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </CardHeader>
+                                            <CardContent>
+                                                <div className="grid md:grid-cols-2 gap-4">
+                                                    <div>
+                                                        <FormLabel>Colunas contábeis (Base A)</FormLabel>
+                                                        <div className="flex flex-wrap gap-2 my-2">
+                                                            {(c.colunasContabil || []).map(v => {
+                                                                const item = colsContabeis.find(x => (x.sqlite || x.excel || x.index) === v);
+                                                                const label = item?.excel || item?.sqlite || v;
+                                                                return (
+                                                                    <Badge key={v} variant="secondary" className="flex items-center gap-2">
+                                                                        <span className="font-mono text-xs">{label}</span>
+                                                                        <button type="button" className="p-1" onClick={() => setChaves(chaves.map(ch => ch.id === c.id ? { ...ch, colunasContabil: (ch.colunasContabil || []).filter(x => x !== v) } : ch))}>
+                                                                            <X className="h-3 w-3" />
+                                                                        </button>
+                                                                    </Badge>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                        {colsContabeis.length > 0 ? (
+                                                            <Select onValueChange={(val) => {
+                                                                setChaves(chaves.map(ch => ch.id === c.id ? { ...ch, colunasContabil: (ch.colunasContabil || []).includes(val) ? ch.colunasContabil : [...(ch.colunasContabil || []), val] } : ch));
+                                                            }}>
+                                                                <SelectTrigger>
+                                                                    <SelectValue placeholder="Selecione colunas" />
+                                                                </SelectTrigger>
+                                                                <SelectContent>
+                                                                    {colsContabeis.map((col) => (
+                                                                        <SelectItem key={col.index} value={col.sqlite || col.excel || col.index}>{col.excel || col.sqlite || col.index}</SelectItem>
+                                                                    ))}
+                                                                </SelectContent>
+                                                            </Select>
+                                                        ) : (
+                                                            <Input placeholder="Escolha a base para carregar colunas" />
+                                                        )}
+                                                    </div>
 
-                            <FormField
-                                control={form.control}
-                                name="chavesFiscais"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <div className="mb-4">
-                                            <FormLabel className="text-base">Chaves Fiscais</FormLabel>
-                                            <FormDescription>
-                                                Selecione as colunas que serão usadas como chave na base fiscal
-                                            </FormDescription>
-                                        </div>
-                                        <div>
-                                            <div className="flex items-center gap-2 flex-wrap mb-2">
-                                                {(field.value || []).map((val: string) => {
-                                                    const item = colsFiscais.find(c => (c.sqlite || c.excel || c.index) === val);
-                                                    const label = item?.excel || item?.sqlite || val;
-                                                    return (
-                                                        <Badge key={val} variant="secondary" className="flex items-center gap-2">
-                                                            <span className="font-mono text-xs">{label}</span>
-                                                            <button type="button" className="p-1" onClick={() => field.onChange((field.value || []).filter((v: string) => v !== val))}>
-                                                                <X className="h-3 w-3" />
-                                                            </button>
-                                                        </Badge>
-                                                    );
-                                                })}
-                                            </div>
-
-                                            <div>
-                                                {colsFiscais.length > 0 ? (
-                                                    <FormControl>
-                                                        <Select onValueChange={(val) => {
-                                                            if (!(field.value || []).includes(val)) {
-                                                                field.onChange([...(field.value || []), val]);
-                                                            }
-                                                        }}>
-                                                            <SelectTrigger>
-                                                                <span>{(field.value || []).length > 0 ? `${(field.value || []).length} selecionadas` : 'Selecione colunas'}</span>
-                                                            </SelectTrigger>
-                                                            <SelectContent>
-                                                                {colsFiscais.map((c) => (
-                                                                    <SelectItem key={c.index} value={c.sqlite || c.excel || c.index}>{c.excel || c.sqlite || c.index}</SelectItem>
-                                                                ))}
-                                                            </SelectContent>
-                                                        </Select>
-                                                    </FormControl>
-                                                ) : (
-                                                    <FormControl>
-                                                        <Input placeholder="Escolha uma base para carregar colunas" />
-                                                    </FormControl>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
+                                                    <div>
+                                                        <FormLabel>Colunas fiscais (Base B)</FormLabel>
+                                                        <div className="flex flex-wrap gap-2 my-2">
+                                                            {(c.colunasFiscal || []).map(v => {
+                                                                const item = colsFiscais.find(x => (x.sqlite || x.excel || x.index) === v);
+                                                                const label = item?.excel || item?.sqlite || v;
+                                                                return (
+                                                                    <Badge key={v} variant="secondary" className="flex items-center gap-2">
+                                                                        <span className="font-mono text-xs">{label}</span>
+                                                                        <button type="button" className="p-1" onClick={() => setChaves(chaves.map(ch => ch.id === c.id ? { ...ch, colunasFiscal: (ch.colunasFiscal || []).filter(x => x !== v) } : ch))}>
+                                                                            <X className="h-3 w-3" />
+                                                                        </button>
+                                                                    </Badge>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                        {colsFiscais.length > 0 ? (
+                                                            <Select onValueChange={(val) => {
+                                                                setChaves(chaves.map(ch => ch.id === c.id ? { ...ch, colunasFiscal: (ch.colunasFiscal || []).includes(val) ? ch.colunasFiscal : [...(ch.colunasFiscal || []), val] } : ch));
+                                                            }}>
+                                                                <SelectTrigger>
+                                                                    <SelectValue placeholder="Selecione colunas" />
+                                                                </SelectTrigger>
+                                                                <SelectContent>
+                                                                    {colsFiscais.map((col) => (
+                                                                        <SelectItem key={col.index} value={col.sqlite || col.excel || col.index}>{col.excel || col.sqlite || col.index}</SelectItem>
+                                                                    ))}
+                                                                </SelectContent>
+                                                            </Select>
+                                                        ) : (
+                                                            <Input placeholder="Escolha a base para carregar colunas" />
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </CardContent>
+                                        </Card>
+                                    ))}
+                                </div>
+                            </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <FormField
