@@ -7,6 +7,7 @@ import { ArrowLeft } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useEffect, useState } from 'react';
+import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -72,122 +73,124 @@ const NewConciliacao = () => {
     };
 
     return (
-        <div className="space-y-6">
-            <div className="flex items-center gap-4">
-                <Button variant="ghost" size="icon" onClick={() => navigate("/conciliacoes")}>
-                    <ArrowLeft className="h-4 w-4" />
-                </Button>
-                <div>
-                    <h1 className="text-3xl font-bold">Nova Conciliação</h1>
-                    <p className="text-muted-foreground">Configure um novo job de conciliação</p>
+        <PageSkeletonWrapper loading={loading}>
+            <div className="space-y-6">
+                <div className="flex items-center gap-4">
+                    <Button variant="ghost" size="icon" onClick={() => navigate("/conciliacoes")}>
+                        <ArrowLeft className="h-4 w-4" />
+                    </Button>
+                    <div>
+                        <h1 className="text-3xl font-bold">Nova Conciliação</h1>
+                        <p className="text-muted-foreground">Configure um novo job de conciliação</p>
+                    </div>
                 </div>
+
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Configuração do Job</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <Form {...form}>
+                            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+                                <FormField
+                                    control={control}
+                                    name="nome"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Nome do Job *</FormLabel>
+                                            <FormControl>
+                                                <Input placeholder="Ex: Conciliação Janeiro 2024" {...field} />
+                                            </FormControl>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <FormField
+                                    control={control}
+                                    name="configConciliacaoId"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Configuração de Conciliação *</FormLabel>
+                                            <FormControl>
+                                                <Select value={field.value ? String(field.value) : ''} onValueChange={(v) => field.onChange(v ? Number(v) : undefined)}>
+                                                    <SelectTrigger>
+                                                        <SelectValue placeholder="Selecione a configuração" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        {configs.map((c) => (
+                                                            <SelectItem key={c.id} value={String(c.id)}>{c.nome}</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </FormControl>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <FormField
+                                    control={control}
+                                    name="configEstornoId"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Configuração de Estorno (Opcional)</FormLabel>
+                                            <FormControl>
+                                                <Select value={field.value != null ? String(field.value) : 'none'} onValueChange={(v) => field.onChange(v === 'none' ? null : Number(v))}>
+                                                    <SelectTrigger>
+                                                        <SelectValue placeholder="Nenhuma" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="none">Nenhuma</SelectItem>
+                                                        {estornos.map((e) => (
+                                                            <SelectItem key={e.id} value={String(e.id)}>{e.nome}</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </FormControl>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <FormField
+                                    control={control}
+                                    name="configCancelamentoId"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Configuração de Cancelamento (Opcional)</FormLabel>
+                                            <FormControl>
+                                                <Select value={field.value != null ? String(field.value) : 'none'} onValueChange={(v) => field.onChange(v === 'none' ? null : Number(v))}>
+                                                    <SelectTrigger>
+                                                        <SelectValue placeholder="Nenhuma" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="none">Nenhuma</SelectItem>
+                                                        {cancelamentos.map((c) => (
+                                                            <SelectItem key={c.id} value={String(c.id)}>{c.nome}</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </FormControl>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <div className="flex gap-3 justify-end pt-4">
+                                    <Button type="button" variant="outline" onClick={() => navigate("/conciliacoes")}>
+                                        Cancelar
+                                    </Button>
+                                    <Button type="submit">
+                                        Criar Conciliação
+                                    </Button>
+                                </div>
+                            </form>
+                        </Form>
+                    </CardContent>
+                </Card>
             </div>
-
-            <Card>
-                <CardHeader>
-                    <CardTitle>Configuração do Job</CardTitle>
-                </CardHeader>
-                <CardContent>
-                    <Form {...form}>
-                        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-                            <FormField
-                                control={control}
-                                name="nome"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Nome do Job *</FormLabel>
-                                        <FormControl>
-                                            <Input placeholder="Ex: Conciliação Janeiro 2024" {...field} />
-                                        </FormControl>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-
-                            <FormField
-                                control={control}
-                                name="configConciliacaoId"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Configuração de Conciliação *</FormLabel>
-                                        <FormControl>
-                                            <Select value={field.value ? String(field.value) : ''} onValueChange={(v) => field.onChange(v ? Number(v) : undefined)}>
-                                                <SelectTrigger>
-                                                    <SelectValue placeholder="Selecione a configuração" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    {configs.map((c) => (
-                                                        <SelectItem key={c.id} value={String(c.id)}>{c.nome}</SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
-                                        </FormControl>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-
-                            <FormField
-                                control={control}
-                                name="configEstornoId"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Configuração de Estorno (Opcional)</FormLabel>
-                                        <FormControl>
-                                            <Select value={field.value != null ? String(field.value) : 'none'} onValueChange={(v) => field.onChange(v === 'none' ? null : Number(v))}>
-                                                <SelectTrigger>
-                                                    <SelectValue placeholder="Nenhuma" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="none">Nenhuma</SelectItem>
-                                                    {estornos.map((e) => (
-                                                        <SelectItem key={e.id} value={String(e.id)}>{e.nome}</SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
-                                        </FormControl>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-
-                            <FormField
-                                control={control}
-                                name="configCancelamentoId"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Configuração de Cancelamento (Opcional)</FormLabel>
-                                        <FormControl>
-                                            <Select value={field.value != null ? String(field.value) : 'none'} onValueChange={(v) => field.onChange(v === 'none' ? null : Number(v))}>
-                                                <SelectTrigger>
-                                                    <SelectValue placeholder="Nenhuma" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="none">Nenhuma</SelectItem>
-                                                    {cancelamentos.map((c) => (
-                                                        <SelectItem key={c.id} value={String(c.id)}>{c.nome}</SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
-                                        </FormControl>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-
-                            <div className="flex gap-3 justify-end pt-4">
-                                <Button type="button" variant="outline" onClick={() => navigate("/conciliacoes")}>
-                                    Cancelar
-                                </Button>
-                                <Button type="submit">
-                                    Criar Conciliação
-                                </Button>
-                            </div>
-                        </form>
-                    </Form>
-                </CardContent>
-            </Card>
-        </div>
+        </PageSkeletonWrapper>
     );
 };
 

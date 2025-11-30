@@ -7,13 +7,18 @@ function isStringArray(v: any) {
     return Array.isArray(v) && v.every(x => typeof x === 'string');
 }
 
+function isChavesMap(v: any) {
+    if (!v || typeof v !== 'object') return false;
+    return Object.values(v).every((arr: any) => Array.isArray(arr) && arr.every((x: any) => typeof x === 'string'));
+}
+
 function validatePayload(payload: any) {
     const errors: string[] = [];
     if (!payload.nome || typeof payload.nome !== 'string') errors.push('nome is required and must be string');
     if (payload.base_contabil_id === undefined || typeof payload.base_contabil_id !== 'number' || Number.isNaN(payload.base_contabil_id)) errors.push('base_contabil_id is required and must be number');
     if (payload.base_fiscal_id === undefined || typeof payload.base_fiscal_id !== 'number' || Number.isNaN(payload.base_fiscal_id)) errors.push('base_fiscal_id is required and must be number');
-    if (!isStringArray(payload.chaves_contabil)) errors.push('chaves_contabil is required and must be array of strings');
-    if (!isStringArray(payload.chaves_fiscal)) errors.push('chaves_fiscal is required and must be array of strings');
+    if (!(isStringArray(payload.chaves_contabil) || isChavesMap(payload.chaves_contabil))) errors.push('chaves_contabil is required and must be array of strings or map of string[]');
+    if (!(isStringArray(payload.chaves_fiscal) || isChavesMap(payload.chaves_fiscal))) errors.push('chaves_fiscal is required and must be array of strings or map of string[]');
     if (!payload.coluna_conciliacao_contabil || typeof payload.coluna_conciliacao_contabil !== 'string') errors.push('coluna_conciliacao_contabil is required and must be string');
     if (!payload.coluna_conciliacao_fiscal || typeof payload.coluna_conciliacao_fiscal !== 'string') errors.push('coluna_conciliacao_fiscal is required and must be string');
     if (payload.inverter_sinal_fiscal !== undefined && typeof payload.inverter_sinal_fiscal !== 'boolean') errors.push('inverter_sinal_fiscal must be boolean if provided');
@@ -23,8 +28,18 @@ function validatePayload(payload: any) {
 
 function parseRow(row: any) {
     const out = { ...row };
-    try { out.chaves_contabil = row.chaves_contabil ? JSON.parse(row.chaves_contabil) : []; } catch { out.chaves_contabil = []; }
-    try { out.chaves_fiscal = row.chaves_fiscal ? JSON.parse(row.chaves_fiscal) : []; } catch { out.chaves_fiscal = []; }
+    const parseChaves = (raw: any) => {
+        try {
+            const p = raw ? JSON.parse(raw) : {};
+            if (Array.isArray(p)) return { CHAVE_1: p };
+            if (p && typeof p === 'object') return p;
+            return {};
+        } catch {
+            return {};
+        }
+    };
+    out.chaves_contabil = parseChaves(row.chaves_contabil);
+    out.chaves_fiscal = parseChaves(row.chaves_fiscal);
     return out;
 }
 

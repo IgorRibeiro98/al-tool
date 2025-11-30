@@ -10,6 +10,7 @@ import { useForm } from "react-hook-form";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { useEffect, useState } from 'react';
+import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import {
     AlertDialog,
     AlertDialogContent,
@@ -175,217 +176,219 @@ const EditConfigEstorno = () => {
     };
 
     return (
-        <div className="space-y-6">
-            <div className="flex items-center gap-4">
-                <Button variant="ghost" size="icon" onClick={() => navigate('/configs/estorno')}>
-                    <ArrowLeft className="h-5 w-5" />
-                </Button>
-                <div>
-                    <h1 className="text-3xl font-bold">Editar Configuração de Estorno</h1>
-                    <p className="text-muted-foreground">Altere os parâmetros da configuração</p>
+        <PageSkeletonWrapper loading={loading}>
+            <div className="space-y-6">
+                <div className="flex items-center gap-4">
+                    <Button variant="ghost" size="icon" onClick={() => navigate('/configs/estorno')}>
+                        <ArrowLeft className="h-5 w-5" />
+                    </Button>
+                    <div>
+                        <h1 className="text-3xl font-bold">Editar Configuração de Estorno</h1>
+                        <p className="text-muted-foreground">Altere os parâmetros da configuração</p>
+                    </div>
                 </div>
-            </div>
 
-            <Card>
-                <CardHeader>
-                    <CardTitle>Informações da Configuração</CardTitle>
-                </CardHeader>
-                <CardContent>
-                    <Form {...form}>
-                        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-                            <FormField
-                                control={form.control}
-                                name="nome"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Nome da Configuração</FormLabel>
-                                        <FormControl>
-                                            <Input placeholder="Ex: Config Estorno Principal" {...field} />
-                                        </FormControl>
-                                        <FormDescription>Nome identificador da configuração</FormDescription>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Informações da Configuração</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <Form {...form}>
+                            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+                                <FormField
+                                    control={form.control}
+                                    name="nome"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Nome da Configuração</FormLabel>
+                                            <FormControl>
+                                                <Input placeholder="Ex: Config Estorno Principal" {...field} />
+                                            </FormControl>
+                                            <FormDescription>Nome identificador da configuração</FormDescription>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
 
-                            <FormField
-                                control={form.control}
-                                name="baseId"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Base Associada</FormLabel>
-                                        <FormControl>
-                                            <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                                <SelectTrigger>
-                                                    <SelectValue placeholder="Selecione a base" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    {bases.map((base) => (
-                                                        <SelectItem key={String(base.id)} value={String((base as any).id)}>
-                                                            {base.nome}
-                                                        </SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
-                                        </FormControl>
-                                        <FormDescription>Base onde a configuração será aplicada</FormDescription>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-
-                            <FormField
-                                control={form.control}
-                                name="colunaA"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Coluna A</FormLabel>
-                                        {columns.length > 0 ? (
+                                <FormField
+                                    control={form.control}
+                                    name="baseId"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Base Associada</FormLabel>
                                             <FormControl>
                                                 <Select onValueChange={field.onChange} defaultValue={field.value}>
                                                     <SelectTrigger>
-                                                        <SelectValue placeholder="Selecione a coluna A" />
+                                                        <SelectValue placeholder="Selecione a base" />
                                                     </SelectTrigger>
                                                     <SelectContent>
-                                                        {columns.map((c) => (
-                                                            <SelectItem key={c.index} value={c.sqlite}>{c.excel}</SelectItem>
+                                                        {bases.map((base) => (
+                                                            <SelectItem key={String(base.id)} value={String((base as any).id)}>
+                                                                {base.nome}
+                                                            </SelectItem>
                                                         ))}
                                                     </SelectContent>
                                                 </Select>
                                             </FormControl>
-                                        ) : (
-                                            <FormControl>
-                                                <Input placeholder="Ex: VALOR_A" {...field} />
-                                            </FormControl>
-                                        )}
-                                        <FormDescription>Primeira coluna para soma</FormDescription>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
+                                            <FormDescription>Base onde a configuração será aplicada</FormDescription>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
 
-                            <FormField
-                                control={form.control}
-                                name="colunaB"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Coluna B</FormLabel>
-                                        {columns.length > 0 ? (
-                                            <FormControl>
-                                                <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                                    <SelectTrigger>
-                                                        <SelectValue placeholder="Selecione a coluna B" />
-                                                    </SelectTrigger>
-                                                    <SelectContent>
-                                                        {columns.map((c) => (
-                                                            <SelectItem key={c.index} value={c.sqlite}>{c.excel}</SelectItem>
-                                                        ))}
-                                                    </SelectContent>
-                                                </Select>
-                                            </FormControl>
-                                        ) : (
-                                            <FormControl>
-                                                <Input placeholder="Ex: VALOR_B" {...field} />
-                                            </FormControl>
-                                        )}
-                                        <FormDescription>Segunda coluna para soma</FormDescription>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
+                                <FormField
+                                    control={form.control}
+                                    name="colunaA"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Coluna A</FormLabel>
+                                            {columns.length > 0 ? (
+                                                <FormControl>
+                                                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                                        <SelectTrigger>
+                                                            <SelectValue placeholder="Selecione a coluna A" />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {columns.map((c) => (
+                                                                <SelectItem key={c.index} value={c.sqlite}>{c.excel}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                </FormControl>
+                                            ) : (
+                                                <FormControl>
+                                                    <Input placeholder="Ex: VALOR_A" {...field} />
+                                                </FormControl>
+                                            )}
+                                            <FormDescription>Primeira coluna para soma</FormDescription>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
 
-                            <FormField
-                                control={form.control}
-                                name="colunaSoma"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Coluna Soma</FormLabel>
-                                        {columns.length > 0 ? (
+                                <FormField
+                                    control={form.control}
+                                    name="colunaB"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Coluna B</FormLabel>
+                                            {columns.length > 0 ? (
+                                                <FormControl>
+                                                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                                        <SelectTrigger>
+                                                            <SelectValue placeholder="Selecione a coluna B" />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {columns.map((c) => (
+                                                                <SelectItem key={c.index} value={c.sqlite}>{c.excel}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                </FormControl>
+                                            ) : (
+                                                <FormControl>
+                                                    <Input placeholder="Ex: VALOR_B" {...field} />
+                                                </FormControl>
+                                            )}
+                                            <FormDescription>Segunda coluna para soma</FormDescription>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <FormField
+                                    control={form.control}
+                                    name="colunaSoma"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Coluna Soma</FormLabel>
+                                            {columns.length > 0 ? (
+                                                <FormControl>
+                                                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                                        <SelectTrigger>
+                                                            <SelectValue placeholder="Selecione a coluna Soma" />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {columns.map((c) => (
+                                                                <SelectItem key={c.index} value={c.sqlite}>{c.excel}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                </FormControl>
+                                            ) : (
+                                                <FormControl>
+                                                    <Input placeholder="Ex: TOTAL" {...field} />
+                                                </FormControl>
+                                            )}
+                                            <FormDescription>Coluna com resultado da soma</FormDescription>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <FormField
+                                    control={form.control}
+                                    name="limiteZero"
+                                    render={({ field }) => (
+                                        <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                                            <div className="space-y-0.5">
+                                                <FormLabel className="text-base">Limite Zero</FormLabel>
+                                                <FormDescription>
+                                                    Considerar apenas valores com soma igual a zero
+                                                </FormDescription>
+                                            </div>
                                             <FormControl>
-                                                <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                                    <SelectTrigger>
-                                                        <SelectValue placeholder="Selecione a coluna Soma" />
-                                                    </SelectTrigger>
-                                                    <SelectContent>
-                                                        {columns.map((c) => (
-                                                            <SelectItem key={c.index} value={c.sqlite}>{c.excel}</SelectItem>
-                                                        ))}
-                                                    </SelectContent>
-                                                </Select>
+                                                <Switch checked={field.value} onCheckedChange={field.onChange} />
                                             </FormControl>
-                                        ) : (
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <FormField
+                                    control={form.control}
+                                    name="ativa"
+                                    render={({ field }) => (
+                                        <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                                            <div className="space-y-0.5">
+                                                <FormLabel className="text-base">Configuração Ativa</FormLabel>
+                                                <FormDescription>
+                                                    Ativar esta configuração imediatamente após criação
+                                                </FormDescription>
+                                            </div>
                                             <FormControl>
-                                                <Input placeholder="Ex: TOTAL" {...field} />
+                                                <Switch checked={field.value} onCheckedChange={field.onChange} />
                                             </FormControl>
-                                        )}
-                                        <FormDescription>Coluna com resultado da soma</FormDescription>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
+                                        </FormItem>
+                                    )}
+                                />
 
-                            <FormField
-                                control={form.control}
-                                name="limiteZero"
-                                render={({ field }) => (
-                                    <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                                        <div className="space-y-0.5">
-                                            <FormLabel className="text-base">Limite Zero</FormLabel>
-                                            <FormDescription>
-                                                Considerar apenas valores com soma igual a zero
-                                            </FormDescription>
-                                        </div>
-                                        <FormControl>
-                                            <Switch checked={field.value} onCheckedChange={field.onChange} />
-                                        </FormControl>
-                                    </FormItem>
-                                )}
-                            />
-
-                            <FormField
-                                control={form.control}
-                                name="ativa"
-                                render={({ field }) => (
-                                    <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                                        <div className="space-y-0.5">
-                                            <FormLabel className="text-base">Configuração Ativa</FormLabel>
-                                            <FormDescription>
-                                                Ativar esta configuração imediatamente após criação
-                                            </FormDescription>
-                                        </div>
-                                        <FormControl>
-                                            <Switch checked={field.value} onCheckedChange={field.onChange} />
-                                        </FormControl>
-                                    </FormItem>
-                                )}
-                            />
-
-                            <div className="flex gap-4 justify-between">
-                                <div className="flex gap-2">
-                                    <Button type="submit">Salvar Alterações</Button>
-                                    <Button type="button" variant="outline" onClick={() => navigate('/configs/estorno')}>Cancelar</Button>
+                                <div className="flex gap-4 justify-between">
+                                    <div className="flex gap-2">
+                                        <Button type="submit">Salvar Alterações</Button>
+                                        <Button type="button" variant="outline" onClick={() => navigate('/configs/estorno')}>Cancelar</Button>
+                                    </div>
+                                    <Button type="button" variant="destructive" onClick={confirmDelete}>
+                                        <Trash2 className="mr-2 h-4 w-4" />Excluir
+                                    </Button>
                                 </div>
-                                <Button type="button" variant="destructive" onClick={confirmDelete}>
-                                    <Trash2 className="mr-2 h-4 w-4" />Excluir
-                                </Button>
-                            </div>
-                        </form>
-                    </Form>
-                </CardContent>
-            </Card>
-            <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Confirmação de Exclusão</AlertDialogTitle>
-                        <AlertDialogDescription>Tem certeza que deseja excluir esta configuração? Esta ação não pode ser desfeita.</AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel onClick={() => { setDeleteDialogOpen(false); setPendingDeleteId(null); }}>Cancelar</AlertDialogCancel>
-                        <AlertDialogAction onClick={() => handleDelete(pendingDeleteId)}>Excluir</AlertDialogAction>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-        </div>
+                            </form>
+                        </Form>
+                    </CardContent>
+                </Card>
+                <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+                    <AlertDialogContent>
+                        <AlertDialogHeader>
+                            <AlertDialogTitle>Confirmação de Exclusão</AlertDialogTitle>
+                            <AlertDialogDescription>Tem certeza que deseja excluir esta configuração? Esta ação não pode ser desfeita.</AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                            <AlertDialogCancel onClick={() => { setDeleteDialogOpen(false); setPendingDeleteId(null); }}>Cancelar</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => handleDelete(pendingDeleteId)}>Excluir</AlertDialogAction>
+                        </AlertDialogFooter>
+                    </AlertDialogContent>
+                </AlertDialog>
+            </div>
+        </PageSkeletonWrapper>
     );
 };
 
