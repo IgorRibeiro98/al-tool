@@ -112,13 +112,21 @@ router.post('/:id/exportar', async (req: Request, res: Response) => {
             // ignore and attempt background generation
         }
 
-        // Start background export task to avoid long-running request / socket timeouts
+        // Mark export in progress and start background export task
+        try {
+            await jobsRepo.setJobExportProgress(id, 1, 'IN_PROGRESS');
+        } catch (e) {
+            // ignore errors when setting progress, proceed with background export
+        }
+
         (async () => {
             try {
                 const info = await exportService.exportJobResultToZip(id);
                 console.log('Background export finished for job', id, info.path);
+                try { await jobsRepo.setJobExportProgress(id, 100, 'DONE'); } catch (e) { }
             } catch (bgErr) {
                 console.error('Background export failed for job', id, bgErr);
+                try { await jobsRepo.setJobExportProgress(id, null, 'FAILED'); } catch (e) { }
             }
         })();
 
@@ -167,6 +175,30 @@ router.get('/:id/download', async (req: Request, res: Response) => {
     } catch (err: any) {
         console.error(err);
         res.status(500).json({ error: 'Erro ao baixar arquivo' });
+    }
+});
+
+// GET /conciliacoes/:id/export-status - return export-related fields for a job
+router.get('/:id/export-status', async (req: Request, res: Response) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id || Number.isNaN(id)) return res.status(400).json({ error: 'invalid id' });
+
+        const job = await jobsRepo.getJobById(id);
+        if (!job) return res.status(404).json({ error: 'job not found' });
+
+        // return export-specific fields
+        const payload = {
+            id: job.id,
+            export_status: (job as any).export_status ?? null,
+            export_progress: (job as any).export_progress ?? null,
+            arquivo_exportado: job.arquivo_exportado ?? null,
+        };
+
+        return res.json(payload);
+    } catch (err: any) {
+        console.error(err);
+        res.status(500).json({ error: 'Erro ao obter status de exportação' });
     }
 });
 
@@ -219,11 +251,25 @@ router.get('/:id/resultado', async (req: Request, res: Response) => {
         const hasTable = await db.schema.hasTable(resultTable);
         if (!hasTable) return res.status(200).json({ page, pageSize, total: 0, totalPages: 0, data: [] });
 
-        const totalRaw: any = await db(resultTable).count({ count: '*' }).first();
+        const statusRaw = typeof req.query.status === 'string' ? String(req.query.status) : undefined;
+
+        // total and rows with optional status filtering
+        let totalRaw: any;
+        if (statusRaw === '__NULL__') {
+            totalRaw = await db(resultTable).whereNull('status').count({ count: '*' }).first();
+        } else if (statusRaw !== undefined) {
+            totalRaw = await db(resultTable).where('status', statusRaw).count({ count: '*' }).first();
+        } else {
+            totalRaw = await db(resultTable).count({ count: '*' }).first();
+        }
+
         const total = totalRaw ? Number(totalRaw.count || totalRaw['count(*)'] || 0) : 0;
         const totalPages = Math.ceil(total / pageSize);
 
-        const rows = await db(resultTable).select('*').orderBy('id', 'asc').limit(pageSize).offset(offset);
+        let rowsQuery = db(resultTable).select('*').orderBy('id', 'asc').limit(pageSize).offset(offset);
+        if (statusRaw === '__NULL__') rowsQuery = rowsQuery.whereNull('status');
+        else if (statusRaw !== undefined) rowsQuery = rowsQuery.where('status', statusRaw);
+        const rows = await rowsQuery;
 
         // detect dynamic chave identifiers (CHAVE_1, CHAVE_2, ...)
         let keyIds: string[] = [];

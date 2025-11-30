@@ -10,6 +10,7 @@ import { useForm } from "react-hook-form";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { useEffect, useState } from 'react';
+import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import {
     AlertDialog,
     AlertDialogContent,
@@ -161,173 +162,175 @@ const EditConfigCancelamento = () => {
     };
 
     return (
-        <div className="space-y-6">
-            <div className="flex items-center gap-4">
-                <Button variant="ghost" size="icon" onClick={() => navigate('/configs/cancelamento')}>
-                    <ArrowLeft className="h-5 w-5" />
-                </Button>
-                <div>
-                    <h1 className="text-3xl font-bold">Editar Configuração de Cancelamento</h1>
-                    <p className="text-muted-foreground">Altere os parâmetros da configuração</p>
+        <PageSkeletonWrapper loading={loading}>
+            <div className="space-y-6">
+                <div className="flex items-center gap-4">
+                    <Button variant="ghost" size="icon" onClick={() => navigate('/configs/cancelamento')}>
+                        <ArrowLeft className="h-5 w-5" />
+                    </Button>
+                    <div>
+                        <h1 className="text-3xl font-bold">Editar Configuração de Cancelamento</h1>
+                        <p className="text-muted-foreground">Altere os parâmetros da configuração</p>
+                    </div>
                 </div>
-            </div>
 
-            <Card>
-                <CardHeader>
-                    <CardTitle>Informações da Configuração</CardTitle>
-                </CardHeader>
-                <CardContent>
-                    <Form {...form}>
-                        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-                            <FormField
-                                control={form.control}
-                                name="nome"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Nome da Configuração</FormLabel>
-                                        <FormControl>
-                                            <Input placeholder="Ex: Config Cancelamento Principal" {...field} />
-                                        </FormControl>
-                                        <FormDescription>Nome identificador da configuração</FormDescription>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Informações da Configuração</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <Form {...form}>
+                            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+                                <FormField
+                                    control={form.control}
+                                    name="nome"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Nome da Configuração</FormLabel>
+                                            <FormControl>
+                                                <Input placeholder="Ex: Config Cancelamento Principal" {...field} />
+                                            </FormControl>
+                                            <FormDescription>Nome identificador da configuração</FormDescription>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
 
-                            <FormField
-                                control={form.control}
-                                name="baseId"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Base Associada</FormLabel>
-                                        <FormControl>
-                                            <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                                <SelectTrigger>
-                                                    <SelectValue placeholder="Selecione a base" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    {bases.map((base) => (
-                                                        <SelectItem key={base.id} value={base.id}>
-                                                            {base.nome}
-                                                        </SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
-                                        </FormControl>
-                                        <FormDescription>Base onde a configuração será aplicada</FormDescription>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-
-                            <FormField
-                                control={form.control}
-                                name="coluna"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Coluna Indicadora</FormLabel>
-                                        {columns.length > 0 ? (
+                                <FormField
+                                    control={form.control}
+                                    name="baseId"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Base Associada</FormLabel>
                                             <FormControl>
                                                 <Select onValueChange={field.onChange} defaultValue={field.value}>
                                                     <SelectTrigger>
-                                                        <SelectValue placeholder="Selecione a coluna" />
+                                                        <SelectValue placeholder="Selecione a base" />
                                                     </SelectTrigger>
                                                     <SelectContent>
-                                                        {columns.map((c) => (
-                                                            <SelectItem key={c.index} value={c.sqlite}>
-                                                                {c.excel}
+                                                        {bases.map((base) => (
+                                                            <SelectItem key={base.id} value={base.id}>
+                                                                {base.nome}
                                                             </SelectItem>
                                                         ))}
                                                     </SelectContent>
                                                 </Select>
                                             </FormControl>
-                                        ) : (
-                                            <FormControl>
-                                                <Input placeholder={"Escolha uma base para carregar colunas"} {...field} />
-                                            </FormControl>
+                                            <FormDescription>Base onde a configuração será aplicada</FormDescription>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <FormField
+                                    control={form.control}
+                                    name="coluna"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Coluna Indicadora</FormLabel>
+                                            {columns.length > 0 ? (
+                                                <FormControl>
+                                                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                                        <SelectTrigger>
+                                                            <SelectValue placeholder="Selecione a coluna" />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {columns.map((c) => (
+                                                                <SelectItem key={c.index} value={c.sqlite}>
+                                                                    {c.excel}
+                                                                </SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                </FormControl>
+                                            ) : (
+                                                <FormControl>
+                                                    <Input placeholder={"Escolha uma base para carregar colunas"} {...field} />
+                                                </FormControl>
+                                            )}
+                                            <FormDescription>Nome da coluna que indica cancelamento (autocomplete baseado na base selecionada)</FormDescription>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <FormField
+                                        control={form.control}
+                                        name="valorCancelado"
+                                        render={({ field }) => (
+                                            <FormItem>
+                                                <FormLabel>Valor para Cancelado</FormLabel>
+                                                <FormControl>
+                                                    <Input placeholder="Ex: C ou CANCELADO" {...field} />
+                                                </FormControl>
+                                                <FormDescription>Valor que indica registro cancelado</FormDescription>
+                                                <FormMessage />
+                                            </FormItem>
                                         )}
-                                        <FormDescription>Nome da coluna que indica cancelamento (autocomplete baseado na base selecionada)</FormDescription>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
+                                    />
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <FormField
-                                    control={form.control}
-                                    name="valorCancelado"
-                                    render={({ field }) => (
-                                        <FormItem>
-                                            <FormLabel>Valor para Cancelado</FormLabel>
-                                            <FormControl>
-                                                <Input placeholder="Ex: C ou CANCELADO" {...field} />
-                                            </FormControl>
-                                            <FormDescription>Valor que indica registro cancelado</FormDescription>
-                                            <FormMessage />
-                                        </FormItem>
-                                    )}
-                                />
-
-                                <FormField
-                                    control={form.control}
-                                    name="valorNaoCancelado"
-                                    render={({ field }) => (
-                                        <FormItem>
-                                            <FormLabel>Valor para Não Cancelado</FormLabel>
-                                            <FormControl>
-                                                <Input placeholder="Ex: A ou ATIVO" {...field} />
-                                            </FormControl>
-                                            <FormDescription>Valor que indica registro ativo</FormDescription>
-                                            <FormMessage />
-                                        </FormItem>
-                                    )}
-                                />
-                            </div>
-
-                            <FormField
-                                control={form.control}
-                                name="ativa"
-                                render={({ field }) => (
-                                    <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                                        <div className="space-y-0.5">
-                                            <FormLabel className="text-base">Configuração Ativa</FormLabel>
-                                            <FormDescription>
-                                                Ativar esta configuração imediatamente após criação
-                                            </FormDescription>
-                                        </div>
-                                        <FormControl>
-                                            <Switch checked={field.value} onCheckedChange={field.onChange} />
-                                        </FormControl>
-                                    </FormItem>
-                                )}
-                            />
-
-                            <div className="flex gap-4 justify-between">
-                                <div className="flex gap-2">
-                                    <Button type="submit">Salvar Alterações</Button>
-                                    <Button type="button" variant="outline" onClick={() => navigate('/configs/cancelamento')}>Cancelar</Button>
+                                    <FormField
+                                        control={form.control}
+                                        name="valorNaoCancelado"
+                                        render={({ field }) => (
+                                            <FormItem>
+                                                <FormLabel>Valor para Não Cancelado</FormLabel>
+                                                <FormControl>
+                                                    <Input placeholder="Ex: A ou ATIVO" {...field} />
+                                                </FormControl>
+                                                <FormDescription>Valor que indica registro ativo</FormDescription>
+                                                <FormMessage />
+                                            </FormItem>
+                                        )}
+                                    />
                                 </div>
-                                <Button type="button" variant="destructive" onClick={confirmDelete}>
-                                    <Trash2 className="mr-2 h-4 w-4" />Excluir
-                                </Button>
-                            </div>
-                        </form>
-                    </Form>
-                </CardContent>
-            </Card>
-            <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Confirmação de Exclusão</AlertDialogTitle>
-                        <AlertDialogDescription>Tem certeza que deseja excluir esta configuração? Esta ação não pode ser desfeita.</AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel onClick={() => { setDeleteDialogOpen(false); setPendingDeleteId(null); }}>Cancelar</AlertDialogCancel>
-                        <AlertDialogAction onClick={() => handleDelete(pendingDeleteId)}>Excluir</AlertDialogAction>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-        </div>
+
+                                <FormField
+                                    control={form.control}
+                                    name="ativa"
+                                    render={({ field }) => (
+                                        <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                                            <div className="space-y-0.5">
+                                                <FormLabel className="text-base">Configuração Ativa</FormLabel>
+                                                <FormDescription>
+                                                    Ativar esta configuração imediatamente após criação
+                                                </FormDescription>
+                                            </div>
+                                            <FormControl>
+                                                <Switch checked={field.value} onCheckedChange={field.onChange} />
+                                            </FormControl>
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <div className="flex gap-4 justify-between">
+                                    <div className="flex gap-2">
+                                        <Button type="submit">Salvar Alterações</Button>
+                                        <Button type="button" variant="outline" onClick={() => navigate('/configs/cancelamento')}>Cancelar</Button>
+                                    </div>
+                                    <Button type="button" variant="destructive" onClick={confirmDelete}>
+                                        <Trash2 className="mr-2 h-4 w-4" />Excluir
+                                    </Button>
+                                </div>
+                            </form>
+                        </Form>
+                    </CardContent>
+                </Card>
+                <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+                    <AlertDialogContent>
+                        <AlertDialogHeader>
+                            <AlertDialogTitle>Confirmação de Exclusão</AlertDialogTitle>
+                            <AlertDialogDescription>Tem certeza que deseja excluir esta configuração? Esta ação não pode ser desfeita.</AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                            <AlertDialogCancel onClick={() => { setDeleteDialogOpen(false); setPendingDeleteId(null); }}>Cancelar</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => handleDelete(pendingDeleteId)}>Excluir</AlertDialogAction>
+                        </AlertDialogFooter>
+                    </AlertDialogContent>
+                </AlertDialog>
+            </div>
+        </PageSkeletonWrapper>
     );
 };
 

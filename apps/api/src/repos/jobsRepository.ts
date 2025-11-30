@@ -65,4 +65,32 @@ export async function setJobExportPath(id: number, arquivoPath: string | null) {
     return await db('jobs_conciliacao').where({ id }).first();
 }
 
+export async function setJobExportProgress(id: number, progress: number | null, status?: string | null) {
+    const update: any = {};
+    if (progress !== null && progress !== undefined) update.export_progress = progress;
+    if (status !== undefined) update.export_status = status;
+    update.updated_at = db.fn.now();
+
+    try {
+        await db('jobs_conciliacao').where({ id }).update(update);
+    } catch (err: any) {
+        const msg = err && (err.message || String(err)) || '';
+        if (msg.includes('no such column') || msg.includes('no column named') || /no such column: export_progress/.test(msg) || /no such column: export_status/.test(msg)) {
+            try {
+                await db.schema.table('jobs_conciliacao', t => {
+                    try { t.integer('export_progress').nullable(); } catch (_) { }
+                    try { t.string('export_status').nullable(); } catch (_) { }
+                });
+                await db('jobs_conciliacao').where({ id }).update(update);
+            } catch (addErr) {
+                throw addErr;
+            }
+        } else {
+            throw err;
+        }
+    }
+
+    return await db('jobs_conciliacao').where({ id }).first();
+}
+
 export default { createJob, updateJobStatus, getJobById };

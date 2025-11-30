@@ -173,8 +173,14 @@ export async function exportJobResultToZip(jobId: number) {
         return filePath;
     }
 
+    // Build sheets and report progress to the job row.
+    try { await jobsRepo.setJobExportProgress(jobId, 5, 'EXPORT_BUILDING_A'); } catch (e) { }
     const fileA = await buildSheetFileForBase(baseAId, 'A');
+    try { await jobsRepo.setJobExportProgress(jobId, 40, 'EXPORT_BUILT_A'); } catch (e) { }
+
+    try { await jobsRepo.setJobExportProgress(jobId, 45, 'EXPORT_BUILDING_B'); } catch (e) { }
     const fileB = await buildSheetFileForBase(baseBId, 'B');
+    try { await jobsRepo.setJobExportProgress(jobId, 80, 'EXPORT_BUILT_B'); } catch (e) { }
 
     // ensure exports dir
     const exportsDir = path.resolve(process.cwd(), 'storage', 'exports');
@@ -212,6 +218,10 @@ export async function exportJobResultToZip(jobId: number) {
 
     const rel = path.relative(process.cwd(), zipAbs).split(path.sep).join(path.posix.sep);
     await jobsRepo.setJobExportPath(jobId, rel);
+    try { await jobsRepo.setJobExportProgress(jobId, 95, 'EXPORT_ZIPPED'); } catch (e) { }
+
+    // final update to mark as done is handled by caller (route wrapper), but ensure progress 100 here too
+    try { await jobsRepo.setJobExportProgress(jobId, 100, 'EXPORT_DONE'); } catch (e) { }
 
     return { path: rel, filename: zipFilename };
 }

@@ -13,18 +13,29 @@ export function getConciliacao(id: number) {
     return api.get(`/conciliacoes/${id}`);
 }
 
-export function fetchConciliacaoResultado(id: number, page: number, pageSize: number) {
-    return api.get(`/conciliacoes/${id}/resultado`, {
-        params: { page, pageSize }
-    });
+export function fetchConciliacaoResultado(id: number, page: number, pageSize: number, status?: string | null) {
+    const params: any = { page, pageSize };
+    // special token for filtering NULL status
+    if (status === null) params.status = '__NULL__';
+    else if (typeof status === 'string' && status.length > 0) params.status = status;
+    return api.get(`/conciliacoes/${id}/resultado`, { params });
 }
 
 export function exportConciliacao(id: number) {
     return api.post(`/conciliacoes/${id}/exportar`);
 }
 
+export function getExportStatus(id: number) {
+    return api.get(`/conciliacoes/${id}/export-status`);
+}
+
+export function getDownloadUrl(id: number) {
+    // returns a fully qualified download URL based on axios baseURL
+    return `${api.defaults.baseURL || ''}/conciliacoes/${id}/download`;
+}
+
 export function deleteConciliacao(id: number) {
     return api.delete(`/conciliacoes/${id}`);
 }
 
-export default { fetchConciliacoes, createConciliacao, getConciliacao, fetchConciliacaoResultado, exportConciliacao };
+export default { fetchConciliacoes, createConciliacao, getConciliacao, fetchConciliacaoResultado, exportConciliacao, getExportStatus, getDownloadUrl, deleteConciliacao };

@@ -14,6 +14,7 @@ import {
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from 'react';
+import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import { fetchConfigsCancelamento, updateConfigCancelamento, deleteConfigCancelamento } from '@/services/configsService';
 import { fetchBases } from '@/services/baseService';
 import { toast } from 'sonner';
@@ -85,75 +86,77 @@ const ConfigCancelamento = () => {
     };
 
     return (
-        <div className="space-y-6">
-            <div className="flex items-center justify-between">
-                <div>
-                    <h1 className="text-3xl font-bold">Configuração de Cancelamento</h1>
-                    <p className="text-muted-foreground">Gerencie as regras de identificação de cancelamento</p>
-                </div>
-                <Button onClick={() => navigate("/configs/cancelamento/new")}>
-                    <Plus className="mr-2 h-4 w-4" />
-                    Nova Configuração
-                </Button>
-            </div>
-
-            <Card>
-                <CardHeader>
-                    <CardTitle>Configurações Cadastradas</CardTitle>
-                </CardHeader>
-                <CardContent>
-                    <div className="space-y-2">
-                        {loading ? (
-                            <div className="text-sm text-muted-foreground">Carregando...</div>
-                        ) : (
-                            configs.map((config) => (
-                                <div
-                                    key={config.id}
-                                    className="flex items-center justify-between p-4 rounded-lg border hover:bg-muted/50 transition-colors"
-                                >
-                                    <div className="flex-1 space-y-1">
-                                        <p className="font-medium">{config.nome}</p>
-                                        <div className="flex gap-4 text-sm text-muted-foreground">
-                                            <span>Coluna: <span className="font-mono">{config.coluna_indicador ?? config.coluna}</span></span>
-                                            <span>Cancelado: <span className="font-mono">{config.valor_cancelado ?? config.valorCancelado}</span></span>
-                                            <span>Não Cancelado: <span className="font-mono">{config.valor_nao_cancelado ?? config.valorNaoCancelado}</span></span>
-                                        </div>
-                                        <p className="text-sm text-muted-foreground">{basesMap[config.base_id] ?? String(config.base_id ?? '-')}</p>
-                                    </div>
-                                    <div className="flex items-center gap-4">
-                                        <div className="flex items-center gap-2">
-                                            <Switch checked={!!config.ativa} onCheckedChange={() => toggleActive(config)} />
-                                            <span className="text-sm">{config.ativa ? "Ativa" : "Inativa"}</span>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <Button variant="ghost" size="sm" onClick={() => navigate(`/configs/cancelamento/${config.id}`)}>
-                                                <Pencil className="h-4 w-4" />
-                                            </Button>
-                                            <Button variant="ghost" size="sm" onClick={() => confirmDelete(config.id)}>
-                                                <Trash2 className="h-4 w-4" />
-                                            </Button>
-                                        </div>
-                                    </div>
-                                </div>
-                            ))
-                        )}
+        <PageSkeletonWrapper loading={loading}>
+            <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                    <div>
+                        <h1 className="text-3xl font-bold">Configuração de Cancelamento</h1>
+                        <p className="text-muted-foreground">Gerencie as regras de identificação de cancelamento</p>
                     </div>
-                </CardContent>
-            </Card>
+                    <Button onClick={() => navigate("/configs/cancelamento/new")}>
+                        <Plus className="mr-2 h-4 w-4" />
+                        Nova Configuração
+                    </Button>
+                </div>
 
-            <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Confirmação de Exclusão</AlertDialogTitle>
-                        <AlertDialogDescription>Deseja realmente deletar esta configuração? Esta ação não pode ser desfeita.</AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel onClick={() => { setDeleteDialogOpen(false); setPendingDeleteId(null); }}>Cancelar</AlertDialogCancel>
-                        <AlertDialogAction onClick={() => handleDelete(pendingDeleteId)}>Excluir</AlertDialogAction>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-        </div>
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Configurações Cadastradas</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="space-y-2">
+                            {loading ? (
+                                <div className="text-sm text-muted-foreground">Carregando...</div>
+                            ) : (
+                                configs.map((config) => (
+                                    <div
+                                        key={config.id}
+                                        className="flex items-center justify-between p-4 rounded-lg border hover:bg-muted/50 transition-colors"
+                                    >
+                                        <div className="flex-1 space-y-1">
+                                            <p className="font-medium">{config.nome}</p>
+                                            <div className="flex gap-4 text-sm text-muted-foreground">
+                                                <span>Coluna: <span className="font-mono">{config.coluna_indicador ?? config.coluna}</span></span>
+                                                <span>Cancelado: <span className="font-mono">{config.valor_cancelado ?? config.valorCancelado}</span></span>
+                                                <span>Não Cancelado: <span className="font-mono">{config.valor_nao_cancelado ?? config.valorNaoCancelado}</span></span>
+                                            </div>
+                                            <p className="text-sm text-muted-foreground">{basesMap[config.base_id] ?? String(config.base_id ?? '-')}</p>
+                                        </div>
+                                        <div className="flex items-center gap-4">
+                                            <div className="flex items-center gap-2">
+                                                <Switch checked={!!config.ativa} onCheckedChange={() => toggleActive(config)} />
+                                                <span className="text-sm">{config.ativa ? "Ativa" : "Inativa"}</span>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <Button variant="ghost" size="sm" onClick={() => navigate(`/configs/cancelamento/${config.id}`)}>
+                                                    <Pencil className="h-4 w-4" />
+                                                </Button>
+                                                <Button variant="ghost" size="sm" onClick={() => confirmDelete(config.id)}>
+                                                    <Trash2 className="h-4 w-4" />
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </CardContent>
+                </Card>
+
+                <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+                    <AlertDialogContent>
+                        <AlertDialogHeader>
+                            <AlertDialogTitle>Confirmação de Exclusão</AlertDialogTitle>
+                            <AlertDialogDescription>Deseja realmente deletar esta configuração? Esta ação não pode ser desfeita.</AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                            <AlertDialogCancel onClick={() => { setDeleteDialogOpen(false); setPendingDeleteId(null); }}>Cancelar</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => handleDelete(pendingDeleteId)}>Excluir</AlertDialogAction>
+                        </AlertDialogFooter>
+                    </AlertDialogContent>
+                </AlertDialog>
+            </div>
+        </PageSkeletonWrapper>
     );
 };
 
