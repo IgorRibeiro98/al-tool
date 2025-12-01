@@ -18,6 +18,7 @@ pids
 # Build outputs
 dist/
 build/
+dist-build/
 *.tsbuildinfo
 
 # Coverage

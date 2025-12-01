@@ -1,0 +1,15 @@
+{
+    "name": "al-tool-desktop",
+    "version": "0.1.0",
+    "private": true,
+    "main": "dist/main.js",
+    "scripts": {
+        "build": "tsc -p .",
+        "electron:dev": "npm run build && electron ."
+    },
+    "devDependencies": {
+        "@types/node": "^22.16.5",
+        "electron": "^32.1.0",
+        "typescript": "^5.8.3"
+    }
+}

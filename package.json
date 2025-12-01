@@ -8,7 +8,20 @@
     ],
     "scripts": {
         "dev:api": "npm --workspace=apps/api run dev",
+        "dev:client": "npm --workspace=apps/client run dev",
         "build:api": "npm --workspace=apps/api run build",
-        "install:all": "npm install"
+        "build:front": "npm --workspace=apps/client run build",
+        "build:pipeline": "npm --workspace=packages/pipeline run build",
+        "install:all": "npm install",
+        "app:local": "npm --workspace=apps/api run dev",
+        "build:prod": "npm run build:pipeline && npm run build:front && npm run build:api",
+        "prod:web-local": "ts-node scripts/prod-web-local.ts",
+        "dev": "concurrently \"npm run dev:api\" \"npm run dev:client\"",
+        "electron:dev": "npm --workspace=apps/desktop run electron:dev",
+        "app:desktop": "ts-node scripts/launcher.ts"
+    },
+    "devDependencies": {
+        "ts-node": "^10.9.2",
+        "open": "^10.1.0"
     }
 }

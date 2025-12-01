@@ -1,18 +1,12 @@
 import { knex as createKnex, Knex } from 'knex';
-import path from 'path';
-import fs from 'fs';
+import { DB_PATH, DATA_DIR, ensureDataDirs } from '../config/paths';
 
-const dbDir = path.resolve(__dirname, '..', '..', 'db');
-if (!fs.existsSync(dbDir)) {
-    fs.mkdirSync(dbDir, { recursive: true });
-}
-
-const dbPath = path.join(dbDir, 'dev.sqlite3');
+ensureDataDirs();
 
 const config: Knex.Config = {
     client: 'better-sqlite3',
     connection: {
-        filename: dbPath
+        filename: DB_PATH
     },
     useNullAsDefault: true,
     // Use a single-connection pool for better-sqlite3 (file DB). This simplifies PRAGMA

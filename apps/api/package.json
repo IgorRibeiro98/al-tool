@@ -2,11 +2,11 @@
     "name": "@al-tool/api",
     "version": "0.1.0",
     "private": true,
-    "main": "dist/server.js",
+    "main": "dist/main.js",
     "scripts": {
-        "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+        "dev": "ts-node-dev --respawn --transpile-only src/main.ts",
         "build": "tsc -p .",
-        "start": "node dist/server.js",
+        "start": "node dist/main.js",
         "migrate": "knex --knexfile knexfile.js migrate:latest",
         "migrate:make": "knex --knexfile knexfile.js migrate:make"
     },
@@ -16,6 +16,7 @@
         "cors": "^2.8.5",
         "exceljs": "^4.4.0",
         "express": "^5.1.0",
+        "dotenv": "^16.4.5",
         "knex": "^3.1.0",
         "multer": "^2.0.2",
         "xlsx": "^0.18.5"

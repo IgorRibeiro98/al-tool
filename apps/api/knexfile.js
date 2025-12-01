@@ -1,11 +1,26 @@
 /**
  * Knex configuration for SQLite (development)
- * Ensures the `db` directory exists before returning the config so better-sqlite3 can create/open the file.
+ * Garante que migrations e runtime usem o mesmo diretório de dados (storage/db por padrão).
  */
 const fs = require('fs');
 const path = require('path');
 
-const dbDir = path.resolve(__dirname, 'db');
+// Carrega variáveis de ambiente (apps/api/.env e raiz, se existirem)
+const localEnv = path.resolve(__dirname, '.env');
+if (fs.existsSync(localEnv)) {
+    require('dotenv').config({ path: localEnv });
+}
+const rootEnv = path.resolve(__dirname, '..', '..', '.env');
+if (fs.existsSync(rootEnv)) {
+    require('dotenv').config({ path: rootEnv });
+}
+
+// APP_DATA_DIR aponta para a raiz dos dados (padrão: ../../storage)
+const dataDir = process.env.APP_DATA_DIR
+    ? path.resolve(__dirname, process.env.APP_DATA_DIR)
+    : path.resolve(__dirname, '..', '..', 'storage');
+const dbDir = path.join(dataDir, 'db');
+
 if (!fs.existsSync(dbDir)) {
     fs.mkdirSync(dbDir, { recursive: true });
 }

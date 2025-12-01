@@ -2,6 +2,7 @@ import db from '../db/knex';
 import XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
 import { fileStorage } from '../infra/storage/FileStorage';
+import { EXPORT_DIR } from '../config/paths';
 import * as jobsRepo from '../repos/jobsRepository';
 import path from 'path';
 import fs from 'fs/promises';
@@ -110,7 +111,7 @@ export async function exportJobResultToZip(jobId: number) {
         const headers = cols.map((c: any) => (c.excel_name == null ? c.sqlite_name : String(c.excel_name)));
 
         // prepare file path
-        const exportsDirLocal = path.resolve(process.cwd(), 'storage', 'exports');
+        const exportsDirLocal = EXPORT_DIR;
         await fs.mkdir(exportsDirLocal, { recursive: true });
         const fileName = `${side === 'A' ? 'Base_A' : 'Base_B'}_${jobId}.xlsx`;
         const filePath = path.join(exportsDirLocal, fileName);
@@ -183,7 +184,7 @@ export async function exportJobResultToZip(jobId: number) {
     try { await jobsRepo.setJobExportProgress(jobId, 80, 'EXPORT_BUILT_B'); } catch (e) { }
 
     // ensure exports dir
-    const exportsDir = path.resolve(process.cwd(), 'storage', 'exports');
+    const exportsDir = EXPORT_DIR;
     await fs.mkdir(exportsDir, { recursive: true });
     // Use the job name as the zip filename (sanitized). Fallback to conciliacao_{jobId}.
     const rawBaseName = (job.nome && String(job.nome).trim()) ? String(job.nome).trim() : `conciliacao_${jobId}`;
