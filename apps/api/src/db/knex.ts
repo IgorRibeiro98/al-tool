@@ -2,12 +2,17 @@ import { knex as createKnex, Knex } from 'knex';
 import path from 'path';
 import fs from 'fs';
 
-const dbDir = path.resolve(__dirname, '..', '..', 'db');
+// Allow Electron/other hosts to control DB location via env.
+// Fallback to local ./db/dev.sqlite3 for dev/CLI.
+const envDbPath = process.env.DB_PATH;
+const dbDir = envDbPath
+    ? path.dirname(envDbPath)
+    : path.resolve(__dirname, '..', '..', 'db');
 if (!fs.existsSync(dbDir)) {
     fs.mkdirSync(dbDir, { recursive: true });
 }
 
-const dbPath = path.join(dbDir, 'dev.sqlite3');
+const dbPath = envDbPath || path.join(dbDir, 'dev.sqlite3');
 
 const config: Knex.Config = {
     client: 'better-sqlite3',

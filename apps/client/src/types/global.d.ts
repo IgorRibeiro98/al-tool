@@ -138,6 +138,12 @@ declare global {
         details?: any;
     }
 
+    interface Window {
+        appBridge?: {
+            getApiBaseUrl?: () => string
+        }
+    }
+
 }
 
 export { };

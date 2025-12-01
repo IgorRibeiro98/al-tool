@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import basesRouter from './routes/bases';
@@ -11,7 +12,7 @@ import { startConciliacaoWorker } from './worker/conciliacaoWorker';
 import { startIngestWorker } from './worker/ingestWorker';
 
 const app = express();
-const port = process.env.PORT ? Number(process.env.PORT) : 3000;
+const defaultPort = process.env.PORT ? Number(process.env.PORT) : 3000;
 
 app.use(express.json());
 // CORS setup
@@ -49,21 +50,39 @@ app.use('/configs/conciliacao', configsConciliacaoRouter);
 app.use('/conciliacoes', conciliacoesRouter);
 app.use('/maintenance', maintenanceRouter);
 
-if (process.env.NODE_ENV !== 'test') {
-    app.listen(port, () => {
-        console.log(`Server listening on http://localhost:${port}`);
-        try {
-            startConciliacaoWorker();
-            console.log('Conciliacao worker started');
+export async function startServer(port?: number): Promise<{ port: number }> {
+    const finalPort = port ?? defaultPort;
+
+    return new Promise((resolve, reject) => {
+        const server = app.listen(finalPort, () => {
+            console.log(`Server listening on http://localhost:${finalPort}`);
             try {
-                startIngestWorker();
-                console.log('Ingest worker started');
+                startConciliacaoWorker();
+                console.log('Conciliacao worker started');
+                try {
+                    startIngestWorker();
+                    console.log('Ingest worker started');
+                } catch (err) {
+                    console.error('Failed to start ingest worker', err);
+                }
             } catch (err) {
-                console.error('Failed to start ingest worker', err);
+                console.error('Failed to start conciliacao worker', err);
             }
-        } catch (err) {
-            console.error('Failed to start conciliacao worker', err);
-        }
+            resolve({ port: finalPort });
+        });
+
+        server.on('error', (err: any) => {
+            console.error('Failed to start API server', err);
+            reject(err);
+        });
+    });
+}
+
+if (process.env.NODE_ENV !== 'test' && !process.env.RUN_INSIDE_ELECTRON) {
+    // Standalone mode (CLI / dev)
+    void startServer().catch((err) => {
+        console.error('Error starting server in standalone mode', err);
+        process.exitCode = 1;
     });
 }
 

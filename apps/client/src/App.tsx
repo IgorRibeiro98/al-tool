@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, HashRouter, Routes, Route } from "react-router-dom";
 import { Layout } from "@/components/Layout";
 import { ThemeProvider } from "next-themes";
 import Dashboard from "./pages/Dashboard";
@@ -25,13 +25,16 @@ import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
+const isElectron = typeof window !== "undefined" && "appBridge" in window;
+const Router = isElectron ? HashRouter : BrowserRouter;
+
 const App = () => (
     <ThemeProvider attribute="class" defaultTheme="system">
         <QueryClientProvider client={queryClient}>
             <TooltipProvider>
                 <Toaster />
                 <Sonner />
-                <BrowserRouter>
+                <Router>
                     <Routes>
                         <Route path="/" element={<Layout />}>
                             <Route index element={<Dashboard />} />
@@ -53,7 +56,7 @@ const App = () => (
                         </Route>
                         <Route path="*" element={<NotFound />} />
                     </Routes>
-                </BrowserRouter>
+                </Router>
             </TooltipProvider>
         </QueryClientProvider>
     </ThemeProvider>

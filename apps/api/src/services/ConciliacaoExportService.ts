@@ -182,8 +182,10 @@ export async function exportJobResultToZip(jobId: number) {
     const fileB = await buildSheetFileForBase(baseBId, 'B');
     try { await jobsRepo.setJobExportProgress(jobId, 80, 'EXPORT_BUILT_B'); } catch (e) { }
 
-    // ensure exports dir
-    const exportsDir = path.resolve(process.cwd(), 'storage', 'exports');
+    // ensure exports dir (can be overridden via EXPORT_DIR for Electron)
+    const exportsDir = process.env.EXPORT_DIR
+        ? path.resolve(process.env.EXPORT_DIR)
+        : path.resolve(process.cwd(), 'storage', 'exports');
     await fs.mkdir(exportsDir, { recursive: true });
     // Use the job name as the zip filename (sanitized). Fallback to conciliacao_{jobId}.
     const rawBaseName = (job.nome && String(job.nome).trim()) ? String(job.nome).trim() : `conciliacao_${jobId}`;
@@ -216,7 +218,9 @@ export async function exportJobResultToZip(jobId: number) {
         archive.finalize().catch(reject);
     });
 
-    const rel = path.relative(process.cwd(), zipAbs).split(path.sep).join(path.posix.sep);
+    const rel = process.env.EXPORT_DIR
+        ? path.relative(process.env.EXPORT_DIR, zipAbs).split(path.sep).join(path.posix.sep)
+        : path.relative(process.cwd(), zipAbs).split(path.sep).join(path.posix.sep);
     await jobsRepo.setJobExportPath(jobId, rel);
     try { await jobsRepo.setJobExportProgress(jobId, 95, 'EXPORT_ZIPPED'); } catch (e) { }
 

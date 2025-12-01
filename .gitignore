@@ -18,6 +18,7 @@ pids
 # Build outputs
 dist/
 build/
+dist-build/
 *.tsbuildinfo
 
 # Coverage
@@ -33,6 +34,7 @@ Thumbs.db
 
 # Env files
 .env
+.env.production
 .env.local
 .env.*.local
 

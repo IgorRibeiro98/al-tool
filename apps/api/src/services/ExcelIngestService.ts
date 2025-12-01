@@ -14,7 +14,9 @@ type IngestResult = { tableName: string; rowsInserted: number };
 export class ExcelIngestService {
     private async appendIngestLog(prefix: string, info: any) {
         try {
-            const logsDir = path.resolve(__dirname, '..', '..', 'logs');
+            const logsDir = process.env.LOGS_DIR
+                ? path.resolve(process.env.LOGS_DIR)
+                : path.resolve(__dirname, '..', '..', 'logs');
             await fs.mkdir(logsDir, { recursive: true });
             const logFile = path.join(logsDir, 'ingest-errors.log');
             const entry = {
@@ -38,6 +40,11 @@ export class ExcelIngestService {
             if (path.isAbsolute(relOrAbs)) {
                 candidates.push(relOrAbs);
             } else {
+                const baseIngestDir = process.env.UPLOAD_DIR
+                    ? path.resolve(process.env.UPLOAD_DIR)
+                    : path.resolve(process.cwd());
+
+                candidates.push(path.resolve(baseIngestDir, relOrAbs));
                 candidates.push(path.resolve(process.cwd(), relOrAbs));
                 candidates.push(path.resolve(process.cwd(), '..', relOrAbs));
                 candidates.push(path.resolve(process.cwd(), '..', '..', relOrAbs));

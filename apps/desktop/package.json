@@ -1,0 +1,83 @@
+{
+    "name": "al-tool-desktop",
+    "version": "1.0.0",
+    "private": true,
+    "main": "dist/main.js",
+    "homepage": "https://revaleonlabs.com.br",
+    "author": {
+        "name": "Revaleon Labs",
+        "email": "igor.ribeiro@uotz.com.br"
+    },
+    "scripts": {
+        "dev": "concurrently \"npm:watch\" \"npm:serve\"",
+        "watch": "tsc -w -p tsconfig.json",
+        "serve": "wait-on http://localhost:8081 && electron .",
+        "start": "electron .",
+        "build": "tsc -p tsconfig.json",
+        "build:pipeline": "cd ../../packages/pipeline && npm run build",
+        "build:frontend": "cd ../client && npm run build",
+        "build:api": "cd ../api && npm run build || echo 'no api build script'",
+        "build:electron": "npm run build:pipeline && npm run build && npm run build:frontend && npm run build:api",
+        "start:electron:prod": "NODE_ENV=production electron .",
+        "dist:electron": "npm run build:electron && electron-builder",
+        "lint": "echo 'no lint configured'"
+    },
+    "build": {
+        "appId": "com.altool.desktop",
+        "productName": "AL Tool Desktop",
+        "directories": {
+            "output": "dist-build",
+            "buildResources": "build"
+        },
+        "files": [
+            "dist/**/*",
+            {
+                "from": "../client/dist",
+                "to": "client/dist"
+            },
+            "package.json"
+        ],
+        "extraResources": [
+            {
+                "from": "../api/dist",
+                "to": "api/dist"
+            },
+            {
+                "from": "../api/node_modules",
+                "to": "api/node_modules"
+            },
+            {
+                "from": "../scripts",
+                "to": "scripts",
+                "filter": [
+                    "**/*"
+                ]
+            }
+        ],
+        "asar": true,
+        "win": {
+            "target": "nsis"
+        },
+        "linux": {
+            "target": [
+                "deb"
+            ],
+            "category": "Utility"
+        },
+        "mac": {
+            "target": "dmg",
+            "category": "public.app-category.productivity"
+        }
+    },
+    "dependencies": {
+        "dotenv": "^16.4.5"
+    },
+    "devDependencies": {
+        "@types/node": "^20.0.0",
+        "concurrently": "^8.0.0",
+        "electron": "^26.6.10",
+        "electron-builder": "^24.13.3",
+        "typescript": "^5.0.0",
+        "wait-on": "^7.0.0"
+    }
+}
