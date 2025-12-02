@@ -96,14 +96,14 @@ if (process.env.NODE_ENV !== 'test') {
         try {
             startConciliacaoWorker();
             console.log('Conciliacao worker started');
-            try {
-                startIngestWorker();
-                console.log('Ingest worker started');
-            } catch (err) {
-                console.error('Failed to start ingest worker', err);
-            }
         } catch (err) {
             console.error('Failed to start conciliacao worker', err);
+        }
+        try {
+            startIngestWorker();
+            console.log('Ingest worker started');
+        } catch (err) {
+            console.error('Failed to start ingest worker', err);
         }
     });
 }

@@ -1,7 +1,7 @@
 import db from '../db/knex';
 import * as ingestRepo from '../repos/ingestJobsRepository';
 import path from 'path';
-import { spawn } from 'child_process';
+import { fork } from 'child_process';
 
 const DEFAULT_INTERVAL_SECONDS = Number(process.env.WORKER_POLL_SECONDS || 5);
 
@@ -23,11 +23,14 @@ export function startIngestWorker(intervalSeconds = DEFAULT_INTERVAL_SECONDS) {
                 const isProd = process.env.NODE_ENV === 'production';
                 let child: any;
                 if (isProd) {
-                    const prodRunner = path.resolve(process.cwd(), 'dist', 'worker', 'ingestRunner.js');
-                    child = spawn(process.execPath, [prodRunner, String(jobId)], { stdio: 'inherit' });
+                    const prodRunner = path.resolve(__dirname, 'ingestRunner.js');
+                    child = fork(prodRunner, [String(jobId)], { stdio: 'inherit' });
                 } else {
                     const runnerPath = path.resolve(__dirname, 'ingestRunner.ts');
-                    child = spawn(process.execPath, ['-r', 'ts-node/register', runnerPath, String(jobId)], { stdio: 'inherit' });
+                    child = fork(runnerPath, [String(jobId)], {
+                        stdio: 'inherit',
+                        execArgv: ['-r', 'ts-node/register']
+                    });
                 }
 
                 child.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {

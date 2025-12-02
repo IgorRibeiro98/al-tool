@@ -204,6 +204,31 @@ const NewBase = () => {
                                 <div>
                                     <FormField
                                         control={control}
+                                        name="header_coluna_inicial_letter"
+                                        render={({ field }) => (
+                                            <FormItem>
+                                                <FormLabel>Coluna inicial do cabeçalho</FormLabel>
+                                                <FormControl>
+                                                    <Select value={field.value ?? ''} onValueChange={(v) => field.onChange(v || undefined)}>
+                                                        <SelectTrigger>
+                                                            <SelectValue />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {Array.from({ length: 26 }).map((_, i) => {
+                                                                const letter = String.fromCharCode('A'.charCodeAt(0) + i);
+                                                                return <SelectItem key={letter} value={letter}>{letter}</SelectItem>;
+                                                            })}
+                                                        </SelectContent>
+                                                    </Select>
+                                                </FormControl>
+                                                <FormMessage />
+                                            </FormItem>
+                                        )}
+                                    />
+                                </div>
+                                <div>
+                                    <FormField
+                                        control={control}
                                         name="header_linha_inicial"
                                         render={({ field }) => (
                                             <FormItem>
@@ -233,31 +258,7 @@ const NewBase = () => {
                                         )}
                                     />
                                 </div>
-                                <div>
-                                    <FormField
-                                        control={control}
-                                        name="header_coluna_inicial_letter"
-                                        render={({ field }) => (
-                                            <FormItem>
-                                                <FormLabel>Coluna inicial do cabeçalho</FormLabel>
-                                                <FormControl>
-                                                    <Select value={field.value ?? ''} onValueChange={(v) => field.onChange(v || undefined)}>
-                                                        <SelectTrigger>
-                                                            <SelectValue />
-                                                        </SelectTrigger>
-                                                        <SelectContent>
-                                                            {Array.from({ length: 26 }).map((_, i) => {
-                                                                const letter = String.fromCharCode('A'.charCodeAt(0) + i);
-                                                                return <SelectItem key={letter} value={letter}>{letter}</SelectItem>;
-                                                            })}
-                                                        </SelectContent>
-                                                    </Select>
-                                                </FormControl>
-                                                <FormMessage />
-                                            </FormItem>
-                                        )}
-                                    />
-                                </div>
+
                             </div>
 
                             <div className="flex gap-3 justify-end">

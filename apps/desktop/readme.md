@@ -115,6 +115,35 @@ cp apps/api/db/dev.sqlite3 /home/<usuario>/.config/Electron/data/db/dev.sqlite3
   - Por padrão, o Electron sempre injeta `DATA_DIR` do `userData` em dev e produção.
   - Se precisar forçar outro caminho em desenvolvimento, altere `apps/desktop/src/main.ts` para respeitar `process.env.DATA_DIR` quando definido (ex.: `DATA_DIR: process.env.DATA_DIR || dataDir`).
 
+  ## Worker de conversão em Python
+
+  Desde a migração mais recente o Electron volta a usar o `scripts/conversion_worker.py` para gerar arquivos JSONL antes da ingestão. O fluxo funciona assim:
+
+  1. Antes de subir o backend, o `main.ts` carrega o `.env` da raiz (`dotenv.config({ path: '../../.env' })`). Qualquer variável definida ali (ex.: `PYTHON_EXECUTABLE`) fica disponível automaticamente.
+  2. Após concluir migrations/backend, o Electron chama `startPythonConversionWorker`, que localiza `conversion_worker.py` em `resources/scripts` (build) ou na pasta `scripts/` do repo (dev).
+  3. O worker é spawnado via `spawn(<python>, conversion_worker.py)` com o mesmo conjunto de envs do backend: `DATA_DIR`, `DB_PATH`, `UPLOAD_DIR`, `EXPORT_DIR`, além de `INGESTS_DIR`, `POLL_INTERVAL` (default 5 segundos) e `PYTHONUNBUFFERED=1`.
+  4. Logs do worker são enviados para o console com prefixo `[py-conversion]` e gravados em `<userData>/logs/conversion-worker.log`. Ao fechar o app, o Electron envia `kill()` e encerra o processo.
+
+  ### Dependências do Python
+
+  - Existe um runtime Python gerenciado dentro do repositório (`apps/desktop/python-runtime`). Para criá-lo/atualizá-lo execute:
+
+  ```bash
+  npm run python:setup
+  ```
+
+  Esse comando cria um virtualenv em `apps/desktop/python-runtime` e instala os pacotes de `scripts/requirements.txt`. Ele deve ser executado sempre que atualizarmos os requisitos ou antes de rodar `npm run desktop:dev`/`npm run app:dist` em uma máquina nova.
+
+  - Em desenvolvimento, o Electron usa automaticamente `apps/desktop/python-runtime` (não é necessário exportar variáveis). Se preferir usar outro Python, defina `PYTHON_EXECUTABLE` no `.env` da raiz.
+
+  - Em produção, o conteúdo de `apps/desktop/python-runtime` é empacotado para `resources/python`. Certifique-se de rodar `npm run python:setup` antes de `npm run app:dist` (local ou em CI) para garantir que o instalador leve o runtime atualizado.
+
+  ### Empacotamento dos scripts
+
+  - `apps/desktop/package.json` copia `conversion_worker.py`, `xlsb_to_xlsx.py`, `xlsx_to_jsonl.js` e `requirements.txt` para `resources/scripts/` através de `extraResources`.
+  - Caso você inclua um runtime Python portátil (por exemplo, `resources/python/bin/python3`), o `main.ts` detecta automaticamente em produção.
+  - O trabalhador utiliza `INGESTS_DIR = <DATA_DIR>/ingests`, então garanta que esse diretório esteja presente ao distribuir builds customizados.
+
 ### Módulo nativo `better-sqlite3` (erro NODE_MODULE_VERSION)
 
 Em produção o backend é iniciado pelo executável do Electron, que embute uma versão de Node diferente da versão usada no seu terminal. Módulos nativos precisam ser recompilados para o ABI do Electron.

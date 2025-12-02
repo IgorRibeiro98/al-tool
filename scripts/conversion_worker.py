@@ -16,12 +16,16 @@ import os
 import time
 import sqlite3
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 
-DB_PATH = os.environ.get('DB_PATH', '/home/app/apps/api/db/dev.sqlite3')
+DB_PATH = os.environ.get('DB_PATH', '/home/storage/db/dev.sqlite3')
 POLL_INTERVAL = float(os.environ.get('POLL_INTERVAL', '5'))
 # Default to API storage path so converter writes artifacts where the API expects them
 INGESTS_DIR = os.environ.get('INGESTS_DIR', '/home/app/apps/api/storage/ingests')
+UPLOAD_DIR_ENV = os.environ.get('UPLOAD_DIR')
+DATA_DIR_ENV = os.environ.get('DATA_DIR')
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.environ.get('REPO_ROOT', os.path.abspath(os.path.join(SCRIPT_DIR, '..')))
 
 
 def ensure_ingests_dir():
@@ -32,7 +36,53 @@ def ensure_ingests_dir():
 
 
 def now_iso():
-    return datetime.utcnow().isoformat(sep=' ', timespec='seconds')
+    return datetime.now(timezone.utc).isoformat(sep=' ', timespec='seconds')
+
+
+def resolve_uploaded_path(arquivo_caminho: str):
+    candidates = []
+    cleaned = arquivo_caminho.lstrip('./') if arquivo_caminho else ''
+
+    def add(path_candidate):
+        if not path_candidate:
+            return
+        norm = os.path.abspath(path_candidate)
+        if norm not in candidates:
+            candidates.append(norm)
+
+    if not arquivo_caminho:
+        return None, []
+
+    if os.path.isabs(arquivo_caminho):
+        add(arquivo_caminho)
+    else:
+        add(os.path.join(os.getcwd(), arquivo_caminho))
+        add(os.path.join(os.getcwd(), cleaned))
+        add(os.path.join(SCRIPT_DIR, arquivo_caminho))
+        add(os.path.join(SCRIPT_DIR, cleaned))
+        add(os.path.join(REPO_ROOT, arquivo_caminho))
+        add(os.path.join(REPO_ROOT, cleaned))
+        add(os.path.join(REPO_ROOT, 'apps/api', arquivo_caminho))
+        add(os.path.join(REPO_ROOT, 'apps/api', cleaned))
+
+    # Legacy container locations
+    add(os.path.join('/home/app', arquivo_caminho))
+    add(os.path.join('/home/app/apps/api', arquivo_caminho))
+    add(os.path.join('/home/app/apps', arquivo_caminho))
+
+    if DATA_DIR_ENV:
+        add(os.path.join(DATA_DIR_ENV, arquivo_caminho))
+        add(os.path.join(DATA_DIR_ENV, cleaned))
+        add(os.path.join(DATA_DIR_ENV, 'uploads', os.path.basename(cleaned)))
+
+    if UPLOAD_DIR_ENV:
+        add(os.path.join(UPLOAD_DIR_ENV, os.path.basename(cleaned)))
+
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate, candidates
+
+    return None, candidates
 
 
 def claim_pending(conn):
@@ -107,21 +157,7 @@ def main_loop():
             base_id, arquivo_caminho = claimed
             print(f"Claimed base id={base_id} file={arquivo_caminho}")
 
-            # Resolve possible locations for the uploaded file. The API may have stored
-            # a relative path like 'storage/uploads/..' (relative to /home/app/apps/api),
-            # or relative to repo root. Try several candidates and pick the first that exists.
-            candidates = []
-            if os.path.isabs(arquivo_caminho):
-                candidates.append(arquivo_caminho)
-            candidates.append(os.path.join('/home/app', arquivo_caminho))
-            candidates.append(os.path.join('/home/app/apps/api', arquivo_caminho))
-            candidates.append(os.path.join('/home/app/apps', arquivo_caminho))
-
-            abs_input = None
-            for c in candidates:
-                if os.path.exists(c):
-                    abs_input = c
-                    break
+            abs_input, candidates = resolve_uploaded_path(arquivo_caminho)
 
             if abs_input is None:
                 print(f"Cannot find uploaded file for base {base_id}; tried: {candidates}")
@@ -133,10 +169,8 @@ def main_loop():
             try:
                 rc, out, err = run_conversion(abs_input, abs_output)
                 if rc == 0:
-                    # store relative path used by API (relative to repo root)
-                    rel = os.path.relpath(abs_output, start='/home/app')
-                    update_status(conn, base_id, 'READY', jsonl_rel=rel)
-                    print(f"Converted base {base_id} -> {rel}")
+                    update_status(conn, base_id, 'READY', jsonl_rel=abs_output)
+                    print(f"Converted base {base_id} -> {abs_output}")
                 else:
                     errmsg = f"converter exit {rc}: {err or out}"
                     update_status(conn, base_id, 'FAILED', error_msg=errmsg)

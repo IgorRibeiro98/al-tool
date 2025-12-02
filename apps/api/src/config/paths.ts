@@ -27,6 +27,14 @@ export const UPLOAD_DIR = (() => {
     return dir;
 })();
 
+// Ingest artifacts directory (JSONL files generated from uploads)
+export const INGESTS_DIR = (() => {
+    const dir = process.env.INGESTS_DIR || path.join(DATA_DIR, 'ingests');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    console.log('[paths] INGESTS_DIR resolved to', dir);
+    return dir;
+})();
+
 // Exports directory
 export const EXPORT_DIR = (() => {
     const dir = process.env.EXPORT_DIR || path.join(DATA_DIR, 'exports');
@@ -35,4 +43,4 @@ export const EXPORT_DIR = (() => {
     return dir;
 })();
 
-export default { DATA_DIR, DB_PATH, UPLOAD_DIR, EXPORT_DIR };
+export default { DATA_DIR, DB_PATH, UPLOAD_DIR, EXPORT_DIR, INGESTS_DIR };

@@ -56,6 +56,23 @@
                 "filter": [
                     "**/*"
                 ]
+            },
+            {
+                "from": "../../scripts",
+                "to": "scripts",
+                "filter": [
+                    "conversion_worker.py",
+                    "xlsb_to_xlsx.py",
+                    "xlsx_to_jsonl.js",
+                    "requirements.txt"
+                ]
+            },
+            {
+                "from": "./python-runtime",
+                "to": "python",
+                "filter": [
+                    "**/*"
+                ]
             }
         ],
         "directories": {
