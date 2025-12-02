@@ -1,0 +1,84 @@
+{
+    "name": "al-tool-desktop",
+    "version": "0.1.0",
+    "private": true,
+    "main": "dist/main.js",
+    "homepage": "https://revaleon.com.br",
+    "author": {
+        "name": "Revaleon",
+        "email": "contact@revaleon.com"
+    },
+    "scripts": {
+        "dev": "npm run build && electron ./dist/main.js",
+        "dev:watch": "tsc -p . --watch & electron ./dist/main.js",
+        "build": "tsc -p .",
+        "dist": "electron-builder"
+    },
+    "dependencies": {},
+    "devDependencies": {
+        "electron": "39.2.4",
+        "typescript": "^5.9.3",
+        "ts-node": "^10.9.2",
+        "electron-builder": "^26.0.12"
+    },
+    "build": {
+        "appId": "com.altool.desktop",
+        "productName": "AL-Tool",
+        "files": [
+            "dist/**",
+            "src/**"
+        ],
+        "extraResources": [
+            {
+                "from": "../api/dist",
+                "to": "api/dist",
+                "filter": [
+                    "**/*"
+                ]
+            },
+            {
+                "from": "../api/migrations",
+                "to": "api/migrations",
+                "filter": [
+                    "**/*"
+                ]
+            },
+            {
+                "from": "../client/dist",
+                "to": "client/dist",
+                "filter": [
+                    "**/*"
+                ]
+            },
+            {
+                "from": "../../node_modules",
+                "to": "node_modules",
+                "filter": [
+                    "**/*"
+                ]
+            }
+        ],
+        "directories": {
+            "buildResources": "build",
+            "output": "dist"
+        },
+        "win": {
+            "target": [
+                "nsis"
+            ]
+        },
+        "mac": {
+            "target": [
+                "dmg"
+            ],
+            "category": "public.app-category.business"
+        },
+        "linux": {
+            "target": [
+                "deb"
+            ],
+            "category": "Utility",
+            "artifactName": "al-tool-${version}-${arch}.${ext}"
+        }
+    }
+}

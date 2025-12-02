@@ -1,13 +1,7 @@
 import { knex as createKnex, Knex } from 'knex';
-import path from 'path';
-import fs from 'fs';
+import { DB_PATH } from '../config/paths';
 
-const dbDir = path.resolve(__dirname, '..', '..', 'db');
-if (!fs.existsSync(dbDir)) {
-    fs.mkdirSync(dbDir, { recursive: true });
-}
-
-const dbPath = path.join(dbDir, 'dev.sqlite3');
+const dbPath = DB_PATH;
 
 const config: Knex.Config = {
     client: 'better-sqlite3',

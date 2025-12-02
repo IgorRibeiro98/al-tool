@@ -1,4 +1,4 @@
-import { ConciliacaoPipeline, NullsBaseAStep, EstornoBaseAStep, NullsBaseBStep, CancelamentoBaseBStep, ConciliacaoABStep } from '@al-tool/pipeline';
+import { ConciliacaoPipeline, NullsBaseAStep, EstornoBaseAStep, NullsBaseBStep, CancelamentoBaseBStep, ConciliacaoABStep } from './core';
 import db from '../db/knex';
 
 // create steps in the required order: nulos A, estorno A, nulos B, cancelamento B, then others (if any)

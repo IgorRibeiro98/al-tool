@@ -1,11 +1,15 @@
 import axios from 'axios';
 
-// Base API configuration
+const apiBaseRaw = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api';
+const API_BASE_URL = apiBaseRaw.replace(/\/$/, '');
+
 const api = axios.create({
-    baseURL: import.meta.env.VITE_API_URL || 'http://localhost:3000', // Vite expõe variáveis via import.meta.env
+    baseURL: API_BASE_URL,
     headers: {
         'Content-Type': 'application/json',
     },
 });
+
+export { API_BASE_URL };
 
 export default api;

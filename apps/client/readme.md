@@ -71,3 +71,14 @@ Yes, you can!
 To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
 
 Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+
+## API configuration
+
+- The client talks to the backend via the `VITE_API_BASE_URL` variable exposed at runtime.
+- Development mode already sets this in `apps/client/.env.development`:
+
+```bash
+VITE_API_BASE_URL=http://localhost:3000/api
+```
+
+- When the client is built and served by the API, the default `/api` relative URL is used, so no env overrides are necessary.
