@@ -34,7 +34,7 @@ export class CancelamentoBaseBStep implements PipelineStep {
         const cfg = await this.db('configs_cancelamento').where({ id: cfgId }).first();
         if (!cfg) return;
 
-        const baseId = cfg.base_id ?? ctx.baseFiscalId;
+        const baseId = ctx.baseFiscalId ?? cfg.base_id;
         if (!baseId) return;
 
         const base = await this.db('bases').where({ id: baseId }).first();

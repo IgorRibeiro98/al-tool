@@ -8,15 +8,61 @@ import fs from 'fs/promises';
 
 const router = Router();
 
+async function resolveBaseOverride(raw: any, expectedType: 'CONTABIL' | 'FISCAL', fieldName: string) {
+    if (raw === undefined || raw === null || raw === '' || raw === 'config') return null;
+    const parsed = Number(raw);
+    if (!parsed || Number.isNaN(parsed) || parsed <= 0) throw new Error(`${fieldName} deve ser um número válido`);
+    const base = await db('bases').where({ id: parsed }).first();
+    if (!base) throw new Error(`${fieldName} não encontrado`);
+    if (base.tipo !== expectedType) throw new Error(`${fieldName} deve apontar para uma base do tipo ${expectedType}`);
+    return base;
+}
+
 router.post('/', async (req: Request, res: Response) => {
     try {
-        const { configConciliacaoId, configEstornoId, configCancelamentoId, nome } = req.body;
+        const { configConciliacaoId, configEstornoId, configCancelamentoId, configMapeamentoId, nome, baseContabilId, baseFiscalId } = req.body;
         const cfgId = Number(configConciliacaoId);
         if (!cfgId || Number.isNaN(cfgId)) return res.status(400).json({ error: 'configConciliacaoId is required and must be a number' });
 
         // fetch config conciliacao
         const cfg = await db('configs_conciliacao').where({ id: cfgId }).first();
         if (!cfg) return res.status(404).json({ error: 'config conciliacao not found' });
+
+        let overrideBaseContabil: any = null;
+        let overrideBaseFiscal: any = null;
+        try {
+            overrideBaseContabil = await resolveBaseOverride(baseContabilId, 'CONTABIL', 'baseContabilId');
+        } catch (err: any) {
+            return res.status(400).json({ error: err?.message || 'baseContabilId inválido' });
+        }
+        try {
+            overrideBaseFiscal = await resolveBaseOverride(baseFiscalId, 'FISCAL', 'baseFiscalId');
+        } catch (err: any) {
+            return res.status(400).json({ error: err?.message || 'baseFiscalId inválido' });
+        }
+
+        const effectiveBaseContabilId = overrideBaseContabil?.id || cfg.base_contabil_id;
+        const effectiveBaseFiscalId = overrideBaseFiscal?.id || cfg.base_fiscal_id;
+        if (!effectiveBaseContabilId || !effectiveBaseFiscalId) {
+            return res.status(400).json({ error: 'Configuração selecionada não possui bases padrão e nenhuma sobreposição foi informada.' });
+        }
+        if (effectiveBaseContabilId === effectiveBaseFiscalId) {
+            return res.status(400).json({ error: 'Base contábil e base fiscal devem ser diferentes.' });
+        }
+
+        let mapeamentoId: number | null = null;
+        let mapeamentoNome: string | null = null;
+        if (configMapeamentoId !== undefined && configMapeamentoId !== null && configMapeamentoId !== '') {
+            const parsed = Number(configMapeamentoId);
+            if (Number.isNaN(parsed) || parsed <= 0) return res.status(400).json({ error: 'configMapeamentoId must be a positive number' });
+            const mapRow = await db('configs_mapeamento_bases').where({ id: parsed }).first();
+            if (!mapRow) return res.status(404).json({ error: 'config mapeamento not found' });
+            if (mapRow.base_contabil_id !== effectiveBaseContabilId || mapRow.base_fiscal_id !== effectiveBaseFiscalId) {
+                return res.status(400).json({ error: 'config mapeamento não corresponde às bases selecionadas para este job' });
+            }
+            mapeamentoId = parsed;
+            mapeamentoNome = mapRow.nome || null;
+        }
 
         // fetch optional estorno and cancelamento configs to denormalize their names into job
         let estornoNome: string | null = null;
@@ -36,8 +82,12 @@ router.post('/', async (req: Request, res: Response) => {
             config_conciliacao_id: cfgId,
             config_estorno_id: configEstornoId ?? null,
             config_cancelamento_id: configCancelamentoId ?? null,
+            config_mapeamento_id: mapeamentoId,
+            config_mapeamento_nome: mapeamentoNome,
             config_estorno_nome: estornoNome,
             config_cancelamento_nome: cancelamentoNome,
+            base_contabil_id_override: overrideBaseContabil ? overrideBaseContabil.id : null,
+            base_fiscal_id_override: overrideBaseFiscal ? overrideBaseFiscal.id : null,
             status: 'PENDING',
             erro: null,
             created_at: db.fn.now(),

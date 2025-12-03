@@ -9,6 +9,64 @@ import fs from 'fs/promises';
 import fsSync from 'fs';
 import archiver from 'archiver';
 
+type MappingPair = { coluna_contabil: string; coluna_fiscal: string };
+
+interface BaseSheetMetadata {
+    baseId: number;
+    tableName: string;
+    columns: Array<{ sqliteName: string; header: string }>;
+}
+
+interface StreamRowPayload {
+    baseValues: Record<string, any>;
+    keyValues: Record<string, any>;
+    status: any;
+    chave: any;
+    grupo: any;
+}
+
+const EXTRA_FINAL_HEADERS = ['status', 'chave', 'grupo'];
+
+function parseChaves(raw: any): Record<string, string[]> {
+    try {
+        const parsed = raw ? JSON.parse(raw) : {};
+        if (Array.isArray(parsed)) return { CHAVE_1: parsed } as Record<string, string[]>;
+        if (parsed && typeof parsed === 'object') return parsed as Record<string, string[]>;
+        return {};
+    } catch {
+        return {};
+    }
+}
+
+function parseMappingPairs(raw: any): MappingPair[] {
+    let source = raw;
+    if (typeof raw === 'string') {
+        try {
+            source = JSON.parse(raw);
+        } catch {
+            return [];
+        }
+    }
+    if (!Array.isArray(source)) return [];
+    return source
+        .map((item: any) => {
+            const coluna_contabil = typeof item?.coluna_contabil === 'string' ? item.coluna_contabil.trim() : '';
+            const coluna_fiscal = typeof item?.coluna_fiscal === 'string' ? item.coluna_fiscal.trim() : '';
+            return { coluna_contabil, coluna_fiscal };
+        })
+        .filter((item: MappingPair) => item.coluna_contabil.length > 0 && item.coluna_fiscal.length > 0);
+}
+
+function extractKeyIdentifiers(cfgRow: any): string[] {
+    const chavesContabil = parseChaves(cfgRow?.chaves_contabil);
+    const chavesFiscal = parseChaves(cfgRow?.chaves_fiscal);
+    return Array.from(new Set([...Object.keys(chavesContabil || {}), ...Object.keys(chavesFiscal || {})]));
+}
+
+function buildKeyHeaders(keyIds: string[]): string[] {
+    return keyIds.map((key) => key.replace('_', ' '));
+}
+
 export async function exportJobResultToXlsx(jobId: number) {
     const job = await jobsRepo.getJobById(jobId);
     if (!job) throw new Error('job not found');
@@ -17,20 +75,11 @@ export async function exportJobResultToXlsx(jobId: number) {
     const hasTable = await db.schema.hasTable(resultTable);
     if (!hasTable) throw new Error('result table not found');
 
-    const rows = await db(resultTable).select('*').orderBy('id', 'asc');
-    // parse chaves map to include dynamic key columns in export
-    const parseChaves = (raw: any) => {
-        try {
-            const p = raw ? JSON.parse(raw) : {};
-            if (Array.isArray(p)) return { CHAVE_1: p } as Record<string, string[]>;
-            if (p && typeof p === 'object') return p as Record<string, string[]>;
-            return {} as Record<string, string[]>;
-        } catch { return {} as Record<string, string[]>; }
-    };
+    const cfgRow = await db('configs_conciliacao').where({ id: job.config_conciliacao_id }).first();
+    if (!cfgRow) throw new Error('config conciliacao not found for job');
 
-    const chavesContabil = parseChaves((await db('configs_conciliacao').where({ id: job.config_conciliacao_id }).first())?.chaves_contabil);
-    const chavesFiscal = parseChaves((await db('configs_conciliacao').where({ id: job.config_conciliacao_id }).first())?.chaves_fiscal);
-    const keyIdentifiers = Array.from(new Set([...Object.keys(chavesContabil || {}), ...Object.keys(chavesFiscal || {})]));
+    const keyIdentifiers = extractKeyIdentifiers(cfgRow);
+    const rows = await db(resultTable).select('*').orderBy('id', 'asc');
 
     // Prepare rows for sheet: include dynamic key columns + status, grupo, chave, value_a, value_b, difference, a_values, b_values
     const sheetData = rows.map((r: any) => {
@@ -94,94 +143,40 @@ export async function exportJobResultToZip(jobId: number) {
     const cfg = await db('configs_conciliacao').where({ id: job.config_conciliacao_id }).first();
     if (!cfg) throw new Error('config conciliacao not found for job');
 
-    const baseAId = cfg.base_contabil_id;
-    const baseBId = cfg.base_fiscal_id;
+    const baseAId = job.base_contabil_id_override || cfg.base_contabil_id;
+    const baseBId = job.base_fiscal_id_override || cfg.base_fiscal_id;
+    if (!baseAId || !baseBId) throw new Error('Bases não configuradas para este job');
+    const keyIds = extractKeyIdentifiers(cfg);
+    const keyHeaders = buildKeyHeaders(keyIds);
 
-    // helper to build sheet file for a base using ExcelJS streaming writer (writes to disk)
-    async function buildSheetFileForBase(baseId: number, side: 'A' | 'B') {
-        const base = await db('bases').where({ id: baseId }).first();
-        if (!base) throw new Error(`base ${baseId} not found`);
-        const tableName = base.tabela_sqlite;
-        if (!tableName) throw new Error(`base ${baseId} has no tabela_sqlite`);
+    const [metaA, metaB] = await Promise.all([
+        getBaseSheetMetadata(baseAId),
+        getBaseSheetMetadata(baseBId)
+    ]);
 
-        // reconstruct ordered columns
-        const cols = await db('base_columns').where({ base_id: baseId }).orderBy('col_index', 'asc');
-        if (!cols || cols.length === 0) throw new Error(`no base_columns metadata for base ${baseId}`);
-        const sqliteCols = cols.map((c: any) => c.sqlite_name);
-        const headers = cols.map((c: any) => (c.excel_name == null ? c.sqlite_name : String(c.excel_name)));
-
-        // prepare file path
-        const exportsDirLocal = EXPORT_DIR;
-        await fs.mkdir(exportsDirLocal, { recursive: true });
-        const fileName = `${side === 'A' ? 'Base_A' : 'Base_B'}_${jobId}.xlsx`;
-        const filePath = path.join(exportsDirLocal, fileName);
-
-        // create streaming workbook writer
-        const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath });
-        const sheetName = side === 'A' ? 'Base_A' : 'Base_B';
-        const ws = workbook.addWorksheet(sheetName);
-
-        // write header: original headers + dynamic CHAVE columns + status/chave/grupo
-        const keyIds = (() => {
-            try {
-                const cfgRow = cfg;
-                const parseChavesLocal = (raw: any) => { try { const p = raw ? JSON.parse(raw) : {}; if (Array.isArray(p)) return { CHAVE_1: p }; if (p && typeof p === 'object') return p; return {}; } catch { return {}; } };
-                const kc = parseChavesLocal(cfgRow.chaves_contabil);
-                const kf = parseChavesLocal(cfgRow.chaves_fiscal);
-                return Array.from(new Set([...Object.keys(kc || {}), ...Object.keys(kf || {})]));
-            } catch { return []; }
-        })();
-
-        const keyHeaders = keyIds.map(k => k.replace('_', ' '));
-        const finalHeaders = headers.concat(keyHeaders, ['status', 'chave', 'grupo']);
-        ws.addRow(finalHeaders).commit();
-
-        // build select columns and left join to result table
-        const selectCols = sqliteCols.map((c: string) => `${tableName}.${c}`);
-        const joinCondition = side === 'A' ? `${resultTable}.a_row_id = ${tableName}.id` : `${resultTable}.b_row_id = ${tableName}.id`;
-
-        // include dynamic key columns from result table as aliases _{key}
-        const keyIdsForSelect = keyIds;
-        const keySelects = keyIdsForSelect.map(k => `${resultTable}.${k} as _${k}`);
-
-        // use stream to avoid loading all rows in memory
-        const query = db.select(selectCols.concat(keySelects).concat([`${resultTable}.status as _status`, `${resultTable}.chave as _chave`, `${resultTable}.grupo as _grupo`]))
-            .from(tableName)
-            .leftJoin(resultTable, db.raw(joinCondition))
-            .orderBy(`${tableName}.id`, 'asc');
-
-        const stream: any = await (query as any).stream();
-        try {
-            for await (const r of stream) {
-                const rowArr = sqliteCols.map((c: string) => {
-                    const v = r[c];
-                    return v === undefined ? null : v;
-                });
-                // append dynamic key columns
-                for (const kid of keyIdsForSelect) rowArr.push(r[`_${kid}`] ?? null);
-                rowArr.push(r._status ?? null);
-                rowArr.push(r._chave ?? null);
-                rowArr.push(r._grupo ?? null);
-                ws.addRow(rowArr).commit();
-            }
-        } finally {
-            // ensure workbook is finalized even if stream breaks
-            await workbook.commit();
-            // ensure the stream is destroyed/closed
-            try { stream.destroy && stream.destroy(); } catch (e) { }
+    let mappingPairs: MappingPair[] = [];
+    if (job.config_mapeamento_id) {
+        const mapRow = await db('configs_mapeamento_bases').where({ id: job.config_mapeamento_id }).first();
+        if (!mapRow) {
+            console.warn(`Mapping config ${job.config_mapeamento_id} not found for job ${jobId}; fallback to default column matching.`);
+        } else if (mapRow.base_contabil_id !== baseAId || mapRow.base_fiscal_id !== baseBId) {
+            console.warn(`Mapping config ${job.config_mapeamento_id} bases do not match job ${jobId}; fallback to default column matching.`);
+        } else {
+            mappingPairs = parseMappingPairs(mapRow.mapeamentos);
         }
-
-        return filePath;
     }
 
-    // Build sheets and report progress to the job row.
     try { await jobsRepo.setJobExportProgress(jobId, 5, 'EXPORT_BUILDING_A'); } catch (e) { }
-    const fileA = await buildSheetFileForBase(baseAId, 'A');
+    const fileA = await buildSheetFileForBase({ jobId, side: 'A', meta: metaA, resultTable, keyIds, keyHeaders });
     try { await jobsRepo.setJobExportProgress(jobId, 40, 'EXPORT_BUILT_A'); } catch (e) { }
 
     try { await jobsRepo.setJobExportProgress(jobId, 45, 'EXPORT_BUILDING_B'); } catch (e) { }
-    const fileB = await buildSheetFileForBase(baseBId, 'B');
-    try { await jobsRepo.setJobExportProgress(jobId, 80, 'EXPORT_BUILT_B'); } catch (e) { }
+    const fileB = await buildSheetFileForBase({ jobId, side: 'B', meta: metaB, resultTable, keyIds, keyHeaders });
+    try { await jobsRepo.setJobExportProgress(jobId, 70, 'EXPORT_BUILT_B'); } catch (e) { }
+
+    try { await jobsRepo.setJobExportProgress(jobId, 75, 'EXPORT_BUILDING_COMBINED'); } catch (e) { }
+    const fileCombined = await buildCombinedWorkbook({ jobId, metaA, metaB, resultTable, keyIds, keyHeaders, mappingPairs });
+    try { await jobsRepo.setJobExportProgress(jobId, 85, 'EXPORT_BUILT_COMBINED'); } catch (e) { }
 
     // ensure exports dir
     const exportsDir = EXPORT_DIR;
@@ -214,6 +209,7 @@ export async function exportJobResultToZip(jobId: number) {
         archive.pipe(output);
         archive.file(fileA, { name: 'Base_A.xlsx' });
         archive.file(fileB, { name: 'Base_B.xlsx' });
+        archive.file(fileCombined, { name: 'Base_Comparativo.xlsx' });
         archive.finalize().catch(reject);
     });
 
@@ -225,6 +221,208 @@ export async function exportJobResultToZip(jobId: number) {
     try { await jobsRepo.setJobExportProgress(jobId, 100, 'EXPORT_DONE'); } catch (e) { }
 
     return { path: rel, filename: zipFilename };
+}
+
+async function getBaseSheetMetadata(baseId: number): Promise<BaseSheetMetadata> {
+    const base = await db('bases').where({ id: baseId }).first();
+    if (!base) throw new Error(`base ${baseId} not found`);
+    const tableName = base.tabela_sqlite;
+    if (!tableName) throw new Error(`base ${baseId} has no tabela_sqlite`);
+    const cols = await db('base_columns').where({ base_id: baseId }).orderBy('col_index', 'asc');
+    if (!cols || cols.length === 0) throw new Error(`no base_columns metadata for base ${baseId}`);
+    return {
+        baseId,
+        tableName,
+        columns: cols.map((c: any) => ({
+            sqliteName: c.sqlite_name,
+            header: c.excel_name == null ? c.sqlite_name : String(c.excel_name),
+        })),
+    };
+}
+
+function buildColumnMapping(metaA: BaseSheetMetadata, metaB: BaseSheetMetadata, pairs: MappingPair[]): Map<string, string> {
+    const mapping = new Map<string, string>();
+    const bColumns = new Set(metaB.columns.map((col) => col.sqliteName));
+    const validACols = new Set(metaA.columns.map((col) => col.sqliteName));
+
+    // default: identical column names
+    for (const col of metaA.columns) {
+        if (bColumns.has(col.sqliteName)) mapping.set(col.sqliteName, col.sqliteName);
+    }
+
+    for (const pair of pairs) {
+        const colA = pair.coluna_contabil;
+        const colB = pair.coluna_fiscal;
+        if (!validACols.has(colA)) continue;
+        if (!bColumns.has(colB)) continue;
+        mapping.set(colA, colB);
+    }
+
+    return mapping;
+}
+
+async function streamBaseRows(params: {
+    meta: BaseSheetMetadata;
+    side: 'A' | 'B';
+    resultTable: string;
+    keyIds: string[];
+    onRow: (row: StreamRowPayload) => void | Promise<void>;
+}) {
+    const { meta, side, resultTable, keyIds, onRow } = params;
+    const sqliteCols = meta.columns.map((col) => col.sqliteName);
+    const selectCols = sqliteCols.map((col) => `${meta.tableName}.${col}`);
+    const joinCondition = side === 'A'
+        ? `${resultTable}.a_row_id = ${meta.tableName}.id`
+        : `${resultTable}.b_row_id = ${meta.tableName}.id`;
+
+    const keyAlias = (key: string) => `__key_${key}`;
+    const keySelects = keyIds.map((key) => db.raw('??.?? as ??', [resultTable, key, keyAlias(key)]));
+    const statusAlias = '__status';
+    const chaveAlias = '__chave';
+    const grupoAlias = '__grupo';
+
+    const selectPieces: any[] = [
+        ...selectCols,
+        ...keySelects,
+        db.raw('??.?? as ??', [resultTable, 'status', statusAlias]),
+        db.raw('??.?? as ??', [resultTable, 'chave', chaveAlias]),
+        db.raw('??.?? as ??', [resultTable, 'grupo', grupoAlias]),
+    ];
+
+    const query = db.select(selectPieces)
+        .from(meta.tableName)
+        .leftJoin(resultTable, db.raw(joinCondition))
+        .orderBy(`${meta.tableName}.id`, 'asc');
+
+    const stream: any = await (query as any).stream();
+    try {
+        for await (const row of stream) {
+            const baseValues: Record<string, any> = {};
+            for (const col of sqliteCols) baseValues[col] = row[col];
+            const keyValues: Record<string, any> = {};
+            for (const key of keyIds) keyValues[key] = row[keyAlias(key)] ?? null;
+            await onRow({
+                baseValues,
+                keyValues,
+                status: row[statusAlias] ?? null,
+                chave: row[chaveAlias] ?? null,
+                grupo: row[grupoAlias] ?? null,
+            });
+        }
+    } finally {
+        try { stream.destroy && stream.destroy(); } catch (err) { }
+    }
+}
+
+async function buildSheetFileForBase(params: {
+    jobId: number;
+    side: 'A' | 'B';
+    meta: BaseSheetMetadata;
+    resultTable: string;
+    keyIds: string[];
+    keyHeaders: string[];
+}): Promise<string> {
+    const { jobId, side, meta, resultTable, keyIds, keyHeaders } = params;
+    await fs.mkdir(EXPORT_DIR, { recursive: true });
+    const fileName = `${side === 'A' ? 'Base_A' : 'Base_B'}_${jobId}.xlsx`;
+    const filePath = path.join(EXPORT_DIR, fileName);
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath });
+    const sheet = workbook.addWorksheet(side === 'A' ? 'Base_A' : 'Base_B');
+    const baseHeaders = meta.columns.map((col) => col.header);
+    const finalHeaders = baseHeaders.concat(keyHeaders, EXTRA_FINAL_HEADERS);
+    sheet.addRow(finalHeaders).commit();
+
+    try {
+        await streamBaseRows({
+            meta,
+            side,
+            resultTable,
+            keyIds,
+            onRow: (row) => {
+                const rowArr = meta.columns.map((col) => {
+                    const value = row.baseValues[col.sqliteName];
+                    return value === undefined ? null : value;
+                });
+                for (const key of keyIds) rowArr.push(row.keyValues[key] ?? null);
+                rowArr.push(row.status ?? null);
+                rowArr.push(row.chave ?? null);
+                rowArr.push(row.grupo ?? null);
+                sheet.addRow(rowArr).commit();
+            }
+        });
+    } finally {
+        (sheet as any).commit?.();
+        await workbook.commit();
+    }
+
+    return filePath;
+}
+
+async function buildCombinedWorkbook(params: {
+    jobId: number;
+    metaA: BaseSheetMetadata;
+    metaB: BaseSheetMetadata;
+    resultTable: string;
+    keyIds: string[];
+    keyHeaders: string[];
+    mappingPairs: MappingPair[];
+}): Promise<string> {
+    const { jobId, metaA, metaB, resultTable, keyIds, keyHeaders, mappingPairs } = params;
+    await fs.mkdir(EXPORT_DIR, { recursive: true });
+    const fileName = `Base_Comparativo_${jobId}.xlsx`;
+    const filePath = path.join(EXPORT_DIR, fileName);
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath });
+    const sheetResultado = workbook.addWorksheet('Resultado');
+    const baseHeaders = metaA.columns.map((col) => col.header);
+    const finalHeaders = baseHeaders.concat(keyHeaders, EXTRA_FINAL_HEADERS);
+    sheetResultado.addRow(finalHeaders).commit();
+
+    try {
+        await streamBaseRows({
+            meta: metaA,
+            side: 'A',
+            resultTable,
+            keyIds,
+            onRow: (row) => {
+                const rowArr = metaA.columns.map((col) => {
+                    const value = row.baseValues[col.sqliteName];
+                    return value === undefined ? null : value;
+                });
+                for (const key of keyIds) rowArr.push(row.keyValues[key] ?? null);
+                rowArr.push(row.status ?? null);
+                rowArr.push(row.chave ?? null);
+                rowArr.push(row.grupo ?? null);
+                sheetResultado.addRow(rowArr).commit();
+            }
+        });
+
+        const mapping = buildColumnMapping(metaA, metaB, mappingPairs);
+
+        await streamBaseRows({
+            meta: metaB,
+            side: 'B',
+            resultTable,
+            keyIds,
+            onRow: (row) => {
+                const rowArr = metaA.columns.map((col) => {
+                    const mappedCol = mapping.get(col.sqliteName);
+                    if (!mappedCol) return null;
+                    const value = row.baseValues[mappedCol];
+                    return value === undefined ? null : value;
+                });
+                for (const key of keyIds) rowArr.push(row.keyValues[key] ?? null);
+                rowArr.push(row.status ?? null);
+                rowArr.push(row.chave ?? null);
+                rowArr.push(row.grupo ?? null);
+                sheetResultado.addRow(rowArr).commit();
+            }
+        });
+    } finally {
+        (sheetResultado as any).commit?.();
+        await workbook.commit();
+    }
+
+    return filePath;
 }
 
 export async function getExportFilePathForJob(jobId: number) {

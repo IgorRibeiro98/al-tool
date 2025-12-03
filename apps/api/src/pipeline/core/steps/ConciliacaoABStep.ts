@@ -40,8 +40,8 @@ export class ConciliacaoABStep implements PipelineStep {
         const cfg = await this.db('configs_conciliacao').where({ id: cfgId }).first();
         if (!cfg) return;
 
-        const baseAId = cfg.base_contabil_id ?? ctx.baseContabilId;
-        const baseBId = cfg.base_fiscal_id ?? ctx.baseFiscalId;
+        const baseAId = ctx.baseContabilId ?? cfg.base_contabil_id;
+        const baseBId = ctx.baseFiscalId ?? cfg.base_fiscal_id;
         if (!baseAId || !baseBId) return;
 
         const baseA = await this.db('bases').where({ id: baseAId }).first();
@@ -207,6 +207,12 @@ export class ConciliacaoABStep implements PipelineStep {
             bIds: Set<number>;
         }
 
+        const normalizeAmount = (value: number) => {
+            if (value === 0) return 0;
+            return Number(Number(value).toFixed(6));
+        };
+        const EPSILON = 1e-6;
+
         for (const keyId of keyIdentifiers) {
             const aCols = chavesContabil[keyId] || [];
             const bCols = chavesFiscal[keyId] || [];
@@ -281,7 +287,9 @@ export class ConciliacaoABStep implements PipelineStep {
             for (const [, group] of groups) {
                 const { keyId: groupKeyId, aIds, bIds } = group;
 
-                if (aIds.size === 0 && bIds.size === 0) continue;
+                const hasBaseA = aIds.size > 0;
+                const hasBaseB = bIds.size > 0;
+                if (!hasBaseA && !hasBaseB) continue;
 
                 let somaA = 0;
                 let somaB = 0;
@@ -301,28 +309,34 @@ export class ConciliacaoABStep implements PipelineStep {
                     somaB += valueB;
                 }
 
-                const diffGroup = somaA - somaB;
+                somaA = normalizeAmount(somaA);
+                somaB = normalizeAmount(somaB);
+                const diffGroup = normalizeAmount(somaA - somaB);
+                const absDiff = Math.abs(diffGroup);
+                const limiteEfetivo = Math.max(limite, EPSILON);
 
                 let status: string | null = null;
                 let groupLabel: string | null = null;
 
-                if (aIds.size > 0 && bIds.size > 0) {
-                    if (Math.abs(diffGroup) === 0) {
+                if (hasBaseA && hasBaseB) {
+                    if (absDiff <= EPSILON) {
                         status = '01_Conciliado';
                         groupLabel = 'Conciliado';
-                    } else if (Math.abs(diffGroup) <= limite) {
+                    } else if (limite > 0 && absDiff <= limiteEfetivo) {
                         status = '02_Encontrado c/Diferença';
                         groupLabel = 'Diferença Imaterial';
-                    } else if (diffGroup > limite) {
+                    } else if (diffGroup > 0) {
                         status = '02_Encontrado c/Diferença';
                         groupLabel = 'Encontrado com diferença, BASE A MAIOR';
                     } else {
                         status = '02_Encontrado c/Diferença';
                         groupLabel = 'Encontrado com diferença, BASE B MAIOR';
                     }
-                } else {
+                } else if (hasBaseA || hasBaseB) {
                     status = '03_Não Encontrado';
                     groupLabel = 'Não encontrado';
+                } else {
+                    continue;
                 }
 
                 for (const aId of aIds.values()) {

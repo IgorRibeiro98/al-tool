@@ -278,6 +278,10 @@ const ConciliacaoDetails = () => {
                                 <p className="font-medium">{job?.nome ?? 'Configuração'}</p>
                             </div>
                             <div>
+                                <p className="text-sm text-muted-foreground">Mapeamento</p>
+                                <p className="font-medium">{job?.config_mapeamento_nome ?? (job?.config_mapeamento_id ? `#${job.config_mapeamento_id}` : 'Não aplicado')}</p>
+                            </div>
+                            <div>
                                 <p className="text-sm text-muted-foreground">Data de Criação</p>
                                 <p className="font-medium">{job?.created_at ? new Date(job.created_at).toLocaleDateString('pt-BR') : '-'}</p>
                             </div>

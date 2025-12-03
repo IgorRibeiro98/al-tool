@@ -18,6 +18,10 @@ export async function createJob(payload: Partial<any>) {
                     try { t.string('arquivo_exportado').nullable(); } catch (_) { }
                     try { t.string('config_estorno_nome').nullable(); } catch (_) { }
                     try { t.string('config_cancelamento_nome').nullable(); } catch (_) { }
+                    try { t.integer('config_mapeamento_id').unsigned().nullable(); } catch (_) { }
+                    try { t.string('config_mapeamento_nome').nullable(); } catch (_) { }
+                    try { t.integer('base_contabil_id_override').unsigned().nullable(); } catch (_) { }
+                    try { t.integer('base_fiscal_id_override').unsigned().nullable(); } catch (_) { }
                 });
             } catch (addErr) {
                 // ignore and rethrow original error below

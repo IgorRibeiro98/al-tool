@@ -4,8 +4,16 @@ export function fetchConciliacoes() {
     return api.get('/conciliacoes');
 }
 
-export function createConciliacao(data: { nome?: string; configConciliacaoId: number; configEstornoId?: number | null; configCancelamentoId?: number | null }) {
-    // API expects: { configConciliacaoId, configEstornoId, configCancelamentoId, nome }
+export function createConciliacao(data: {
+    nome?: string;
+    configConciliacaoId: number;
+    configEstornoId?: number | null;
+    configCancelamentoId?: number | null;
+    configMapeamentoId?: number | null;
+    baseContabilId?: number | null;
+    baseFiscalId?: number | null;
+}) {
+    // API expects: { configConciliacaoId, configEstornoId, configCancelamentoId, configMapeamentoId, baseContabilId, baseFiscalId, nome }
     return api.post('/conciliacoes', data);
 }
 

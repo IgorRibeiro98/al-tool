@@ -6,13 +6,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ArrowLeft } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { fetchBases } from '@/services/baseService';
-import { fetchConfigsConciliacao, fetchConfigsEstorno, fetchConfigsCancelamento } from '@/services/configsService';
+import { fetchConfigsConciliacao, fetchConfigsEstorno, fetchConfigsCancelamento, fetchConfigsMapeamento } from '@/services/configsService';
 import { createConciliacao } from '@/services/conciliacaoService';
 
 const NewConciliacao = () => {
@@ -22,6 +22,7 @@ const NewConciliacao = () => {
     const [configs, setConfigs] = useState<ConfigConciliacao[]>([]);
     const [estornos, setEstornos] = useState<ConfigEstorno[]>([]);
     const [cancelamentos, setCancelamentos] = useState<ConfigCancelamento[]>([]);
+    const [mapConfigs, setMapConfigs] = useState<ConfigMapeamento[]>([]);
 
     const [loading, setLoading] = useState(false);
 
@@ -30,6 +31,15 @@ const NewConciliacao = () => {
         configConciliacaoId: z.number({ message: 'Configuração é obrigatória', invalid_type_error: 'Configuração é obrigatória' }).int().positive(),
         configEstornoId: z.number().int().positive().nullable().optional(),
         configCancelamentoId: z.number().int().positive().nullable().optional(),
+        configMapeamentoId: z.number().int().positive().nullable().optional(),
+        baseContabilId: z.number().int().positive().nullable().optional(),
+        baseFiscalId: z.number().int().positive().nullable().optional(),
+    }).refine((data) => {
+        if (!data.baseContabilId || !data.baseFiscalId) return true;
+        return data.baseContabilId !== data.baseFiscalId;
+    }, {
+        message: 'Bases contábil e fiscal devem ser diferentes',
+        path: ['baseFiscalId'],
     });
 
     type FormValues = z.infer<typeof schema>;
@@ -41,17 +51,77 @@ const NewConciliacao = () => {
             configConciliacaoId: undefined as any,
             configEstornoId: null,
             configCancelamentoId: null,
+            configMapeamentoId: null,
+            baseContabilId: null,
+            baseFiscalId: null,
         },
     });
 
     const { control, watch } = form;
+    const watchConciliacaoId = watch('configConciliacaoId');
+    const watchMapeamentoId = watch('configMapeamentoId');
+    const watchBaseContabilId = watch('baseContabilId');
+    const watchBaseFiscalId = watch('baseFiscalId');
+
+    const selectedConciliacao = useMemo(() => configs.find((cfg) => cfg.id === watchConciliacaoId), [configs, watchConciliacaoId]);
+    const contabilBases = useMemo(() => bases.filter((b) => b.tipo === 'CONTABIL'), [bases]);
+    const fiscalBases = useMemo(() => bases.filter((b) => b.tipo === 'FISCAL'), [bases]);
+
+    const effectiveBaseContabilId = watchBaseContabilId ?? selectedConciliacao?.base_contabil_id ?? null;
+    const effectiveBaseFiscalId = watchBaseFiscalId ?? selectedConciliacao?.base_fiscal_id ?? null;
+
+    const availableMapConfigs = useMemo(() => {
+        if (!effectiveBaseContabilId || !effectiveBaseFiscalId) return [];
+        return mapConfigs.filter((cfg) => (
+            cfg.base_contabil_id === effectiveBaseContabilId &&
+            cfg.base_fiscal_id === effectiveBaseFiscalId
+        ));
+    }, [mapConfigs, effectiveBaseContabilId, effectiveBaseFiscalId]);
+
+    const configBaseContabil = useMemo(() => {
+        if (!selectedConciliacao) return null;
+        return bases.find((b) => b.id === selectedConciliacao.base_contabil_id) || null;
+    }, [bases, selectedConciliacao]);
+
+    const configBaseFiscal = useMemo(() => {
+        if (!selectedConciliacao) return null;
+        return bases.find((b) => b.id === selectedConciliacao.base_fiscal_id) || null;
+    }, [bases, selectedConciliacao]);
 
     useEffect(() => {
-        fetchBases().then(r => setBases(r.data || [])).catch(() => setBases([]));
+        form.setValue('baseContabilId', null);
+        form.setValue('baseFiscalId', null);
+        form.setValue('configMapeamentoId', null);
+    }, [watchConciliacaoId, form]);
+
+    useEffect(() => {
+        if (!watchMapeamentoId) return;
+        const selectedMap = mapConfigs.find((cfg) => cfg.id === watchMapeamentoId);
+        if (!selectedMap) {
+            form.setValue('configMapeamentoId', null);
+            return;
+        }
+        if (selectedMap.base_contabil_id !== effectiveBaseContabilId || selectedMap.base_fiscal_id !== effectiveBaseFiscalId) {
+            form.setValue('configMapeamentoId', null);
+        }
+    }, [watchMapeamentoId, effectiveBaseContabilId, effectiveBaseFiscalId, mapConfigs, form]);
+
+    useEffect(() => {
+        fetchBases({ pageSize: 200 }).then(r => {
+            const payload = Array.isArray(r.data) ? r.data : r.data?.data ?? [];
+            setBases(payload);
+        }).catch(() => setBases([]));
         fetchConfigsConciliacao().then(r => setConfigs(r.data || [])).catch(() => setConfigs([]));
         fetchConfigsEstorno().then(r => setEstornos(r.data || [])).catch(() => setEstornos([]));
         fetchConfigsCancelamento().then(r => setCancelamentos(r.data || [])).catch(() => setCancelamentos([]));
+        fetchConfigsMapeamento().then(r => setMapConfigs(r.data || [])).catch(() => setMapConfigs([]));
     }, []);
+
+    const formatBaseLabel = (base?: Base | null) => {
+        if (!base) return '';
+        const nome = base.nome && base.nome.trim().length > 0 ? base.nome.trim() : `Base ${base.id}`;
+        return base.periodo ? `${nome} (${base.periodo})` : nome;
+    };
 
     const onSubmit = async (data: any) => {
         setLoading(true);
@@ -61,6 +131,9 @@ const NewConciliacao = () => {
                 configConciliacaoId: Number(data.configConciliacaoId),
                 configEstornoId: data.configEstornoId ? Number(data.configEstornoId) : null,
                 configCancelamentoId: data.configCancelamentoId ? Number(data.configCancelamentoId) : null,
+                configMapeamentoId: data.configMapeamentoId ? Number(data.configMapeamentoId) : null,
+                baseContabilId: data.baseContabilId ? Number(data.baseContabilId) : null,
+                baseFiscalId: data.baseFiscalId ? Number(data.baseFiscalId) : null,
             });
             toast.success('Conciliação criada');
             navigate('/conciliacoes');
@@ -168,6 +241,84 @@ const NewConciliacao = () => {
                                                         <SelectItem value="none">Nenhuma</SelectItem>
                                                         {cancelamentos.map((c) => (
                                                             <SelectItem key={c.id} value={String(c.id)}>{c.nome}</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </FormControl>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <FormField
+                                    control={control}
+                                    name="configMapeamentoId"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Configuração de Mapeamento (Opcional)</FormLabel>
+                                            <FormControl>
+                                                <Select value={field.value != null ? String(field.value) : 'none'} onValueChange={(v) => field.onChange(v === 'none' ? null : Number(v))}>
+                                                    <SelectTrigger>
+                                                        <SelectValue placeholder={effectiveBaseContabilId && effectiveBaseFiscalId ? 'Selecione o mapeamento' : 'Selecione as bases primeiro'} />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="none">Nenhuma</SelectItem>
+                                                        {mapConfigs.map((cfg) => (
+                                                            <SelectItem key={cfg.id} value={String(cfg.id)}>{cfg.nome}</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </FormControl>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <FormField
+                                    control={control}
+                                    name="baseContabilId"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Base Contábil (opcional)</FormLabel>
+                                            <FormDescription>Selecione outra base contábil para reaproveitar esta configuração.</FormDescription>
+                                            <FormControl>
+                                                <Select value={field.value != null ? String(field.value) : 'config'} onValueChange={(v) => field.onChange(v === 'config' ? null : Number(v))} disabled={!selectedConciliacao}>
+                                                    <SelectTrigger>
+                                                        <SelectValue placeholder="Selecione uma base contábil" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="config" disabled={!selectedConciliacao}>
+                                                            {configBaseContabil ? `Usar ${formatBaseLabel(configBaseContabil)} (configuração)` : 'Selecione uma configuração primeiro'}
+                                                        </SelectItem>
+                                                        {contabilBases.map((base) => (
+                                                            <SelectItem key={base.id} value={String(base.id)}>{formatBaseLabel(base)}</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </FormControl>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <FormField
+                                    control={control}
+                                    name="baseFiscalId"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Base Fiscal (opcional)</FormLabel>
+                                            <FormDescription>Troque a base fiscal utilizada neste job se necessário.</FormDescription>
+                                            <FormControl>
+                                                <Select value={field.value != null ? String(field.value) : 'config'} onValueChange={(v) => field.onChange(v === 'config' ? null : Number(v))} disabled={!selectedConciliacao}>
+                                                    <SelectTrigger>
+                                                        <SelectValue placeholder="Selecione uma base fiscal" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="config" disabled={!selectedConciliacao}>
+                                                            {configBaseFiscal ? `Usar ${formatBaseLabel(configBaseFiscal)} (configuração)` : 'Selecione uma configuração primeiro'}
+                                                        </SelectItem>
+                                                        {fiscalBases.map((base) => (
+                                                            <SelectItem key={base.id} value={String(base.id)}>{formatBaseLabel(base)}</SelectItem>
                                                         ))}
                                                     </SelectContent>
                                                 </Select>

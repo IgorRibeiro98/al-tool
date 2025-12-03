@@ -101,6 +101,8 @@ const Conciliacoes = () => {
                                                     <span>Estorno: {job.config_estorno_nome ?? String(job.config_estorno_id ?? '-')}</span>
                                                     <span className="mx-2">•</span>
                                                     <span>Cancelamento: {job.config_cancelamento_nome ?? String(job.config_cancelamento_id ?? '-')}</span>
+                                                    <span className="mx-2">•</span>
+                                                    <span>Mapeamento: {job.config_mapeamento_nome ?? (job.config_mapeamento_id ? `#${job.config_mapeamento_id}` : 'Nenhum')}</span>
                                                 </div>
                                             </div>
                                             <div className="flex items-center gap-6">

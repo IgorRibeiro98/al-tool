@@ -1,7 +1,7 @@
 import api from '@/services/api';
 
-export function fetchBases() {
-    return api.get('/bases');
+export function fetchBases(params?: Record<string, any>) {
+    return api.get('/bases', { params });
 }
 
 export function fetchBasePreview(id: number) {
@@ -24,11 +24,11 @@ export function deleteBase(id: number) {
     return api.delete(`/bases/${id}`);
 }
 
-export function createBase(formData: FormData) {
+export function createBases(formData: FormData) {
     // Let the browser/axios set the multipart boundary header
     return api.post('/bases', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
     });
 }
 
-export default { fetchBases, ingestBase, createBase, fetchBasePreview, getBase, getBaseColumns };
+export default { fetchBases, ingestBase, createBases, fetchBasePreview, getBase, getBaseColumns };
