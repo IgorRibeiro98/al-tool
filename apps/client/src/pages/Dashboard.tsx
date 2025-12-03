@@ -7,7 +7,7 @@ import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { fetchBases } from '@/services/baseService';
 import { fetchConciliacoes } from '@/services/conciliacaoService';
-import { fetchConfigsConciliacao, fetchConfigsEstorno, fetchConfigsCancelamento } from '@/services/configsService';
+import { fetchConfigsConciliacao, fetchConfigsEstorno, fetchConfigsCancelamento, fetchConfigsMapeamento } from '@/services/configsService';
 
 const Dashboard = () => {
     const navigate = useNavigate();
@@ -17,6 +17,7 @@ const Dashboard = () => {
     const [configsConciliacao, setConfigsConciliacao] = useState<ConfigConciliacao[]>([]);
     const [configsEstorno, setConfigsEstorno] = useState<ConfigEstorno[]>([]);
     const [configsCancelamento, setConfigsCancelamento] = useState<ConfigCancelamento[]>([]);
+    const [configsMapeamento, setConfigsMapeamento] = useState<ConfigMapeamento[]>([]);
 
     useEffect(() => {
         let mounted = true;
@@ -50,6 +51,12 @@ const Dashboard = () => {
             setConfigsCancelamento(data as ConfigCancelamento[]);
         }).catch(() => setConfigsCancelamento([]));
 
+        fetchConfigsMapeamento().then((r: any) => {
+            if (!mounted) return;
+            const data = r.data?.data || r.data || [];
+            setConfigsMapeamento(data as ConfigMapeamento[]);
+        }).catch(() => setConfigsMapeamento([]));
+
         return () => { mounted = false; };
     }, []);
 
@@ -58,7 +65,7 @@ const Dashboard = () => {
     const totalConciliacoes = conciliacoes.length;
     const runningJobs = conciliacoes.filter(j => j.status === 'RUNNING').length;
     const basesNotIngested = bases.filter(b => !b.tabela_sqlite).length;
-    const totalConfigs = configsConciliacao.length + configsEstorno.length + configsCancelamento.length;
+    const totalConfigs = configsConciliacao.length + configsEstorno.length + configsCancelamento.length + configsMapeamento.length;
 
     const recentJobs = conciliacoes.slice(0, 6);
 

@@ -236,7 +236,18 @@ export class ExcelIngestService {
             const tableName = `base_${baseId}`;
             const exists = await db.schema.hasTable(tableName);
             if (exists) throw new Error(`Table ${tableName} already exists`);
-            await db.schema.createTable(tableName, (t: Knex.CreateTableBuilder) => { t.increments('id').primary(); columns.forEach((c, idx) => { const colType = colTypes[idx]; if (colType === 'integer') t.integer(c.name).nullable(); else if (colType === 'real') t.float(c.name).nullable(); else t.text(c.name).nullable(); }); t.timestamp('created_at').defaultTo(db.fn.now()).notNullable(); });
+            await db.schema.createTable(tableName, (t: Knex.CreateTableBuilder) => {
+                t.increments('id').primary();
+                columns.forEach((c, idx) => {
+                    const colType = colTypes[idx];
+                    if (colType === 'text') {
+                        t.text(c.name).nullable();
+                    } else {
+                        t.decimal(c.name, 30, 10).nullable();
+                    }
+                });
+                t.timestamp('created_at').defaultTo(db.fn.now()).notNullable();
+            });
 
             // save base_columns mapping
             try {
@@ -274,14 +285,9 @@ export class ExcelIngestService {
                         if (finalVal === '') finalVal = null;
                         if (finalVal !== null && finalVal !== undefined) allEmpty = false;
                         const t = colTypes[idx];
-                        if (finalVal != null) {
-                            if (t === 'integer') {
-                                const n = Number(finalVal);
-                                finalVal = Number.isNaN(n) ? null : Math.trunc(n);
-                            } else if (t === 'real') {
-                                const n = Number(finalVal);
-                                finalVal = Number.isNaN(n) ? null : n;
-                            }
+                        if (finalVal != null && (t === 'integer' || t === 'real')) {
+                            const n = Number(finalVal);
+                            finalVal = Number.isNaN(n) ? null : n;
                         }
                         rowObj[c.name] = finalVal;
                     });
@@ -416,9 +422,11 @@ export class ExcelIngestService {
             t.increments('id').primary();
             columns.forEach((c, idx) => {
                 const colType = colTypes[idx];
-                if (colType === 'integer') t.integer(c.name).nullable();
-                else if (colType === 'real') t.float(c.name).nullable();
-                else t.text(c.name).nullable();
+                if (colType === 'text') {
+                    t.text(c.name).nullable();
+                } else {
+                    t.decimal(c.name, 30, 10).nullable();
+                }
             });
             t.timestamp('created_at').defaultTo(db.fn.now()).notNullable();
         });
@@ -470,14 +478,9 @@ export class ExcelIngestService {
                         const t = colTypes[idx];
                         let val: any = rawVal === undefined ? null : rawVal;
                         if (val === '') val = null;
-                        if (val != null) {
-                            if (t === 'integer') {
-                                const n = Number(val);
-                                val = Number.isNaN(n) ? null : Math.trunc(n);
-                            } else if (t === 'real') {
-                                const n = Number(val);
-                                val = Number.isNaN(n) ? null : n;
-                            }
+                        if (val != null && (t === 'integer' || t === 'real')) {
+                            const n = Number(val);
+                            val = Number.isNaN(n) ? null : n;
                         }
                         rowObj[c.name] = val;
                     });

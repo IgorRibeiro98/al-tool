@@ -79,6 +79,16 @@ declare global {
         updated_at?: string | null;
     }
 
+    interface ConfigMapeamento {
+        id: number;
+        nome: string;
+        base_contabil_id: number;
+        base_fiscal_id: number;
+        mapeamentos: Array<{ coluna_contabil: string; coluna_fiscal: string }>;
+        created_at?: string | null;
+        updated_at?: string | null;
+    }
+
     type JobStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED';
 
     interface JobConciliacao {
@@ -87,6 +97,10 @@ declare global {
         config_conciliacao_id: number;
         config_estorno_id?: number | null;
         config_cancelamento_id?: number | null;
+        config_mapeamento_id?: number | null;
+        config_mapeamento_nome?: string | null;
+        base_contabil_id_override?: number | null;
+        base_fiscal_id_override?: number | null;
         status: JobStatus;
         erro?: string | null;
         arquivo_exportado?: string | null;

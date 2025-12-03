@@ -40,7 +40,7 @@ export class EstornoBaseAStep implements PipelineStep {
         const cfg = await this.db('configs_estorno').where({ id: cfgId }).first();
         if (!cfg) return;
 
-        const baseId = cfg.base_id ?? ctx.baseContabilId;
+        const baseId = ctx.baseContabilId ?? cfg.base_id;
         if (!baseId) return;
 
         const base = await this.db('bases').where({ id: baseId }).first();

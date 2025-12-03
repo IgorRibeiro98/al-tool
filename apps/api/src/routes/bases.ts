@@ -11,6 +11,26 @@ import fs from 'fs/promises';
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
+function forceArray<T = string>(value: T | T[] | undefined | null): T[] {
+    if (value === undefined || value === null) return [];
+    return Array.isArray(value) ? value : [value];
+}
+
+function pickValue<T = any>(list: T[], index: number): T | undefined {
+    if (!list.length) return undefined;
+    if (list.length === 1) return list[0];
+    return list[index];
+}
+
+async function ensureIngestDirectory() {
+    const ingestsDir = path.resolve(process.cwd(), 'storage', 'ingests');
+    try {
+        await fs.mkdir(ingestsDir, { recursive: true });
+    } catch (err) {
+        console.error('Failed to ensure ingest directory', err);
+    }
+}
+
 // GET /bases - list with pagination and optional filters
 router.get('/', async (req: Request, res: Response) => {
     try {
@@ -114,54 +134,67 @@ router.get('/:id/columns', async (req: Request, res: Response) => {
     }
 })
 
-router.post('/', upload.single('arquivo'), async (req: Request, res: Response) => {
+router.post('/', upload.array('arquivo'), async (req: Request, res: Response) => {
     try {
-        const { tipo, nome, periodo } = req.body;
-        if (!tipo || !['CONTABIL', 'FISCAL'].includes(tipo)) {
-            return res.status(400).json({ error: 'Campo "tipo" inválido. Use CONTABIL ou FISCAL.' });
-        }
-        if (!nome) {
-            return res.status(400).json({ error: 'Campo "nome" é obrigatório.' });
-        }
-        const file = req.file;
-        if (!file) {
-            return res.status(400).json({ error: 'Campo "arquivo" é obrigatório.' });
+        const files = (req.files || []) as Express.Multer.File[];
+        if (!files.length) {
+            return res.status(400).json({ error: 'Pelo menos um arquivo deve ser enviado.' });
         }
 
-        // Save file using storage service
-        const savedPath = await fileStorage.saveFile(file.buffer, file.originalname || 'upload.bin');
+        const tipos = forceArray<string>(req.body.tipo as any);
+        const nomes = forceArray<string>(req.body.nome as any);
+        const periodos = forceArray<string>(req.body.periodo as any);
+        const headerLinhas = forceArray<string | number>(req.body.header_linha_inicial as any);
+        const headerColunas = forceArray<string | number>(req.body.header_coluna_inicial as any);
 
-        // parse optional header position fields (1-based)
-        const header_linha_inicial = Number(req.body.header_linha_inicial || 1);
-        const header_coluna_inicial = Number(req.body.header_coluna_inicial || 1);
-        if (Number.isNaN(header_linha_inicial) || header_linha_inicial < 1) return res.status(400).json({ error: 'Campo "header_linha_inicial" inválido' });
-        if (Number.isNaN(header_coluna_inicial) || header_coluna_inicial < 1) return res.status(400).json({ error: 'Campo "header_coluna_inicial" inválido' });
+        await ensureIngestDirectory();
 
-        // Insert record in DB
-        const [id] = await db('bases').insert({
-            tipo,
-            nome,
-            periodo: periodo || null,
-            arquivo_caminho: savedPath,
-            tabela_sqlite: null,
-            header_linha_inicial,
-            header_coluna_inicial
-        });
+        const createdRows: any[] = [];
 
-        // After creating DB record, start conversion to JSONL in background
-        // determine absolute paths
-        const absInput = path.resolve(process.cwd(), savedPath);
-        const ingestsDir = path.resolve(process.cwd(), 'storage', 'ingests');
-        await (async () => { try { const fs = await import('fs/promises'); await fs.mkdir(ingestsDir, { recursive: true }); } catch (e) { } })();
-        const jsonlFilename = `${id}.jsonl`;
-        const jsonlRel = path.relative(process.cwd(), path.join(ingestsDir, jsonlFilename)).split(path.sep).join(path.posix.sep);
+        for (let index = 0; index < files.length; index++) {
+            const file = files[index];
+            const tipoValue = pickValue(tipos, index);
+            const nomeValue = pickValue(nomes, index);
+            const periodoValue = pickValue(periodos, index);
+            const headerLinhaValue = pickValue(headerLinhas, index);
+            const headerColunaValue = pickValue(headerColunas, index);
 
-        // mark conversion PENDING; converter worker (separate service) will pick this up
-        await db('bases').where({ id }).update({ conversion_status: 'PENDING', arquivo_jsonl_path: null });
+            if (!tipoValue || !['CONTABIL', 'FISCAL'].includes(tipoValue)) {
+                return res.status(400).json({ error: `Campo "tipo" inválido para o arquivo ${file.originalname}. Use CONTABIL ou FISCAL.` });
+            }
+            if (!nomeValue) {
+                return res.status(400).json({ error: `Campo "nome" é obrigatório para o arquivo ${file.originalname}.` });
+            }
 
-        const created = await db('bases').where({ id }).first();
+            const savedPath = await fileStorage.saveFile(file.buffer, file.originalname || 'upload.bin');
 
-        res.status(201).json(created);
+            const header_linha_inicial = Number(headerLinhaValue || 1);
+            const header_coluna_inicial = Number(headerColunaValue || 1);
+            if (Number.isNaN(header_linha_inicial) || header_linha_inicial < 1) {
+                return res.status(400).json({ error: `Campo "header_linha_inicial" inválido para o arquivo ${file.originalname}` });
+            }
+            if (Number.isNaN(header_coluna_inicial) || header_coluna_inicial < 1) {
+                return res.status(400).json({ error: `Campo "header_coluna_inicial" inválido para o arquivo ${file.originalname}` });
+            }
+
+            const [id] = await db('bases').insert({
+                tipo: tipoValue,
+                nome: nomeValue,
+                periodo: periodoValue || null,
+                arquivo_caminho: savedPath,
+                tabela_sqlite: null,
+                header_linha_inicial,
+                header_coluna_inicial
+            });
+
+            // marcar conversão como pendente para cada base criada
+            await db('bases').where({ id }).update({ conversion_status: 'PENDING', arquivo_jsonl_path: null });
+
+            const created = await db('bases').where({ id }).first();
+            createdRows.push(created);
+        }
+
+        return res.status(201).json({ data: createdRows });
     } catch (err: any) {
         console.error(err);
         res.status(500).json({ error: 'Erro ao processar upload' });

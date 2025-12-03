@@ -7,8 +7,22 @@
         "packages/*"
     ],
     "scripts": {
-        "dev:api": "npm --workspace=apps/api run dev",
-        "build:api": "npm --workspace=apps/api run build",
-        "install:all": "npm install"
+        "api:dev": "npm --workspace=apps/api run dev",
+        "api:build": "npm --workspace=apps/api run build",
+        "api:start": "npm --workspace=apps/api run start",
+        "desktop:dev": "npm --workspace=apps/desktop run dev",
+        "desktop:build": "npm --workspace=apps/desktop run build",
+        "client:build": "npm --workspace=apps/client run build",
+        "client:dev": "npm --workspace=apps/client run dev",
+        "app:dist": "npm run api:build && npm run client:build && npm run desktop:build && npm run rebuild:native && npm --workspace=apps/desktop run dist",
+        "install:all": "npm install",
+        "rebuild:native": "electron-rebuild -f -w better-sqlite3",
+        "python:setup": "python3 scripts/bootstrap_conversion_runtime.py"
+    },
+    "devDependencies": {
+        "@electron/rebuild": "^4.0.1"
+    },
+    "dependencies": {
+        "dotenv": "^17.2.3"
     }
 }

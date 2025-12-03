@@ -9,12 +9,19 @@ services:
     working_dir: /home/app/apps/api
     volumes:
       - ./:/home/app
+    env_file:
+      - .env
 
     ports:
       - "3000:3000"
     environment:
       - NODE_ENV=development
-      - PORT=3000
+      - PORT=${APP_PORT:-3000}
+      - APP_PORT=${APP_PORT:-3000}
+      - DATA_DIR=/home/app/apps/api/${DATA_DIR:-storage}
+      - DB_PATH=/home/app/apps/api/${DB_PATH:-storage/db/dev.sqlite3}
+      - UPLOAD_DIR=/home/app/apps/api/${UPLOAD_DIR:-storage/uploads}
+      - EXPORT_DIR=/home/app/apps/api/${EXPORT_DIR:-storage/exports}
     # Install at repo root (will install workspaces) and run the API workspace dev script
     command: sh -c "cd /home/app && npm install --silent && npm --workspace=apps/api run dev"
 
@@ -26,10 +33,12 @@ services:
     working_dir: /home/app
     volumes:
       - ./:/home/app
+    env_file:
+      - .env
     environment:
-      - DB_PATH=/home/app/apps/api/db/dev.sqlite3
-      - POLL_INTERVAL=5
-      - INGESTS_DIR=/home/app/apps/api/storage/ingests
+      - DB_PATH=/home/app/apps/api/${DB_PATH:-storage/db/dev.sqlite3}
+      - POLL_INTERVAL=${WORKER_POLL_SECONDS:-5}
+      - INGESTS_DIR=/home/app/apps/api/${DATA_DIR:-storage}/ingests
     command: sh -c "pip install --no-cache-dir -r scripts/requirements.txt || true && python3 scripts/conversion_worker.py"
     depends_on:
       - api
@@ -41,8 +50,10 @@ services:
     working_dir: /home/app/apps/client
     volumes:
       - ./:/home/app
+    env_file:
+      - .env
     ports:
-      - "8081:8080"
+      - "8080:8080"
     environment:
       - NODE_ENV=development
       - PORT=8080

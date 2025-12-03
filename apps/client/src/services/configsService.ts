@@ -60,6 +60,26 @@ export function deleteConfigCancelamento(id: number) {
     return api.delete(`/configs/cancelamento/${id}`);
 }
 
+export function fetchConfigsMapeamento() {
+    return api.get('/configs/mapeamento');
+}
+
+export function getConfigMapeamento(id: number) {
+    return api.get(`/configs/mapeamento/${id}`);
+}
+
+export function createConfigMapeamento(payload: any) {
+    return api.post('/configs/mapeamento', payload);
+}
+
+export function updateConfigMapeamento(id: number, payload: any) {
+    return api.put(`/configs/mapeamento/${id}`, payload);
+}
+
+export function deleteConfigMapeamento(id: number) {
+    return api.delete(`/configs/mapeamento/${id}`);
+}
+
 export default {
     fetchConfigsConciliacao,
     fetchConfigsEstorno,
@@ -67,4 +87,5 @@ export default {
     createConfigCancelamento,
     updateConfigCancelamento,
     deleteConfigCancelamento,
+    fetchConfigsMapeamento,
 };

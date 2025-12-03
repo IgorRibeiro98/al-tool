@@ -1,13 +1,14 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { UPLOAD_DIR } from '../../config/paths';
 import { randomUUID } from 'crypto';
 
 export class FileStorage {
     private uploadsDir: string;
 
     constructor(uploadsDir?: string) {
-        // Default to project-root/apps/api/storage/uploads
-        this.uploadsDir = uploadsDir || path.resolve(__dirname, '..', '..', '..', 'storage', 'uploads');
+        // Default to UPLOAD_DIR (from env or storage/uploads)
+        this.uploadsDir = uploadsDir || UPLOAD_DIR;
     }
 
     /**

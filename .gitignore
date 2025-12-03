@@ -58,3 +58,6 @@ apps/api/db/*.sqlite3*/
 .eslintcache
 /.pnp
 .pnp.js
+
+.venv-python/
+python-runtime/

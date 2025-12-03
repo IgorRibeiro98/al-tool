@@ -5,7 +5,8 @@ import {
     XCircle,
     RotateCcw,
     CheckSquare,
-    PlayCircle
+    PlayCircle,
+    Link2
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation } from "react-router-dom";
@@ -32,6 +33,7 @@ const configItems = [
     { title: "Cancelamento", url: "/configs/cancelamento", icon: XCircle },
     { title: "Estorno", url: "/configs/estorno", icon: RotateCcw },
     { title: "Conciliação", url: "/configs/conciliacao", icon: CheckSquare },
+    { title: "Mapeamento", url: "/configs/mapeamento", icon: Link2 },
 ];
 
 export function AppSidebar() {
