@@ -30,6 +30,10 @@
         ],
         "extraResources": [
             {
+                "from": "../../.env",
+                "to": ".env"
+            },
+            {
                 "from": "../api/dist",
                 "to": "api/dist",
                 "filter": [

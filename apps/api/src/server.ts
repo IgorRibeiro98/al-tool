@@ -9,6 +9,7 @@ import configsConciliacaoRouter from './routes/configsConciliacao';
 import configsMapeamentoRouter from './routes/configsMapeamento';
 import conciliacoesRouter from './routes/conciliacoes';
 import maintenanceRouter from './routes/maintenance';
+import licenseRouter from './routes/license';
 import './pipeline/integration';
 import { startConciliacaoWorker } from './worker/conciliacaoWorker';
 import { startIngestWorker } from './worker/ingestWorker';
@@ -79,6 +80,7 @@ apiRouter.use('/configs/conciliacao', configsConciliacaoRouter);
 apiRouter.use('/configs/mapeamento', configsMapeamentoRouter);
 apiRouter.use('/conciliacoes', conciliacoesRouter);
 apiRouter.use('/maintenance', maintenanceRouter);
+apiRouter.use('/license', licenseRouter);
 app.use('/api', apiRouter);
 
 // Serve frontend build (always prefer dist to make Electron loadable)

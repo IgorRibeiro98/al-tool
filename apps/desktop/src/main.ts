@@ -4,10 +4,21 @@ import http from 'http';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import { spawn, ChildProcess } from 'child_process';
+import { createLicensingService } from './main/services/licensingService';
 
-// Load root .env so PYTHON_EXECUTABLE and friends are available before we read process.env
+// Load .env from both dev (repo root) and packaged (resources) locations so licensing variables exist in prod
 const rootEnvPath = path.resolve(__dirname, '../../.env');
-dotenv.config({ path: rootEnvPath });
+const packagedEnvPath = path.join(process.resourcesPath || '', '.env');
+const envCandidates = [packagedEnvPath, rootEnvPath];
+envCandidates.forEach((envPath) => {
+    try {
+        if (envPath && fs.existsSync(envPath)) {
+            dotenv.config({ path: envPath });
+        }
+    } catch (err) {
+        console.warn('[electron] Failed to load env file', envPath, err);
+    }
+});
 
 function createWindow(url: string) {
     const win = new BrowserWindow({
@@ -93,6 +104,8 @@ app.whenReady().then(async () => {
         EXPORT_DIR: path.join(dataDir, 'exports'),
         INGESTS_DIR: path.join(dataDir, 'ingests'),
     };
+
+    const licensingService = createLicensingService(envForApi.DB_PATH);
 
     console.log('[electron] userData:', userData);
     console.log('[electron] DATA_DIR:', dataDir);
@@ -184,8 +197,30 @@ app.whenReady().then(async () => {
     backendReady = healthy;
     const targetUrl = `http://localhost:${selectedPort}`;
     if (healthy) {
-        console.log('[electron] Backend healthy, opening UI at', targetUrl);
-        createWindow(targetUrl);
+        console.log('[electron] Backend healthy, running license validation');
+        try {
+            // Ensure local validation/refresh runs before showing UI
+            await licensingService.validateIfNeeded();
+        } catch (err) {
+            console.warn('[electron] Licensing validateIfNeeded failed', err);
+        }
+
+        // Read status and choose which UI route to open
+        try {
+            const status = await licensingService.getStatus();
+            const isActive = (status && (status as any).status === 'active');
+            if (isActive) {
+                console.log('[electron] License active, opening main UI at', targetUrl);
+                createWindow(targetUrl);
+            } else {
+                const licenseUrl = `${targetUrl}/license`;
+                console.log('[electron] License not active, opening license UI at', licenseUrl);
+                createWindow(licenseUrl);
+            }
+        } catch (err) {
+            console.error('[electron] Failed to determine license status, opening main UI', err);
+            createWindow(targetUrl);
+        }
     } else {
         console.warn('[electron] Health probe failed, opening UI anyway:', targetUrl);
         createWindow(targetUrl);

@@ -22,8 +22,13 @@ services:
       - DB_PATH=/home/app/apps/api/${DB_PATH:-storage/db/dev.sqlite3}
       - UPLOAD_DIR=/home/app/apps/api/${UPLOAD_DIR:-storage/uploads}
       - EXPORT_DIR=/home/app/apps/api/${EXPORT_DIR:-storage/exports}
+      - LICENSE_API_BASE_URL=${LICENSE_API_BASE_URL:-}
     # Install at repo root (will install workspaces) and run the API workspace dev script
     command: sh -c "cd /home/app && npm install --silent && npm --workspace=apps/api run dev"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+      
 
     tty: true
 

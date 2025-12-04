@@ -2,7 +2,10 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, useLocation, useNavigate } from "react-router-dom";
+import { useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { fetchLicenseStatus } from '@/services/licenseService';
 import { Layout } from "@/components/Layout";
 import { ThemeProvider } from "next-themes";
 import Dashboard from "./pages/Dashboard";
@@ -25,8 +28,54 @@ import Conciliacoes from "./pages/Conciliacoes";
 import NewConciliacao from "./pages/NewConciliacao";
 import ConciliacaoDetails from "./pages/ConciliacaoDetails";
 import NotFound from "./pages/NotFound";
+import LicenseActivate from "./pages/LicenseActivate";
+import LicenseBlocked from "./pages/LicenseBlocked";
+import { Navigate } from 'react-router-dom';
 
 const queryClient = new QueryClient();
+
+
+function LicenseGate(): null {
+    const { pathname } = useLocation();
+    const navigate = useNavigate();
+    const { data, isLoading, isError } = useQuery<any>({
+        queryKey: ['licenseStatus'],
+        queryFn: async () => {
+            return fetchLicenseStatus()
+                .then((res) => {
+                    return res.data;
+                }).catch((err) => {
+                    console.log('Error fetching license status:', err);
+                    return err;
+                });
+        },
+        staleTime: 10000,
+        retry: false,
+        refetchOnWindowFocus: false,
+    });
+
+    useEffect(() => {
+        if (isLoading) return;
+        // Allow any /license/* routes to render (activation/blocked pages)
+        if (pathname.startsWith('/license')) return;
+        if (isError) return; // leave navigation as-is when status can't be fetched
+
+        const status = data?.status;
+        if (!status || status === 'not_activated') {
+            navigate('/license/activate', { replace: true });
+            return;
+        }
+
+        if (['expired', 'blocked', 'blocked_offline'].includes(status)) {
+            navigate('/license/blocked', { replace: true });
+            return;
+        }
+
+        // status === 'active' -> do nothing, allow app to proceed
+    }, [isLoading, isError, data, pathname, navigate]);
+
+    return null;
+}
 
 const App = () => (
     <ThemeProvider attribute="class" defaultTheme="system">
@@ -35,6 +84,7 @@ const App = () => (
                 <Toaster />
                 <Sonner />
                 <BrowserRouter>
+                    <LicenseGate />
                     <Routes>
                         <Route path="/" element={<Layout />}>
                             <Route index element={<Dashboard />} />
@@ -56,7 +106,10 @@ const App = () => (
                             <Route path="conciliacoes" element={<Conciliacoes />} />
                             <Route path="conciliacoes/new" element={<NewConciliacao />} />
                             <Route path="conciliacoes/:id" element={<ConciliacaoDetails />} />
+                            <Route path="license/activate" element={<LicenseActivate />} />
                         </Route>
+                        <Route path="license/blocked" element={<LicenseBlocked />} />
+                        <Route path="license" element={<Navigate to="/license/activate" replace />} />
                         <Route path="*" element={<NotFound />} />
                     </Routes>
                 </BrowserRouter>
