@@ -4,6 +4,7 @@ import http from 'http';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import { spawn, ChildProcess } from 'child_process';
+import Module from 'module';
 import { createLicensingService } from './main/services/licensingService';
 
 // Load .env from both dev (repo root) and packaged (resources) locations so licensing variables exist in prod
@@ -144,6 +145,15 @@ app.whenReady().then(async () => {
         const baseApiPath = isPackaged
             ? path.join(process.resourcesPath, 'api', 'dist')
             : path.resolve(__dirname, '../../../apps/api/dist');
+        const apiNodeModules = path.join(baseApiPath, 'node_modules');
+        const apiRootNodeModules = path.join(process.resourcesPath, 'api', 'node_modules');
+        const resourcesNodeModules = path.join(process.resourcesPath, 'node_modules');
+        const asarNodeModules = path.join(process.resourcesPath, 'app.asar', 'node_modules');
+        const nodePathEntries = [apiNodeModules, apiRootNodeModules, resourcesNodeModules, asarNodeModules, process.env.NODE_PATH || '']
+            .filter(Boolean);
+        process.env.NODE_PATH = nodePathEntries.join(path.delimiter);
+        // Recompute module resolution paths after updating NODE_PATH so API dist can resolve deps like knex
+        (Module as any)._initPaths();
         const migrationsEntry = path.join(baseApiPath, 'runMigrations.js');
         const backendEntry = path.join(baseApiPath, 'server.js');
         console.log('[electron] Using migrations entry:', migrationsEntry);

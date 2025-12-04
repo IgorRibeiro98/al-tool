@@ -14,7 +14,17 @@
         "build": "tsc -p .",
         "dist": "electron-builder"
     },
-    "dependencies": {},
+    "dependencies": {
+        "better-sqlite3": "^12.4.6",
+        "dotenv": "^16.4.5",
+        "archiver": "^5.3.2",
+        "cors": "^2.8.5",
+        "exceljs": "^4.4.0",
+        "express": "^5.1.0",
+        "knex": "^3.1.0",
+        "multer": "^2.0.2",
+        "xlsx": "^0.18.5"
+    },
     "devDependencies": {
         "electron": "39.2.4",
         "typescript": "^5.9.3",
@@ -55,8 +65,8 @@
                 ]
             },
             {
-                "from": "../../node_modules",
-                "to": "node_modules",
+                "from": "../api/node_modules",
+                "to": "api/node_modules",
                 "filter": [
                     "**/*"
                 ]
@@ -84,6 +94,7 @@
             "output": "dist"
         },
         "win": {
+            "icon": "../client/public/favicon.ico",
             "target": [
                 "nsis"
             ]
