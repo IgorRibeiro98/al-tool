@@ -104,6 +104,11 @@ declare global {
         status: JobStatus;
         erro?: string | null;
         arquivo_exportado?: string | null;
+        export_status?: string | null;
+        export_progress?: number | null;
+        pipeline_stage?: string | null;
+        pipeline_stage_label?: string | null;
+        pipeline_progress?: number | null;
         // denormalized config names
         config_estorno_nome?: string | null;
         config_cancelamento_nome?: string | null;

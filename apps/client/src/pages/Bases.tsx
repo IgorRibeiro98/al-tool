@@ -1,12 +1,14 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Upload, Eye, CheckCircle, Clock, Trash } from "lucide-react";
+import { Plus, Upload, Eye, Trash } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import { fetchBases, ingestBase, deleteBase } from '@/services/baseService';
 import { toast } from 'sonner';
+import { StatusChip } from '@/components/StatusChip';
+import { getConversionStatusMeta, getIngestStatusMeta, isConversionStatusActive, isIngestStatusActive } from '@/lib/baseStatus';
 import {
     AlertDialog,
     AlertDialogContent,
@@ -18,6 +20,11 @@ import {
     AlertDialogCancel,
 } from '@/components/ui/alert-dialog';
 
+const truncate = (value?: string | null, maxLength = 160) => {
+    if (!value) return null;
+    return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+};
+
 const Bases = () => {
     const navigate = useNavigate();
     const [bases, setBases] = useState<Base[]>([]);
@@ -25,29 +32,87 @@ const Bases = () => {
     const [ingesting, setIngesting] = useState<Record<number, boolean>>({});
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
+    const statusSnapshotRef = useRef<Record<number, { conversion: string | null; ingest: JobStatus | null }>>({});
+    const snapshotBootstrappedRef = useRef(false);
+
+    const applyStatusFeedback = useCallback((list: Base[], notify: boolean) => {
+        const snapshot = statusSnapshotRef.current;
+        list.forEach((base) => {
+            const prev = snapshot[base.id] || { conversion: null, ingest: null };
+            const nextConversion = base.conversion_status ?? null;
+            const nextIngest = base.ingest_status ?? (base.tabela_sqlite ? 'DONE' : null);
+            const baseLabel = base.nome || `Base #${base.id}`;
+
+            if (notify && prev.conversion !== nextConversion) {
+                if (nextConversion === 'READY') {
+                    toast.success(`${baseLabel} convertida com sucesso`);
+                } else if (nextConversion === 'RUNNING' || nextConversion === 'PROCESSING') {
+                    toast.info(`Conversão da ${baseLabel} iniciada`);
+                } else if (nextConversion === 'FAILED') {
+                    toast.error(`Falha na conversão da ${baseLabel}`, { description: base.conversion_error || undefined });
+                }
+            }
+
+            if (notify && prev.ingest !== nextIngest) {
+                if (nextIngest === 'PENDING') {
+                    toast.info(`Ingestão da ${baseLabel} entrou na fila`);
+                } else if (nextIngest === 'RUNNING') {
+                    toast.info(`Ingestão da ${baseLabel} em andamento`);
+                } else if (nextIngest === 'DONE') {
+                    toast.success(`Ingestão da ${baseLabel} concluída`);
+                } else if (nextIngest === 'FAILED') {
+                    toast.error(`Falha na ingestão da ${baseLabel}`, { description: base.ingest_job?.erro || undefined });
+                }
+            }
+
+            snapshot[base.id] = { conversion: nextConversion, ingest: nextIngest };
+        });
+        statusSnapshotRef.current = snapshot;
+    }, []);
+
+    const loadBases = useCallback(async (options?: { silent?: boolean; notify?: boolean }) => {
+        const { silent = false, notify } = options || {};
+        if (!silent) setLoading(true);
+        try {
+            const res = await fetchBases();
+            const list = res.data?.data || res.data || [];
+            setBases(list);
+            const shouldNotify = notify ?? snapshotBootstrappedRef.current;
+            applyStatusFeedback(list, shouldNotify);
+            if (!snapshotBootstrappedRef.current) snapshotBootstrappedRef.current = true;
+        } catch (err) {
+            console.error('Failed to fetch bases', err);
+            toast.error('Falha ao carregar bases');
+        } finally {
+            if (!silent) setLoading(false);
+        }
+    }, [applyStatusFeedback]);
 
     useEffect(() => {
-        let mounted = true;
-        setLoading(true);
-        fetchBases().then(res => {
-            if (!mounted) return;
-            setBases(res.data.data || []);
-        }).catch(err => {
-            console.error('Failed to fetch bases', err);
-        }).finally(() => { if (mounted) setLoading(false); });
+        loadBases({ notify: false });
+    }, [loadBases]);
 
-        return () => { mounted = false; };
-    }, []);
+    const hasActiveProcesses = useMemo(() => (
+        bases.some((base) => isConversionStatusActive(base.conversion_status) || isIngestStatusActive(base))
+    ), [bases]);
+
+    useEffect(() => {
+        if (!hasActiveProcesses) return;
+        const interval = window.setInterval(() => {
+            loadBases({ silent: true, notify: true });
+        }, 5000);
+        return () => window.clearInterval(interval);
+    }, [hasActiveProcesses, loadBases]);
 
     const handleIngest = async (id: number) => {
         setIngesting(prev => ({ ...prev, [id]: true }));
         try {
             await ingestBase(id);
-            // refresh list
-            const res = await fetchBases();
-            setBases(res.data?.data || res.data || []);
+            toast.info('Ingestão enviada para processamento. Status atualizado automaticamente.');
+            await loadBases({ silent: true, notify: true });
         } catch (e) {
             console.error('Ingest failed', e);
+            toast.error('Falha ao iniciar ingestão');
         } finally {
             setIngesting(prev => ({ ...prev, [id]: false }));
         }
@@ -63,8 +128,7 @@ const Bases = () => {
         try {
             await deleteBase(id);
             toast.success('Base removida');
-            const res = await fetchBases();
-            setBases(res.data?.data || res.data || []);
+            await loadBases({ silent: true });
         } catch (e: any) {
             console.error('Delete failed', e);
             toast.error('Falha ao deletar base');
@@ -97,70 +161,63 @@ const Bases = () => {
                             {loading ? (
                                 <div>Carregando...</div>
                             ) : (
-                                bases.map((base) => (
-                                    <div
-                                        key={base.id}
-                                        className="flex items-center justify-between p-4 rounded-lg border hover:bg-muted/50 transition-colors"
-                                    >
-                                        <div className="flex items-center gap-4 flex-1">
-                                            <Badge variant={base.tipo === "CONTABIL" ? "default" : "secondary"}>
-                                                {base.tipo}
-                                            </Badge>
-                                            <div>
-                                                <p className="font-medium">{base.nome || `Base ${base.id}`}</p>
-                                                <p className="text-sm text-muted-foreground">Período: {base.periodo || '-'}</p>
-                                            </div>
-                                        </div>
-                                        <div className="flex items-center gap-4">
-                                            {base.tabela_sqlite ? (
-                                                <div className="flex items-center gap-2 text-success">
-                                                    <CheckCircle className="h-4 w-4" />
-                                                    <span className="text-sm">Ingerida</span>
-                                                </div>
-                                            ) : (
-                                                <div className="flex items-center gap-2 text-muted-foreground">
-                                                    <Clock className="h-4 w-4" />
-                                                    <span className="text-sm">Não ingerida</span>
-                                                </div>
-                                            )}
-                                            {/* conversion status display */}
-                                            {base.conversion_status && base.conversion_status !== 'READY' && (
-                                                <div className="ml-4">
-                                                    {base.conversion_status === 'PENDING' && <span className="text-sm text-yellow-600">Aguardando conversão</span>}
-                                                    {base.conversion_status === 'RUNNING' && <span className="text-sm text-blue-600">Convertendo</span>}
-                                                    {base.conversion_status === 'FAILED' && <span className="text-sm text-red-600">Falha na conversão</span>}
-                                                </div>
-                                            )}
-                                            <span className="text-sm text-muted-foreground">{base.created_at ? new Date(base.created_at).toLocaleDateString('pt-BR') : '-'}</span>
-                                            <div className="flex gap-2">
-                                                {/* show ingest button only when not ingested, conversion ready and no ingest job in progress */}
-                                                {!base.tabela_sqlite && base.conversion_status === 'READY' && !base.ingest_in_progress && (
-                                                    <Button variant="outline" size="sm" onClick={() => handleIngest(base.id)} disabled={!!ingesting[base.id]}>
-                                                        <Upload className="mr-2 h-4 w-4" />
-                                                        {ingesting[base.id] ? 'Ingerindo...' : 'Ingerir'}
-                                                    </Button>
-                                                )}
-                                                {base.ingest_in_progress && (
-                                                    <div className="text-sm text-muted-foreground flex items-center gap-2">
-                                                        <Clock className="h-4 w-4" />
-                                                        Ingestão em andamento
-                                                    </div>
-                                                )}
-                                                <div className="ml-2">
-                                                    <Button variant="ghost" size="icon" onClick={() => navigate(`/bases/${base.id}`)} aria-label="Ver base">
-                                                        <Eye className="h-4 w-4" />
-                                                    </Button>
-                                                </div>
-                                                <div className="ml-2">
-                                                    <Button variant="destructive" size="icon" onClick={() => confirmDelete(base.id)} aria-label="Deletar base">
-                                                        <Trash className="h-4 w-4" />
-                                                    </Button>
-                                                </div>
+                                bases.map((base) => {
+                                    const conversionMeta = getConversionStatusMeta(base.conversion_status);
+                                    const ingestMeta = getIngestStatusMeta(base);
+                                    const conversionError = base.conversion_status === 'FAILED' ? truncate(base.conversion_error) : null;
+                                    const ingestError = base.ingest_status === 'FAILED' ? truncate(base.ingest_job?.erro) : null;
+                                    const canIngest = !base.tabela_sqlite && base.conversion_status === 'READY' && !isIngestStatusActive(base);
 
+                                    return (
+                                        <div
+                                            key={base.id}
+                                            className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between p-4 rounded-lg border hover:bg-muted/50 transition-colors"
+                                        >
+                                            <div className="flex items-center gap-4 flex-1">
+                                                <Badge variant={base.tipo === "CONTABIL" ? "default" : "secondary"}>
+                                                    {base.tipo}
+                                                </Badge>
+                                                <div>
+                                                    <p className="font-medium">{base.nome || `Base ${base.id}`}</p>
+                                                    <p className="text-sm text-muted-foreground">Período: {base.periodo || '-'}</p>
+                                                </div>
+                                            </div>
+                                            <div className="flex flex-wrap items-start gap-6">
+                                                <div className="min-w-[180px] space-y-1">
+                                                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Conversão</p>
+                                                    <StatusChip status={conversionMeta.chip} label={conversionMeta.label} />
+                                                    {conversionError && (
+                                                        <p className="text-xs text-destructive break-words">{conversionError}</p>
+                                                    )}
+                                                </div>
+                                                <div className="min-w-[180px] space-y-1">
+                                                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Ingestão</p>
+                                                    <StatusChip status={ingestMeta.chip} label={ingestMeta.label} />
+                                                    {ingestError && (
+                                                        <p className="text-xs text-destructive break-words">{ingestError}</p>
+                                                    )}
+                                                </div>
+                                                <div className="flex flex-col gap-3 min-w-[200px]">
+                                                    <span className="text-sm text-muted-foreground">Criada em {base.created_at ? new Date(base.created_at).toLocaleDateString('pt-BR') : '-'}</span>
+                                                    <div className="flex flex-wrap gap-2">
+                                                        {canIngest && (
+                                                            <Button variant="outline" size="sm" onClick={() => handleIngest(base.id)} disabled={!!ingesting[base.id]}>
+                                                                <Upload className="mr-2 h-4 w-4" />
+                                                                {ingesting[base.id] ? 'Ingerindo...' : 'Ingerir'}
+                                                            </Button>
+                                                        )}
+                                                        <Button variant="ghost" size="icon" onClick={() => navigate(`/bases/${base.id}`)} aria-label="Ver base">
+                                                            <Eye className="h-4 w-4" />
+                                                        </Button>
+                                                        <Button variant="destructive" size="icon" onClick={() => confirmDelete(base.id)} aria-label="Deletar base">
+                                                            <Trash className="h-4 w-4" />
+                                                        </Button>
+                                                    </div>
+                                                </div>
                                             </div>
                                         </div>
-                                    </div>
-                                ))
+                                    );
+                                })
                             )}
                         </div>
                     </CardContent>

@@ -5,6 +5,13 @@ export interface PipelineContext {
     configConciliacaoId: number;
     configEstornoId?: number;
     configCancelamentoId?: number;
+    reportStage?: (event: PipelineStageEvent) => Promise<void> | void;
+}
+
+export interface PipelineStageEvent {
+    stepName: string;
+    stepIndex: number;
+    totalSteps: number;
 }
 
 export interface PipelineStep {
@@ -20,7 +27,12 @@ export class ConciliacaoPipeline {
     }
 
     async run(ctx: PipelineContext): Promise<void> {
-        for (const step of this.steps) {
+        const total = this.steps.length;
+        for (let index = 0; index < this.steps.length; index += 1) {
+            const step = this.steps[index];
+            if (ctx.reportStage) {
+                await ctx.reportStage({ stepName: step.name, stepIndex: index, totalSteps: total });
+            }
             await step.execute(ctx);
         }
     }

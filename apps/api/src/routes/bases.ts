@@ -47,24 +47,38 @@ router.get('/', async (req: Request, res: Response) => {
 
         const rows = await qb.offset((page - 1) * pageSize).limit(pageSize);
 
-        // determine ingest status for the returned bases (whether there is any PENDING/RUNNING ingest job)
         const baseIds = rows.map((r: any) => r.id).filter(Boolean);
-        let ingestInProgressSet = new Set<number>();
+        const latestJobByBase = new Map<number, any>();
         if (baseIds.length > 0) {
-            const active = await db('ingest_jobs')
+            const jobs = await db('ingest_jobs')
                 .whereIn('base_id', baseIds)
-                .whereIn('status', ['PENDING', 'RUNNING'])
-                .select('base_id')
-                .groupBy('base_id');
-            ingestInProgressSet = new Set(active.map((a: any) => a.base_id));
+                .select('id', 'base_id', 'status', 'erro', 'created_at', 'updated_at')
+                .orderBy('base_id', 'asc')
+                .orderBy('id', 'desc');
+
+            for (const job of jobs) {
+                if (!job) continue;
+                if (latestJobByBase.has(job.base_id)) continue;
+                latestJobByBase.set(job.base_id, job);
+            }
         }
 
-        const enriched = rows.map((r: any) => ({ ...r, ingest_in_progress: ingestInProgressSet.has(r.id) }));
+        const enriched = rows.map((r: any) => {
+            const latestJob = latestJobByBase.get(r.id) || null;
+            const ingestStatus = latestJob?.status ?? null;
+            const ingestInProgress = ingestStatus === 'PENDING' || ingestStatus === 'RUNNING';
+            return {
+                ...r,
+                ingest_in_progress: ingestInProgress,
+                ingest_status: ingestStatus,
+                ingest_job: latestJob
+            };
+        });
 
         res.json({ data: enriched, page, pageSize, total: Number(count) });
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao listar bases' });
+        res.status(400).json({ error: 'Erro ao listar bases' });
     }
 });
 
@@ -197,7 +211,7 @@ router.post('/', upload.array('arquivo'), async (req: Request, res: Response) =>
         return res.status(201).json({ data: createdRows });
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao processar upload' });
+        res.status(400).json({ error: 'Erro ao processar upload' });
     }
 });
 
@@ -260,7 +274,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
         return res.json({ success: true });
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao deletar base' });
+        res.status(400).json({ error: 'Erro ao deletar base' });
     }
 });
 
@@ -292,7 +306,7 @@ router.get('/:id/preview', async (req: Request, res: Response) => {
         res.json({ columns, rows });
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao gerar preview' });
+        res.status(400).json({ error: 'Erro ao gerar preview' });
     }
 });
 

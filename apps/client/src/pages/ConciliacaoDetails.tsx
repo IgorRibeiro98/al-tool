@@ -19,6 +19,25 @@ import {
     AlertDialogCancel,
 } from '@/components/ui/alert-dialog';
 
+const EXPORT_STATUS_MESSAGES: Record<string, string> = {
+    STARTING: 'Preparando exportação',
+    EXPORT_BUILDING_A: 'Exportando resultados da Base A',
+    EXPORT_BUILT_A: 'Base A concluída',
+    EXPORT_BUILDING_B: 'Exportando resultados da Base B',
+    EXPORT_BUILT_B: 'Base B concluída',
+    EXPORT_BUILDING_COMBINED: 'Gerando planilha comparativa',
+    EXPORT_BUILT_COMBINED: 'Comparativo concluído',
+    EXPORT_ZIPPED: 'Compactando arquivos',
+    EXPORT_DONE: 'Exportação finalizada',
+    FAILED: 'Exportação falhou'
+};
+
+const getExportStatusLabel = (code?: string | null) => {
+    if (!code) return 'Iniciando...';
+    const normalized = code.toUpperCase();
+    return EXPORT_STATUS_MESSAGES[normalized] ?? code;
+};
+
 
 
 const ConciliacaoDetails = () => {
@@ -144,7 +163,7 @@ const ConciliacaoDetails = () => {
                     } catch (e) {
                         console.error('poll export status failed', e);
                     }
-                }, 2000);
+                }, 5000);
                 pollRef.current = iv;
             };
 
@@ -253,7 +272,7 @@ const ConciliacaoDetails = () => {
                                     <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
                                         <div className="h-2 bg-primary transition-all" style={{ width: `${exportProgress ?? 4}%` }} />
                                     </div>
-                                    <div className="text-xs text-muted-foreground mt-1">{exportStatus ?? 'Iniciando...'} {exportProgress != null ? `— ${Math.round(exportProgress)}%` : ''}</div>
+                                    <div className="text-xs text-muted-foreground mt-1">{getExportStatusLabel(exportStatus)} {exportProgress != null ? `— ${Math.round(exportProgress)}%` : ''}</div>
                                 </div>
                             )}
                         </div>

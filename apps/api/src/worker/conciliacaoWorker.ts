@@ -29,6 +29,12 @@ export function startConciliacaoWorker(intervalSeconds = DEFAULT_INTERVAL_SECOND
 
             const jobId = job.id as number;
 
+            try {
+                await jobsRepo.setJobPipelineStage(jobId, 'starting_worker', 8, 'Iniciando conciliação');
+            } catch (stageErr) {
+                console.warn('Failed to set initial pipeline stage for job', jobId, stageErr);
+            }
+
             // spawn a child process to run the pipeline so we don't block the event loop
             try {
                 const isProd = process.env.NODE_ENV === 'production';
@@ -56,10 +62,12 @@ export function startConciliacaoWorker(intervalSeconds = DEFAULT_INTERVAL_SECOND
                 child.on('error', (err: any) => {
                     console.error('Failed to spawn jobRunner child process', err);
                     // mark job as FAILED if child couldn't be spawned
+                    jobsRepo.setJobPipelineStage(jobId, 'failed', null, 'Conciliação interrompida').catch(() => { /* ignore */ });
                     jobsRepo.updateJobStatus(jobId, 'FAILED', 'Failed to spawn runner process').catch(e => console.error(e));
                 });
             } catch (err: any) {
                 console.error('Error while spawning runner for job', jobId, err);
+                try { await jobsRepo.setJobPipelineStage(jobId, 'failed', null, 'Conciliação interrompida'); } catch (_) { }
                 await jobsRepo.updateJobStatus(jobId, 'FAILED', String(err?.message || err));
             }
         } catch (err: any) {

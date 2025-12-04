@@ -94,13 +94,19 @@ router.post('/', async (req: Request, res: Response) => {
             updated_at: db.fn.now()
         });
 
+        try {
+            await jobsRepo.setJobPipelineStage(jobRow.id, 'queued', 0, 'Na fila para conciliação');
+        } catch (e) {
+            console.warn('Failed to initialize pipeline stage for job', jobRow.id, e);
+        }
+
         const jobId = jobRow.id as number;
 
         // Job enqueued for background processing by the worker
         res.status(201).json(jobRow);
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao criar job' });
+        res.status(400).json({ error: 'Erro ao criar job' });
     }
 });
 

@@ -97,4 +97,33 @@ export async function setJobExportProgress(id: number, progress: number | null, 
     return await db('jobs_conciliacao').where({ id }).first();
 }
 
+export async function setJobPipelineStage(id: number, stage: string | null, progress?: number | null, label?: string | null) {
+    const update: any = { updated_at: db.fn.now() };
+    if (stage !== undefined) update.pipeline_stage = stage;
+    if (label !== undefined) update.pipeline_stage_label = label;
+    if (progress !== undefined) update.pipeline_progress = progress;
+
+    try {
+        await db('jobs_conciliacao').where({ id }).update(update);
+    } catch (err: any) {
+        const msg = err && (err.message || String(err)) || '';
+        if (/pipeline_stage/.test(msg) || /pipeline_stage_label/.test(msg) || /pipeline_progress/.test(msg) || msg.includes('no such column')) {
+            try {
+                await db.schema.table('jobs_conciliacao', t => {
+                    try { t.string('pipeline_stage').nullable(); } catch (_) { }
+                    try { t.string('pipeline_stage_label').nullable(); } catch (_) { }
+                    try { t.integer('pipeline_progress').nullable(); } catch (_) { }
+                });
+                await db('jobs_conciliacao').where({ id }).update(update);
+            } catch (addErr) {
+                throw addErr;
+            }
+        } else {
+            throw err;
+        }
+    }
+
+    return await db('jobs_conciliacao').where({ id }).first();
+}
+
 export default { createJob, updateJobStatus, getJobById };
