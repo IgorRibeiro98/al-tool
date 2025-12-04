@@ -136,7 +136,7 @@ router.get('/', async (req: Request, res: Response) => {
         return res.json({ page, pageSize, total, totalPages, data: rows });
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao listar conciliacoes' });
+        res.status(400).json({ error: 'Erro ao listar conciliacoes' });
     }
 });
 
@@ -189,7 +189,7 @@ router.post('/:id/exportar', async (req: Request, res: Response) => {
         return res.status(202).json({ jobId: id, status: 'export_started' });
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao exportar' });
+        res.status(400).json({ error: 'Erro ao exportar' });
     }
 });
 
@@ -225,12 +225,12 @@ router.get('/:id/download', async (req: Request, res: Response) => {
         const stream = fs.createReadStream(abs);
         stream.on('error', (err: any) => {
             console.error('Error streaming file', err);
-            if (!res.headersSent) res.status(500).end('Erro ao ler arquivo');
+            if (!res.headersSent) res.status(400).end('Erro ao ler arquivo');
         });
         stream.pipe(res);
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao baixar arquivo' });
+        res.status(400).json({ error: 'Erro ao baixar arquivo' });
     }
 });
 
@@ -254,7 +254,7 @@ router.get('/:id/export-status', async (req: Request, res: Response) => {
         return res.json(payload);
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao obter status de exportação' });
+        res.status(400).json({ error: 'Erro ao obter status de exportação' });
     }
 });
 
@@ -289,7 +289,7 @@ router.get('/:id', async (req: Request, res: Response) => {
         return res.json({ job, metrics: { totalRows, byStatus, byGroup } });
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao buscar conciliacao' });
+        res.status(400).json({ error: 'Erro ao buscar conciliacao' });
     }
 });
 
@@ -359,7 +359,7 @@ router.get('/:id/resultado', async (req: Request, res: Response) => {
         return res.json({ page, pageSize, total, totalPages, data, keys: keyIds });
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao buscar resultado' });
+        res.status(400).json({ error: 'Erro ao buscar resultado' });
     }
 });
 
@@ -397,7 +397,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
         return res.json({ success: true });
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao deletar conciliacao' });
+        res.status(400).json({ error: 'Erro ao deletar conciliacao' });
     }
 });
 

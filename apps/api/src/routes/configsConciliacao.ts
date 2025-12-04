@@ -75,7 +75,7 @@ router.post('/', async (req: Request, res: Response) => {
         res.status(201).json(parseRow(created));
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao criar config conciliacao' });
+        res.status(400).json({ error: 'Erro ao criar config conciliacao' });
     }
 });
 
@@ -86,7 +86,7 @@ router.get('/', async (req: Request, res: Response) => {
         res.json(rows.map(parseRow));
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao listar configs conciliacao' });
+        res.status(400).json({ error: 'Erro ao listar configs conciliacao' });
     }
 });
 
@@ -100,7 +100,7 @@ router.get('/:id', async (req: Request, res: Response) => {
         res.json(parseRow(row));
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao obter config conciliacao' });
+        res.status(400).json({ error: 'Erro ao obter config conciliacao' });
     }
 });
 
@@ -137,7 +137,7 @@ router.put('/:id', async (req: Request, res: Response) => {
         res.json(parseRow(updated));
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao atualizar config conciliacao' });
+        res.status(400).json({ error: 'Erro ao atualizar config conciliacao' });
     }
 });
 
@@ -152,7 +152,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
         res.status(204).send();
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao deletar config conciliacao' });
+        res.status(400).json({ error: 'Erro ao deletar config conciliacao' });
     }
 });
 

@@ -91,7 +91,7 @@ router.post('/cleanup', async (req: Request, res: Response) => {
         return res.json({ deletedUploads, deletedIngests, droppedTables, message: 'cleanup finished' });
     } catch (err: any) {
         console.error('Maintenance cleanup error', err);
-        return res.status(500).json({ error: 'cleanup failed', details: err && err.message });
+        return res.status(400).json({ error: 'cleanup failed', details: err && err.message });
     }
 });
 

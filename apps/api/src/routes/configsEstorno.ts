@@ -45,7 +45,7 @@ router.post('/', async (req: Request, res: Response) => {
         res.status(201).json(created);
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao criar config estorno' });
+        res.status(400).json({ error: 'Erro ao criar config estorno' });
     }
 });
 
@@ -56,7 +56,7 @@ router.get('/', async (req: Request, res: Response) => {
         res.json(rows);
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao listar configs estorno' });
+        res.status(400).json({ error: 'Erro ao listar configs estorno' });
     }
 });
 
@@ -70,7 +70,7 @@ router.get('/:id', async (req: Request, res: Response) => {
         res.json(row);
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao obter config estorno' });
+        res.status(400).json({ error: 'Erro ao obter config estorno' });
     }
 });
 
@@ -105,7 +105,7 @@ router.put('/:id', async (req: Request, res: Response) => {
         res.json(updated);
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao atualizar config estorno' });
+        res.status(400).json({ error: 'Erro ao atualizar config estorno' });
     }
 });
 
@@ -120,7 +120,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
         res.status(204).send();
     } catch (err: any) {
         console.error(err);
-        res.status(500).json({ error: 'Erro ao deletar config estorno' });
+        res.status(400).json({ error: 'Erro ao deletar config estorno' });
     }
 });
 

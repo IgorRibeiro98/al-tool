@@ -55,7 +55,7 @@ router.get('/', async (_req: Request, res: Response) => {
         res.json(rows.map(parseRow));
     } catch (err) {
         console.error('erro ao listar configs de mapeamento', err);
-        res.status(500).json({ error: 'Erro ao listar configs de mapeamento' });
+        res.status(400).json({ error: 'Erro ao listar configs de mapeamento' });
     }
 });
 
@@ -68,7 +68,7 @@ router.get('/:id', async (req: Request, res: Response) => {
         res.json(parseRow(row));
     } catch (err) {
         console.error('erro ao obter config de mapeamento', err);
-        res.status(500).json({ error: 'Erro ao obter config de mapeamento' });
+        res.status(400).json({ error: 'Erro ao obter config de mapeamento' });
     }
 });
 
@@ -102,7 +102,7 @@ router.post('/', async (req: Request, res: Response) => {
         res.status(201).json(parseRow(created));
     } catch (err) {
         console.error('erro ao criar config de mapeamento', err);
-        res.status(500).json({ error: 'Erro ao criar config de mapeamento' });
+        res.status(400).json({ error: 'Erro ao criar config de mapeamento' });
     }
 });
 
@@ -136,7 +136,7 @@ router.put('/:id', async (req: Request, res: Response) => {
         res.json(parseRow(updated));
     } catch (err) {
         console.error('erro ao atualizar config de mapeamento', err);
-        res.status(500).json({ error: 'Erro ao atualizar config de mapeamento' });
+        res.status(400).json({ error: 'Erro ao atualizar config de mapeamento' });
     }
 });
 
@@ -150,7 +150,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
         res.status(204).send();
     } catch (err) {
         console.error('erro ao deletar config de mapeamento', err);
-        res.status(500).json({ error: 'Erro ao deletar config de mapeamento' });
+        res.status(400).json({ error: 'Erro ao deletar config de mapeamento' });
     }
 });
 
