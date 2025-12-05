@@ -164,37 +164,43 @@ const BaseDetails = () => {
                             <div>Carregando...</div>
                         ) : (
                             <>
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                    <div>
-                                        <p className="text-sm text-muted-foreground">Tipo</p>
-                                        <Badge>{base?.tipo ?? '-'}</Badge>
+                                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                                    <div className="rounded-lg border p-3 flex flex-col gap-2 bg-muted/20">
+                                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Tipo</p>
+                                        <div className="flex items-center gap-2">
+                                            <Badge>{base?.tipo ?? '-'}</Badge>
+                                        </div>
                                     </div>
-                                    <div>
-                                        <p className="text-sm text-muted-foreground">Período</p>
-                                        <p className="font-medium">{base?.periodo ?? '-'}</p>
+                                    <div className="rounded-lg border p-3 flex flex-col gap-2 bg-muted/20">
+                                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Período</p>
+                                        <p className="font-medium text-base">{base?.periodo ?? '-'}</p>
                                     </div>
-                                    <div>
-                                        <p className="text-sm text-muted-foreground">Data de criação</p>
-                                        <p className="font-medium">{base?.created_at ? new Date(base.created_at).toLocaleDateString('pt-BR') : '-'}</p>
+                                    <div className="rounded-lg border p-3 flex flex-col gap-2 bg-muted/20">
+                                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Data de criação</p>
+                                        <p className="font-medium text-base">{base?.created_at ? new Date(base.created_at).toLocaleDateString('pt-BR') : '-'}</p>
+                                    </div>
+                                    <div className="rounded-lg border p-3 flex flex-col gap-2 bg-muted/20">
+                                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Tabela SQLite</p>
+                                        <p className="font-medium text-base">{base?.tabela_sqlite || '-'}</p>
                                     </div>
                                 </div>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div>
-                                        <p className="text-sm text-muted-foreground">Status da conversão</p>
-                                        <div className="mt-2 space-y-2">
-                                            <StatusChip status={conversionMeta.chip} label={conversionMeta.label} />
-                                            {conversionError && <p className="text-xs text-destructive break-words">{conversionError}</p>}
+                                <div className="grid gap-4 md:grid-cols-2">
+                                    <div className="rounded-lg border p-4 bg-muted/20 space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <p className="text-sm text-muted-foreground">Status da conversão</p>
                                         </div>
+                                        <StatusChip status={conversionMeta.chip} label={conversionMeta.label} />
+                                        {conversionError && <p className="text-xs text-destructive break-words">{conversionError}</p>}
                                     </div>
-                                    <div>
-                                        <p className="text-sm text-muted-foreground">Status da ingestão</p>
-                                        <div className="mt-2 space-y-2">
-                                            <StatusChip status={ingestMeta.chip} label={ingestMeta.label} />
-                                            {ingestError && <p className="text-xs text-destructive break-words">{ingestError}</p>}
-                                            {base?.tabela_sqlite && (
-                                                <p className="text-xs text-muted-foreground">Tabela SQLite: {base.tabela_sqlite}</p>
-                                            )}
+                                    <div className="rounded-lg border p-4 bg-muted/20 space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <p className="text-sm text-muted-foreground">Status da ingestão</p>
                                         </div>
+                                        <StatusChip status={ingestMeta.chip} label={ingestMeta.label} />
+                                        {ingestError && <p className="text-xs text-destructive break-words">{ingestError}</p>}
+                                        {base?.tabela_sqlite && (
+                                            <p className="text-xs text-muted-foreground">Tabela SQLite: {base.tabela_sqlite}</p>
+                                        )}
                                     </div>
                                 </div>
                             </>

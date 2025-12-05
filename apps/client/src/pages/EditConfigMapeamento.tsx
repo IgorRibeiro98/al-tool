@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '@/components/ui/select';
+import { Skeleton } from '@/components/ui/skeleton';
 import { fetchBases, getBaseColumns } from '@/services/baseService';
 import { getConfigMapeamento, updateConfigMapeamento } from '@/services/configsService';
 import { MappingState, buildMappingState, serializeMappingState } from '@/lib/mappingUtils';
@@ -178,6 +179,75 @@ const EditConfigMapeamento = () => {
     const mappingEntries = Object.entries(mappingState);
     const mappingEnabled = baseAColumns.length > 0 && baseBColumns.length > 0;
 
+    const renderSkeleton = () => (
+        <div className="space-y-6">
+            <div className="flex items-center gap-4">
+                <Skeleton className="h-10 w-10" />
+                <div className="space-y-2">
+                    <Skeleton className="h-6 w-64" />
+                    <Skeleton className="h-4 w-80" />
+                </div>
+            </div>
+            <Card>
+                <CardHeader>
+                    <Skeleton className="h-5 w-40" />
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <Skeleton className="h-10 w-full" />
+                    <div className="grid gap-4 md:grid-cols-2">
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-10 w-full" />
+                    </div>
+                    <div className="space-y-2">
+                        <Skeleton className="h-5 w-56" />
+                        <Skeleton className="h-4 w-72" />
+                        <div className="space-y-3">
+                            {Array.from({ length: 4 }).map((_, idx) => (
+                                <div key={idx} className="grid gap-2 md:grid-cols-3 items-center">
+                                    <div className="space-y-2">
+                                        <Skeleton className="h-4 w-40" />
+                                        <Skeleton className="h-3 w-24" />
+                                    </div>
+                                    <div className="md:col-span-2">
+                                        <Skeleton className="h-10 w-full" />
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    <div className="flex justify-end gap-3">
+                        <Skeleton className="h-10 w-24" />
+                        <Skeleton className="h-10 w-32" />
+                    </div>
+                </CardContent>
+            </Card>
+        </div>
+    );
+
+    const mappingSkeleton = (
+        <div className="space-y-3">
+            {Array.from({ length: 4 }).map((_, idx) => (
+                <div key={idx} className="grid gap-2 md:grid-cols-3 items-center">
+                    <div className="space-y-2">
+                        <Skeleton className="h-4 w-40" />
+                        <Skeleton className="h-3 w-24" />
+                    </div>
+                    <div className="md:col-span-2">
+                        <Skeleton className="h-10 w-full" />
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+
+    if (loading) {
+        return (
+            <PageSkeletonWrapper loading>
+                {renderSkeleton()}
+            </PageSkeletonWrapper>
+        );
+    }
+
     return (
         <PageSkeletonWrapper loading={loading}>
             <div className="space-y-6">
@@ -265,7 +335,7 @@ const EditConfigMapeamento = () => {
                                     {!watchBaseA || !watchBaseB ? (
                                         <p className="text-sm text-muted-foreground">Selecione as bases para visualizar os mapeamentos.</p>
                                     ) : loadingColsA || loadingColsB ? (
-                                        <p className="text-sm text-muted-foreground">Carregando colunas...</p>
+                                        mappingSkeleton
                                     ) : !mappingEnabled ? (
                                         <p className="text-sm text-muted-foreground">Não foi possível carregar as colunas selecionadas.</p>
                                     ) : (

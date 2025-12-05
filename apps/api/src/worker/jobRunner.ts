@@ -1,6 +1,7 @@
 import db from '../db/knex';
 import pipeline from '../pipeline/integration';
 import * as jobsRepo from '../repos/jobsRepository';
+import idxHelpers from '../db/indexHelpers';
 
 async function main() {
     const argv = process.argv || [];
@@ -18,13 +19,51 @@ async function main() {
             process.exit(3);
         }
 
+        const baseCache = new Map<number, any | null>();
+        const getBaseMeta = async (id: number) => {
+            if (!id) return undefined;
+            if (baseCache.has(id)) return baseCache.get(id) || undefined;
+            const row = await db('bases').where({ id }).first();
+            baseCache.set(id, row || null);
+            return row || undefined;
+        };
+
+        const concCfgCache = new Map<number, any | null>();
+        const getConfigConciliacao = async (id: number) => {
+            if (!id) return undefined;
+            if (concCfgCache.has(id)) return concCfgCache.get(id) || undefined;
+            const row = await db('configs_conciliacao').where({ id }).first();
+            concCfgCache.set(id, row || null);
+            return row || undefined;
+        };
+
+        const estornoCfgCache = new Map<number, any | null>();
+        const getConfigEstorno = async (id: number) => {
+            if (!id) return undefined;
+            if (estornoCfgCache.has(id)) return estornoCfgCache.get(id) || undefined;
+            const row = await db('configs_estorno').where({ id }).first();
+            estornoCfgCache.set(id, row || null);
+            return row || undefined;
+        };
+
+        const cancelCfgCache = new Map<number, any | null>();
+        const getConfigCancelamento = async (id: number) => {
+            if (!id) return undefined;
+            if (cancelCfgCache.has(id)) return cancelCfgCache.get(id) || undefined;
+            const row = await db('configs_cancelamento').where({ id }).first();
+            cancelCfgCache.set(id, row || null);
+            return row || undefined;
+        };
+
         // fetch config
-        const cfg = await db('configs_conciliacao').where({ id: job.config_conciliacao_id }).first();
+        const cfg = await getConfigConciliacao(job.config_conciliacao_id);
         if (!cfg) {
             console.error('config conciliacao not found for job', jobId);
             await jobsRepo.updateJobStatus(jobId, 'FAILED', 'Config conciliacao not found');
             process.exit(4);
         }
+
+        concCfgCache.set(cfg.id, cfg);
 
         const baseContabilId = job.base_contabil_id_override || cfg.base_contabil_id;
         const baseFiscalId = job.base_fiscal_id_override || cfg.base_fiscal_id;
@@ -34,6 +73,11 @@ async function main() {
             process.exit(5);
         }
 
+        await idxHelpers.ensureIndicesForBaseFromConfigs(baseContabilId);
+        if (baseFiscalId !== baseContabilId) {
+            await idxHelpers.ensureIndicesForBaseFromConfigs(baseFiscalId);
+        }
+
         const ctx: any = {
             jobId,
             baseContabilId,
@@ -41,6 +85,10 @@ async function main() {
             configConciliacaoId: cfg.id,
             configEstornoId: job.config_estorno_id ?? undefined,
             configCancelamentoId: job.config_cancelamento_id ?? undefined,
+            getBaseMeta,
+            getConfigConciliacao,
+            getConfigEstorno,
+            getConfigCancelamento,
         };
 
         const stageMap: Record<string, { code: string; label: string }> = {

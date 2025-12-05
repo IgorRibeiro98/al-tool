@@ -118,7 +118,7 @@ const ConfigConciliacao = () => {
                                             <div>
                                                 <p className="font-medium text-lg">{config.nome}</p>
                                                 <div className="flex gap-2 mt-2">
-                                                    {config.inverter_sinal_fiscal && <Badge variant="secondary">Inverter Sinal</Badge>}
+                                                    {!!config.inverter_sinal_fiscal && <Badge variant="secondary">Inverter Sinal</Badge>}
                                                     <Badge variant="outline">Dif. Imaterial: {config.limite_diferenca_imaterial ?? '-'}</Badge>
                                                 </div>
                                             </div>

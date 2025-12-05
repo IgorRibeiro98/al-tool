@@ -20,6 +20,10 @@ export class CancelamentoBaseBStep implements PipelineStep {
         this.db = db;
     }
 
+    private wrapIdentifier(value: string) {
+        return `"${value.replace(/"/g, '""')}"`;
+    }
+
     private async ensureMarksTable() {
         const exists = await this.db.schema.hasTable('conciliacao_marks');
         if (!exists) {
@@ -31,13 +35,13 @@ export class CancelamentoBaseBStep implements PipelineStep {
         const cfgId = ctx.configCancelamentoId;
         if (!cfgId) return;
 
-        const cfg = await this.db('configs_cancelamento').where({ id: cfgId }).first();
+        const cfg = ctx.getConfigCancelamento ? await ctx.getConfigCancelamento(cfgId) : await this.db('configs_cancelamento').where({ id: cfgId }).first();
         if (!cfg) return;
 
         const baseId = ctx.baseFiscalId ?? cfg.base_id;
         if (!baseId) return;
 
-        const base = await this.db('bases').where({ id: baseId }).first();
+        const base = ctx.getBaseMeta ? await ctx.getBaseMeta(baseId) : await this.db('bases').where({ id: baseId }).first();
         if (!base || !base.tabela_sqlite) return;
         const tableName: string = base.tabela_sqlite;
 
@@ -51,20 +55,24 @@ export class CancelamentoBaseBStep implements PipelineStep {
 
         if (!coluna || valorCancelado === undefined || valorCancelado === null) return;
 
-        // find rows matching the indicator
-        const rows = await this.db.select('id').from(tableName).where(coluna, valorCancelado);
-
-        if (!rows || rows.length === 0) return;
-
         const grupo = 'NF Cancelada';
         const status = '04_Não avaliado';
 
-        for (const r of rows) {
-            const exists = await this.db('conciliacao_marks').where({ base_id: baseId, row_id: r.id, grupo }).first();
-            if (!exists) {
-                await this.db('conciliacao_marks').insert({ base_id: baseId, row_id: r.id, status, grupo, chave: null, created_at: this.db.fn.now() });
-            }
-        }
+        const tableIdent = this.wrapIdentifier(tableName);
+        const colIdent = this.wrapIdentifier(coluna);
+
+        const sql = `
+            INSERT INTO conciliacao_marks (base_id, row_id, status, grupo, chave, created_at)
+            SELECT ?, t.id, ?, ?, NULL, CURRENT_TIMESTAMP
+            FROM ${tableIdent} t
+            WHERE t.${colIdent} = ?
+            AND NOT EXISTS (
+                SELECT 1 FROM conciliacao_marks cm
+                WHERE cm.base_id = ? AND cm.row_id = t.id AND cm.grupo = ?
+            )
+        `;
+
+        await this.db.raw(sql, [baseId, status, grupo, valorCancelado, baseId, grupo]);
     }
 }
 

@@ -17,11 +17,12 @@ import {
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { getJobStatusMeta, getPipelineStageInfo, shouldPollJob } from "@/lib/conciliacaoStatus";
+import { downloadFromResponse } from '@/lib/download';
 import {
     deleteConciliacao,
     exportConciliacao,
     fetchConciliacoes,
-    getDownloadUrl,
+    downloadConciliacaoFile,
 } from "@/services/conciliacaoService";
 
 const EXPORT_STATUS_MESSAGES: Record<string, string> = {
@@ -142,6 +143,16 @@ const Conciliacoes = () => {
         [loadJobs],
     );
 
+    const handleDownload = useCallback(async (jobId: number, jobName?: string) => {
+        try {
+            const res = await downloadConciliacaoFile(jobId);
+            downloadFromResponse(res as any, jobName || 'conciliacao');
+        } catch (error) {
+            console.error('Falha ao baixar exportação', error);
+            toast.error('Falha ao baixar exportação');
+        }
+    }, []);
+
     return (
         <PageSkeletonWrapper loading={loading}>
             <div className="space-y-6">
@@ -173,6 +184,7 @@ const Conciliacoes = () => {
                                         const pipelineInfo = getPipelineStageInfo(job);
                                         const isProcessing = shouldPollJob(job);
                                         const progressWidth = pipelineInfo.progress ?? (isProcessing ? 15 : 0);
+                                        const disableActions = isProcessing || isJobExporting(job);
 
                                         return (
                                             <div
@@ -224,7 +236,7 @@ const Conciliacoes = () => {
                                                     </div>
                                                     <div className="flex flex-wrap items-center justify-end gap-2 min-w-[220px]">
                                                         {job.arquivo_exportado ? (
-                                                            <Button variant="link" className="px-0" onClick={() => window.open(getDownloadUrl(job.id), '_blank')}>
+                                                            <Button variant="link" className="px-0" onClick={() => handleDownload(job.id, job.nome)}>
                                                                 Baixar ZIP
                                                             </Button>
                                                         ) : job.export_status && job.export_status !== 'DONE' ? (
@@ -237,7 +249,7 @@ const Conciliacoes = () => {
                                                                 Exportar
                                                             </Button>
                                                         ) : null}
-                                                        <Button variant="ghost" size="icon" onClick={() => navigate(`/conciliacoes/${job.id}`)} aria-label="Ver conciliação">
+                                                        <Button variant="ghost" size="icon" onClick={() => navigate(`/conciliacoes/${job.id}`)} aria-label="Ver conciliação" disabled={disableActions}>
                                                             <Eye className="h-4 w-4" />
                                                         </Button>
                                                         <Button
@@ -248,6 +260,7 @@ const Conciliacoes = () => {
                                                                 setDeleteDialogOpen(true);
                                                             }}
                                                             aria-label="Deletar conciliação"
+                                                            disabled={disableActions}
                                                         >
                                                             <Trash className="h-4 w-4" />
                                                         </Button>

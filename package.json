@@ -14,7 +14,7 @@
         "desktop:build": "npm --workspace=apps/desktop run build",
         "client:build": "npm --workspace=apps/client run build",
         "client:dev": "npm --workspace=apps/client run dev",
-        "app:dist": "npm run api:build && npm run client:build && npm run desktop:build && npm run rebuild:native && npm --workspace=apps/desktop run dist",
+        "app:dist": "npm run client:build && npm run api:build && npm run desktop:build && npm run rebuild:native && npm --workspace=apps/desktop run dist",
         "install:all": "npm install",
         "rebuild:native": "electron-rebuild -f -w better-sqlite3",
         "python:setup": "python3 scripts/bootstrap_conversion_runtime.py"

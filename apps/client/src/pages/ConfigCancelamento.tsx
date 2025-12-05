@@ -16,7 +16,7 @@ import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from 'react';
 import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import { fetchConfigsCancelamento, updateConfigCancelamento, deleteConfigCancelamento } from '@/services/configsService';
-import { fetchBases } from '@/services/baseService';
+import { fetchBases, getBaseColumns } from '@/services/baseService';
 import { toast } from 'sonner';
 
 
@@ -26,6 +26,7 @@ const ConfigCancelamento = () => {
 
     const [configs, setConfigs] = useState<any[]>([]);
     const [basesMap, setBasesMap] = useState<Record<number, string>>({});
+    const [columnsByBase, setColumnsByBase] = useState<Record<number, Record<string, string>>>({});
     const [loading, setLoading] = useState<boolean>(true);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
@@ -34,7 +35,7 @@ const ConfigCancelamento = () => {
         let mounted = true;
         setLoading(true);
         Promise.all([fetchConfigsCancelamento(), fetchBases()])
-            .then(([cfgResp, basesResp]) => {
+            .then(async ([cfgResp, basesResp]) => {
                 if (!mounted) return;
                 const cfgs = cfgResp.data || [];
                 setConfigs(cfgs);
@@ -42,6 +43,31 @@ const ConfigCancelamento = () => {
                 const map: Record<number, string> = {};
                 bases.forEach((b: any) => { if (b.id) map[b.id] = b.nome ?? String(b.id); });
                 setBasesMap(map);
+
+                const uniqueBaseIds = Array.from(new Set((cfgs || []).map((c: any) => c.base_id).filter((id: any) => id)));
+                if (uniqueBaseIds.length === 0) return;
+
+                const columnsResponses = await Promise.all(
+                    uniqueBaseIds.map(async (id: number) => {
+                        try {
+                            const res = await getBaseColumns(id);
+                            return { id, rows: res.data?.data || [] };
+                        } catch (err) {
+                            console.error('failed to fetch columns for base', id, err);
+                            return { id, rows: [] };
+                        }
+                    })
+                );
+
+                const nextColumns: Record<number, Record<string, string>> = {};
+                columnsResponses.forEach(({ id, rows }) => {
+                    const mapCols: Record<string, string> = {};
+                    rows.forEach((c: any) => {
+                        if (c?.sqlite_name) mapCols[c.sqlite_name] = c.excel_name ?? c.sqlite_name;
+                    });
+                    nextColumns[id] = mapCols;
+                });
+                setColumnsByBase(nextColumns);
             })
             .catch((err) => {
                 console.error('failed to load cancelamento configs', err);
@@ -85,6 +111,12 @@ const ConfigCancelamento = () => {
         }
     };
 
+    const resolveColumnName = (config: any, sqliteName?: string) => {
+        if (!sqliteName) return '-';
+        const map = columnsByBase[config.base_id] || {};
+        return map[sqliteName] || sqliteName;
+    };
+
     return (
         <PageSkeletonWrapper loading={loading}>
             <div className="space-y-6">
@@ -116,7 +148,7 @@ const ConfigCancelamento = () => {
                                         <div className="flex-1 space-y-1">
                                             <p className="font-medium">{config.nome}</p>
                                             <div className="flex gap-4 text-sm text-muted-foreground">
-                                                <span>Coluna: <span className="font-mono">{config.coluna_indicador ?? config.coluna}</span></span>
+                                                <span>Coluna: <span className="font-mono">{resolveColumnName(config, config.coluna_indicador ?? config.coluna)}</span></span>
                                                 <span>Cancelado: <span className="font-mono">{config.valor_cancelado ?? config.valorCancelado}</span></span>
                                                 <span>Não Cancelado: <span className="font-mono">{config.valor_nao_cancelado ?? config.valorNaoCancelado}</span></span>
                                             </div>

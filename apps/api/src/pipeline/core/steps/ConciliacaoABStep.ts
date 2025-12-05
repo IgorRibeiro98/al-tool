@@ -141,13 +141,14 @@ export class ConciliacaoABStep implements PipelineStep {
             const aRow = await getARow(rowId);
             if (!aRow) continue;
 
+            const markKey = mark?.grupo ?? mark?.chave ?? null;
             const valueA = aRow && colA ? Number(aRow[colA]) || 0 : 0;
             const valueB = 0;
             const diff = valueA - valueB;
 
             const entry: any = {
                 job_id: jobId,
-                chave: mark.chave,
+                chave: markKey,
                 status: mark.status,
                 grupo: mark.grupo,
                 a_row_id: rowId,
@@ -161,7 +162,7 @@ export class ConciliacaoABStep implements PipelineStep {
             };
 
             for (const kid of keyIdentifiers) {
-                entry[kid] = buildComposite(aRow, chavesContabil[kid]);
+                entry[kid] = markKey ?? buildComposite(aRow, chavesContabil[kid]);
             }
 
             inserts.push(entry);
@@ -172,6 +173,7 @@ export class ConciliacaoABStep implements PipelineStep {
             const bRow = await getBRow(rowId);
             if (!bRow) continue;
 
+            const markKey = mark?.grupo ?? mark?.chave ?? null;
             const valueA = 0;
             const rawB = bRow && colB ? Number(bRow[colB]) || 0 : 0;
             const valueB = inverter ? -rawB : rawB;
@@ -179,7 +181,7 @@ export class ConciliacaoABStep implements PipelineStep {
 
             const entry: any = {
                 job_id: jobId,
-                chave: mark.chave,
+                chave: markKey,
                 status: mark.status,
                 grupo: mark.grupo,
                 a_row_id: null,
@@ -193,7 +195,7 @@ export class ConciliacaoABStep implements PipelineStep {
             };
 
             for (const kid of keyIdentifiers) {
-                entry[kid] = buildComposite(bRow, chavesFiscal[kid]);
+                entry[kid] = markKey ?? buildComposite(bRow, chavesFiscal[kid]);
             }
 
             inserts.push(entry);

@@ -25,6 +25,10 @@ export class EstornoBaseAStep implements PipelineStep {
         this.db = db;
     }
 
+    private wrapIdentifier(value: string) {
+        return `"${value.replace(/"/g, '""')}"`;
+    }
+
     private async ensureMarksTable() {
         const exists = await this.db.schema.hasTable('conciliacao_marks');
         if (!exists) {
@@ -37,13 +41,13 @@ export class EstornoBaseAStep implements PipelineStep {
         if (!cfgId) return; // nothing to do
 
         // load configuration
-        const cfg = await this.db('configs_estorno').where({ id: cfgId }).first();
+        const cfg = ctx.getConfigEstorno ? await ctx.getConfigEstorno(cfgId) : await this.db('configs_estorno').where({ id: cfgId }).first();
         if (!cfg) return;
 
         const baseId = ctx.baseContabilId ?? cfg.base_id;
         if (!baseId) return;
 
-        const base = await this.db('bases').where({ id: baseId }).first();
+        const base = ctx.getBaseMeta ? await ctx.getBaseMeta(baseId) : await this.db('bases').where({ id: baseId }).first();
         if (!base || !base.tabela_sqlite) return;
         const tableName: string = base.tabela_sqlite;
 
@@ -58,71 +62,49 @@ export class EstornoBaseAStep implements PipelineStep {
         const colunaSoma = cfg.coluna_soma;
         const limiteZero = Number(cfg.limite_zero ?? 0);
 
-        // read relevant rows (id and the three columns)
-        const rows: any[] = await this.db.select('id', colunaA, colunaB, colunaSoma).from(tableName);
+        if (!colunaA || !colunaB || !colunaSoma) return;
 
-        // build maps: value -> list of rows where colunaA == value, and where colunaB == value
-        const mapA = new Map<string, any[]>();
-        const mapB = new Map<string, any[]>();
+        const colA = this.wrapIdentifier(colunaA);
+        const colB = this.wrapIdentifier(colunaB);
+        const colSum = this.wrapIdentifier(colunaSoma);
+        const tableIdent = this.wrapIdentifier(tableName);
 
-        for (const r of rows) {
-            const a = r[colunaA];
-            const b = r[colunaB];
-            if (a !== null && a !== undefined) {
-                const key = String(a);
-                let arrA = mapA.get(key);
-                if (!arrA) {
-                    arrA = [];
-                    mapA.set(key, arrA);
-                }
-                arrA.push(r);
-            }
-            if (b !== null && b !== undefined) {
-                const key = String(b);
-                let arrB = mapB.get(key);
-                if (!arrB) {
-                    arrB = [];
-                    mapB.set(key, arrB);
-                }
-                arrB.push(r);
-            }
-        }
+        const sql = `
+            WITH pairs AS (
+                SELECT DISTINCT
+                    a.id AS a_id,
+                    b.id AS b_id,
+                    a.${colA} AS chave_val,
+                    COALESCE(a.${colSum}, 0) AS soma_a,
+                    COALESCE(b.${colSum}, 0) AS soma_b,
+                    COALESCE(a.${colSum}, 0) + COALESCE(b.${colSum}, 0) AS soma_total
+                FROM ${tableIdent} a
+                JOIN ${tableIdent} b
+                  ON a.${colA} = b.${colB}
+                WHERE a.${colA} IS NOT NULL
+                  AND b.${colB} IS NOT NULL
+                  AND a.id <> b.id
+                  AND ABS(COALESCE(a.${colSum}, 0) + COALESCE(b.${colSum}, 0)) <= ?
+            )
+            INSERT INTO conciliacao_marks (base_id, row_id, status, grupo, chave, created_at)
+            SELECT ?, p.a_id, '01_Conciliado', 'Conciliado_Estorno',
+                   printf('%s_%d_%d', COALESCE(p.chave_val, ''), p.a_id, p.b_id), CURRENT_TIMESTAMP
+            FROM pairs p
+            WHERE NOT EXISTS (
+                SELECT 1 FROM conciliacao_marks cm
+                WHERE cm.base_id = ? AND cm.row_id = p.a_id AND cm.grupo = 'Conciliado_Estorno'
+            )
+            UNION ALL
+            SELECT ?, p.b_id, '01_Conciliado', 'Conciliado_Estorno',
+                   printf('%s_%d_%d', COALESCE(p.chave_val, ''), p.a_id, p.b_id), CURRENT_TIMESTAMP
+            FROM pairs p
+            WHERE NOT EXISTS (
+                SELECT 1 FROM conciliacao_marks cm
+                WHERE cm.base_id = ? AND cm.row_id = p.b_id AND cm.grupo = 'Conciliado_Estorno'
+            );
+        `;
 
-        let groupCounter = 0;
-
-        // for each key present in both maps, attempt pairings
-        for (const [key, listA] of mapA.entries()) {
-            const listB = mapB.get(key);
-            if (!listB) continue;
-
-            for (const ra of listA) {
-                for (const rb of listB) {
-                    // skip if same row
-                    if (ra.id === rb.id) continue;
-
-                    const valA = Number(ra[colunaSoma]) || 0;
-                    const valB = Number(rb[colunaSoma]) || 0;
-                    const sum = valA + valB;
-                    if (Math.abs(sum) <= limiteZero) {
-                        // mark both rows as conciliado com estorno
-                        const grupo = 'Conciliado_Estorno';
-                        const status = '01_Conciliado';
-                        const chave = `${key}_${Date.now()}_${groupCounter++}`;
-
-                        // idempotency: check if marks exist for these row_ids and grupo
-                        const existsA = await this.db('conciliacao_marks').where({ base_id: baseId, row_id: ra.id, grupo }).first();
-                        const existsB = await this.db('conciliacao_marks').where({ base_id: baseId, row_id: rb.id, grupo }).first();
-
-                        if (!existsA) {
-                            await this.db('conciliacao_marks').insert({ base_id: baseId, row_id: ra.id, status, grupo, chave, created_at: this.db.fn.now() });
-                        }
-                        if (!existsB) {
-                            await this.db('conciliacao_marks').insert({ base_id: baseId, row_id: rb.id, status, grupo, chave, created_at: this.db.fn.now() });
-                        }
-                    }
-                }
-            }
-        }
+        await this.db.raw(sql, [limiteZero, baseId, baseId, baseId, baseId]);
     }
 }
 

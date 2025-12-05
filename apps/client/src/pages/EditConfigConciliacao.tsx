@@ -16,6 +16,7 @@ import { toast } from 'sonner';
 
 import { fetchBases, getBaseColumns } from '@/services/baseService';
 import { getConfigConciliacao, updateConfigConciliacao, deleteConfigConciliacao } from '@/services/configsService';
+import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 
 const schema = z.object({
     nome: z.string().min(1),
@@ -37,6 +38,8 @@ const EditConfigConciliacao: React.FC = () => {
     const [bases, setBases] = useState<any[]>([]);
     const [colsContabeis, setColsContabeis] = useState<any[]>([]);
     const [colsFiscais, setColsFiscais] = useState<any[]>([]);
+    const [basesLoading, setBasesLoading] = useState<boolean>(true);
+    const [configLoading, setConfigLoading] = useState<boolean>(true);
     type ChaveCombination = { id: string; label: string; colunasContabil: string[]; colunasFiscal: string[] };
     const [chaves, setChaves] = useState<ChaveCombination[]>([]);
 
@@ -55,12 +58,14 @@ const EditConfigConciliacao: React.FC = () => {
 
     useEffect(() => {
         let mounted = true;
+        setBasesLoading(true);
         fetchBases()
             .then((r: any) => {
                 if (!mounted) return;
                 setBases(r.data?.data || r.data || []);
             })
-            .catch(() => setBases([]));
+            .catch(() => setBases([]))
+            .finally(() => { if (mounted) setBasesLoading(false); });
         return () => { mounted = false; };
     }, []);
 
@@ -108,20 +113,27 @@ const EditConfigConciliacao: React.FC = () => {
         let mounted = true;
         if (!id) return;
         const numId = Number(id);
-        if (Number.isNaN(numId)) return;
+        if (Number.isNaN(numId)) { setConfigLoading(false); return; }
         getConfigConciliacao(numId)
             .then((res: any) => {
                 if (!mounted) return;
                 const cfg = res.data?.data || res.data || {};
+                const baseCont = cfg.base_contabil_id ? String(cfg.base_contabil_id) : '';
+                const baseFisc = cfg.base_fiscal_id ? String(cfg.base_fiscal_id) : '';
+
                 form.reset({
                     nome: cfg.nome || '',
-                    baseContabilId: cfg.base_contabil_id ? String(cfg.base_contabil_id) : '',
-                    baseFiscalId: cfg.base_fiscal_id ? String(cfg.base_fiscal_id) : '',
+                    baseContabilId: baseCont,
+                    baseFiscalId: baseFisc,
                     colunaConciliacaoContabil: cfg.coluna_conciliacao_contabil ? String(cfg.coluna_conciliacao_contabil) : '',
                     colunaConciliacaoFiscal: cfg.coluna_conciliacao_fiscal ? String(cfg.coluna_conciliacao_fiscal) : '',
                     diferencaImaterial: cfg.limite_diferenca_imaterial ?? null,
                     inverterSinal: !!cfg.inverter_sinal_fiscal,
                 });
+
+                // ensure Selects show the saved bases and trigger watchers
+                form.setValue('baseContabilId', baseCont, { shouldDirty: false, shouldTouch: false, shouldValidate: false });
+                form.setValue('baseFiscalId', baseFisc, { shouldDirty: false, shouldTouch: false, shouldValidate: false });
 
                 // normalize chaves into combinations (support legacy arrays)
                 const parseChaves = (raw: any) => {
@@ -156,7 +168,8 @@ const EditConfigConciliacao: React.FC = () => {
                     }).catch(() => setColsFiscais([]));
                 }
             })
-            .catch(() => toast.error('Falha ao carregar configuração'));
+            .catch(() => toast.error('Falha ao carregar configuração'))
+            .finally(() => { if (mounted) setConfigLoading(false); });
 
         return () => { mounted = false; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -210,6 +223,7 @@ const EditConfigConciliacao: React.FC = () => {
     };
 
     return (
+        <PageSkeletonWrapper loading={basesLoading || configLoading}>
         <div className="p-4">
             <Card>
                 <CardHeader>
@@ -486,6 +500,7 @@ const EditConfigConciliacao: React.FC = () => {
                 </CardContent>
             </Card>
         </div>
+        </PageSkeletonWrapper>
     );
 };
 

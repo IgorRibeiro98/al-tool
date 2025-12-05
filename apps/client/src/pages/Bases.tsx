@@ -9,6 +9,7 @@ import { fetchBases, ingestBase, deleteBase } from '@/services/baseService';
 import { toast } from 'sonner';
 import { StatusChip } from '@/components/StatusChip';
 import { getConversionStatusMeta, getIngestStatusMeta, isConversionStatusActive, isIngestStatusActive } from '@/lib/baseStatus';
+import { Switch } from "@/components/ui/switch";
 import {
     AlertDialog,
     AlertDialogContent,
@@ -32,8 +33,21 @@ const Bases = () => {
     const [ingesting, setIngesting] = useState<Record<number, boolean>>({});
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
+    const [autoIngestEnabled, setAutoIngestEnabled] = useState<boolean>(() => {
+        if (typeof window === 'undefined') return true;
+        const stored = window.localStorage.getItem('autoIngestEnabled');
+        if (stored === 'false') return false;
+        return true;
+    });
     const statusSnapshotRef = useRef<Record<number, { conversion: string | null; ingest: JobStatus | null }>>({});
     const snapshotBootstrappedRef = useRef(false);
+    const autoIngestTriggeredRef = useRef<Record<number, boolean>>({});
+    const autoIngestDisabledByErrorRef = useRef(false);
+
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        window.localStorage.setItem('autoIngestEnabled', String(autoIngestEnabled));
+    }, [autoIngestEnabled]);
 
     const applyStatusFeedback = useCallback((list: Base[], notify: boolean) => {
         const snapshot = statusSnapshotRef.current;
@@ -104,19 +118,37 @@ const Bases = () => {
         return () => window.clearInterval(interval);
     }, [hasActiveProcesses, loadBases]);
 
-    const handleIngest = async (id: number) => {
+    const handleIngest = useCallback(async (id: number, options?: { auto?: boolean }) => {
         setIngesting(prev => ({ ...prev, [id]: true }));
         try {
             await ingestBase(id);
-            toast.info('Ingestão enviada para processamento. Status atualizado automaticamente.');
+            toast.info(options?.auto ? 'Ingestão automática iniciada. Status atualizado automaticamente.' : 'Ingestão enviada para processamento. Status atualizado automaticamente.');
             await loadBases({ silent: true, notify: true });
         } catch (e) {
             console.error('Ingest failed', e);
             toast.error('Falha ao iniciar ingestão');
+            if (options?.auto && !autoIngestDisabledByErrorRef.current) {
+                autoIngestDisabledByErrorRef.current = true;
+                setAutoIngestEnabled(false);
+                toast.error('Ingestão automática desativada após falha. Habilite novamente se desejar continuar.');
+            }
         } finally {
             setIngesting(prev => ({ ...prev, [id]: false }));
         }
-    }
+    }, [loadBases]);
+
+    useEffect(() => {
+        if (!autoIngestEnabled) return;
+        bases.forEach((base) => {
+            const readyForIngest = base.conversion_status === 'READY' && !base.tabela_sqlite && !isIngestStatusActive(base);
+            if (readyForIngest && !autoIngestTriggeredRef.current[base.id]) {
+                autoIngestTriggeredRef.current[base.id] = true;
+                handleIngest(base.id, { auto: true });
+            } else if (!readyForIngest) {
+                autoIngestTriggeredRef.current[base.id] = false;
+            }
+        });
+    }, [bases, autoIngestEnabled, handleIngest]);
 
     const confirmDelete = (id: number) => {
         setPendingDeleteId(id);
@@ -146,10 +178,16 @@ const Bases = () => {
                         <h1 className="text-3xl font-bold">Bases</h1>
                         <p className="text-muted-foreground">Gerencie as bases contábeis e fiscais</p>
                     </div>
-                    <Button onClick={() => navigate("/bases/new")}>
-                        <Plus className="mr-2 h-4 w-4" />
-                        Nova Base
-                    </Button>
+                    <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-2">
+                            <Switch id="auto-ingest-toggle" checked={autoIngestEnabled} onCheckedChange={setAutoIngestEnabled} />
+                            <label htmlFor="auto-ingest-toggle" className="text-sm text-muted-foreground">Ingestão automática</label>
+                        </div>
+                        <Button onClick={() => navigate("/bases/new")}>
+                            <Plus className="mr-2 h-4 w-4" />
+                            Nova Base
+                        </Button>
+                    </div>
                 </div>
 
                 <Card>
@@ -167,6 +205,7 @@ const Bases = () => {
                                     const conversionError = base.conversion_status === 'FAILED' ? truncate(base.conversion_error) : null;
                                     const ingestError = base.ingest_status === 'FAILED' ? truncate(base.ingest_job?.erro) : null;
                                     const canIngest = !base.tabela_sqlite && base.conversion_status === 'READY' && !isIngestStatusActive(base);
+                                    const disableActions = isConversionStatusActive(base.conversion_status) || isIngestStatusActive(base);
 
                                     return (
                                         <div
@@ -206,10 +245,10 @@ const Bases = () => {
                                                                 {ingesting[base.id] ? 'Ingerindo...' : 'Ingerir'}
                                                             </Button>
                                                         )}
-                                                        <Button variant="ghost" size="icon" onClick={() => navigate(`/bases/${base.id}`)} aria-label="Ver base">
+                                                        <Button variant="ghost" size="icon" onClick={() => navigate(`/bases/${base.id}`)} aria-label="Ver base" disabled={disableActions}>
                                                             <Eye className="h-4 w-4" />
                                                         </Button>
-                                                        <Button variant="destructive" size="icon" onClick={() => confirmDelete(base.id)} aria-label="Deletar base">
+                                                        <Button variant="destructive" size="icon" onClick={() => confirmDelete(base.id)} aria-label="Deletar base" disabled={disableActions}>
                                                             <Trash className="h-4 w-4" />
                                                         </Button>
                                                     </div>

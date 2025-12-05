@@ -5,6 +5,10 @@ export interface PipelineContext {
     configConciliacaoId: number;
     configEstornoId?: number;
     configCancelamentoId?: number;
+    getBaseMeta?: (id: number) => Promise<any | undefined>;
+    getConfigConciliacao?: (id: number) => Promise<any | undefined>;
+    getConfigEstorno?: (id: number) => Promise<any | undefined>;
+    getConfigCancelamento?: (id: number) => Promise<any | undefined>;
     reportStage?: (event: PipelineStageEvent) => Promise<void> | void;
 }
 

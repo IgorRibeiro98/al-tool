@@ -11,7 +11,85 @@ function sanitizeColumnName(name: string, idx: number) {
 
 type IngestResult = { tableName: string; rowsInserted: number };
 
+function extractCellValue(cell: any): any {
+    if (!cell) return null;
+    const v = cell.value;
+
+    // Preserve numeric cells as numbers to keep typing for later math/grouping
+    if (typeof v === 'number') return v;
+
+    // Dates: keep user-facing text when available, else ISO string
+    if (v instanceof Date) return typeof cell.text === 'string' ? cell.text : v.toISOString();
+    if (v && typeof v === 'object' && v.result instanceof Date) {
+        return typeof cell.text === 'string' ? cell.text : new Date(v.result).toISOString();
+    }
+
+    // Rich text: join text parts
+    if (v && typeof v === 'object' && Array.isArray(v.richText)) {
+        return v.richText.map((t: any) => t?.text || '').join('');
+    }
+
+    // Fallbacks: prefer original text if Excel provided; otherwise raw value untouched
+    if (typeof cell.text === 'string' && cell.text.length > 0) return cell.text;
+    return v ?? null;
+}
+
 export class ExcelIngestService {
+    private async applyPragmas(conn: Knex | Knex.Transaction) {
+        const pragmas: Array<{ key: string; value: string | number }> = [];
+        const env = process.env;
+        const envName = env.NODE_ENV || 'development';
+
+        // Some PRAGMAs (journal_mode, synchronous, foreign_keys) cannot be changed inside an open transaction.
+        // Detect transaction context and restrict to safe settings to avoid "Safety level may not be changed inside a transaction" errors.
+        const isTransaction = Boolean((conn as any).isTransaction || (conn as any).client?.isTransaction);
+
+        const defaultCacheSize = (() => {
+            if (envName === 'production') return '-400000';
+            if (envName === 'test') return '-50000';
+            return '-200000';
+        })();
+
+        const defaultBusyTimeout = (() => {
+            if (envName === 'production') return '12000';
+            if (envName === 'test') return '4000';
+            return '8000';
+        })();
+
+        const journalMode = env.INGEST_PRAGMA_JOURNAL_MODE || env.SQLITE_JOURNAL_MODE || 'WAL';
+        if (!isTransaction && journalMode) pragmas.push({ key: 'journal_mode', value: journalMode });
+
+        const synchronous = env.INGEST_PRAGMA_SYNCHRONOUS || env.SQLITE_SYNCHRONOUS || 'NORMAL';
+        if (!isTransaction && synchronous) pragmas.push({ key: 'synchronous', value: synchronous });
+
+        const tempStore = env.INGEST_PRAGMA_TEMP_STORE || env.SQLITE_TEMP_STORE || 'MEMORY';
+        if (!isTransaction && tempStore) pragmas.push({ key: 'temp_store', value: tempStore });
+
+        const cacheSize = env.INGEST_PRAGMA_CACHE_SIZE ?? env.SQLITE_CACHE_SIZE ?? defaultCacheSize; // negative = KB
+        if (!isTransaction && cacheSize) pragmas.push({ key: 'cache_size', value: cacheSize });
+
+        const mmapSize = env.INGEST_PRAGMA_MMAP_SIZE || env.SQLITE_MMAP_SIZE || '';
+        if (!isTransaction && mmapSize) pragmas.push({ key: 'mmap_size', value: mmapSize });
+
+        const busyTimeout = env.INGEST_PRAGMA_BUSY_TIMEOUT ?? env.SQLITE_BUSY_TIMEOUT ?? defaultBusyTimeout;
+        if (busyTimeout) pragmas.push({ key: 'busy_timeout', value: busyTimeout });
+
+        const foreignKeys = env.INGEST_PRAGMA_FOREIGN_KEYS ?? env.SQLITE_FOREIGN_KEYS ?? 'ON';
+        if (!isTransaction && foreignKeys) pragmas.push({ key: 'foreign_keys', value: foreignKeys });
+
+        for (const p of pragmas) {
+            await conn.raw(`PRAGMA ${p.key} = ${p.value}`);
+        }
+    }
+
+    private async analyzeTable(conn: Knex | Knex.Transaction, tableName: string) {
+        try {
+            await conn.raw(`ANALYZE ${tableName}`);
+        } catch (e) {
+            await this.appendIngestLog('Analyze failed', { tableName, error: e && ((e as any).stack || (e as any).message || String(e)) });
+        }
+    }
+
     private async appendIngestLog(prefix: string, info: any) {
         try {
             const logsDir = path.resolve(__dirname, '..', '..', 'logs');
@@ -152,163 +230,175 @@ export class ExcelIngestService {
         // If JSONL exists, consume JSONL; else use exceljs streaming reader to avoid loading entire file into memory
         await fs.access(filePath);
         if (jsonlPath) {
-            // process JSONL streaming
+            // single-pass JSONL streaming (no second full read)
             const rl = (await import('readline')).createInterface({ input: (await import('fs')).createReadStream(filePath, { encoding: 'utf8' }) });
             const SAMPLE_ROWS = Number(process.env.INGEST_SAMPLE_ROWS || 1000);
             const BATCH_SIZE = Number(process.env.INGEST_BATCH_SIZE || 200);
-            const headerLinhaInicial = Number(base.header_linha_inicial || 1);
-            const headerColunaInicial = Number(base.header_coluna_inicial || 1);
-
-            let headerSlice: any[] | null = null;
-            const sampleRows: any[][] = [];
-            let columnsCount = 0;
-            let rawLineIndex = 0;
-            let dataLineIndex = 0; // counts only non-empty, non-meta lines
-
-            try {
-                for await (const line of rl) {
-                    rawLineIndex += 1;
-                    if (!line || !line.trim()) continue; // skip blank lines, do not count
-                    const parsed = JSON.parse(line);
-                    // handle meta line optionally (do not count as data line)
-                    if (parsed && parsed.meta && !headerSlice) {
-                        headerSlice = parsed.meta.headers || null;
-                        if (headerSlice) {
-                            columnsCount = headerSlice.length - (headerColunaInicial - 1);
-                            continue;
-                        }
-                    }
-
-                    // this is a meaningful data row
-                    dataLineIndex += 1;
-
-                    // apply header_linha_inicial: skip until header row found (counting data rows)
-                    if (!headerSlice) {
-                        if (dataLineIndex < headerLinhaInicial) continue;
-                        headerSlice = Array.isArray(parsed) ? parsed.slice(headerColunaInicial - 1) : Object.keys(parsed).slice(headerColunaInicial - 1);
-                        columnsCount = headerSlice.length;
-                        continue;
-                    }
-
-                    if (sampleRows.length < SAMPLE_ROWS) {
-                        const rowArr = Array.isArray(parsed) ? parsed.slice(headerColunaInicial - 1) : Object.values(parsed).slice(headerColunaInicial - 1);
-                        // normalize marked numbers
-                        sampleRows.push(rowArr.map(v => v && v.__num__ ? v.__num__ : v));
-                        if (sampleRows.length < SAMPLE_ROWS) continue;
-                    }
-
-                    if (sampleRows.length >= SAMPLE_ROWS) break;
-                }
-            } finally {
-                rl.close();
-            }
-
-            if (!headerSlice || headerSlice.length === 0) return { tableName: '', rowsInserted: 0 };
-
-            // sanitized column names
             const startColIdx0 = Math.max(0, headerColunaInicial - 1);
-            const initialColumns = headerSlice.map((h: any, i: number) => ({ name: sanitizeColumnName(h, startColIdx0 + i), original: h, idxAbs: startColIdx0 + i }));
-            const seen: Record<string, number> = {};
-            const columns = initialColumns.map(col => {
-                let baseName = col.name || `col_${col.idxAbs}`;
-                if (!baseName || baseName.toString().trim() === '') baseName = `col_${col.idxAbs}`;
-                if (!seen[baseName]) { seen[baseName] = 1; return { name: baseName, original: col.original }; }
-                seen[baseName] += 1;
-                return { name: `${baseName}_${seen[baseName]}`, original: col.original };
-            });
-
-            // infer types from sampleRows
-            const colTypes: ('integer' | 'real' | 'text')[] = columns.map((c, colIdx) => {
-                let isInteger = true; let isNumber = true;
-                for (const r of sampleRows) {
-                    const v = r ? r[colIdx] : undefined;
-                    if (v === null || v === undefined || v === '') continue;
-                    const n = Number(v);
-                    if (Number.isNaN(n)) { isNumber = false; isInteger = false; break; }
-                    if (!Number.isInteger(n)) isInteger = false;
-                }
-                if (isInteger) return 'integer'; if (isNumber) return 'real'; return 'text';
-            });
-
-            // log columns
-            try { await this.appendIngestLog('IngestColumns', { baseId, columns: columns.map(c => ({ name: c.name, original: c.original })), colTypes, sampleRows: sampleRows.slice(0, 10) }); } catch (e) { }
 
             const tableName = `base_${baseId}`;
-            const exists = await db.schema.hasTable(tableName);
-            if (exists) throw new Error(`Table ${tableName} already exists`);
-            await db.schema.createTable(tableName, (t: Knex.CreateTableBuilder) => {
-                t.increments('id').primary();
-                columns.forEach((c, idx) => {
-                    const colType = colTypes[idx];
-                    if (colType === 'text') {
-                        t.text(c.name).nullable();
-                    } else {
-                        t.decimal(c.name, 30, 10).nullable();
-                    }
-                });
-                t.timestamp('created_at').defaultTo(db.fn.now()).notNullable();
-            });
-
-            // save base_columns mapping
-            try {
-                const mappings = columns.map((c, idx) => ({ base_id: baseId, col_index: startColIdx0 + idx + 1, excel_name: c.original == null ? null : String(c.original), sqlite_name: c.name }));
-                if (mappings.length > 0) await db('base_columns').insert(mappings);
-            } catch (e: any) { await this.appendIngestLog('Error saving base_columns mapping', { baseId, error: e && (e.stack || e.message || String(e)) }); }
-
-            // now re-open JSONL and stream inserts
+            let headerSlice: any[] | null = null;
+            const sampleRows: any[][] = [];
+            const pendingRowArrays: any[][] = [];
+            let columns: { name: string; original: any; idxAbs: number }[] = [];
+            let colTypes: ('integer' | 'real' | 'text')[] = [];
+            let tableReady = false;
             let inserted = 0;
-            const fsMod = await import('fs');
-            const rl2 = (await import('readline')).createInterface({ input: fsMod.createReadStream(filePath, { encoding: 'utf8' }) });
-            let batches: Record<string, any>[] = [];
-            let rawLineNum = 0;
-            let dataLineNum = 0; // counts only non-empty, non-meta lines
-            try {
-                for await (const line of rl2) {
-                    rawLineNum += 1;
-                    if (!line || !line.trim()) continue; // skip blank lines
+            let dataLineIndex = 0;
+            let batch: Record<string, any>[] = [];
+
+            const buildRowObj = (rowArr: any[]): { rowObj: Record<string, any>; allEmpty: boolean } => {
+                const obj: Record<string, any> = {};
+                let allEmpty = true;
+                columns.forEach((c, idx) => {
+                    const raw = rowArr ? rowArr[idx] : undefined;
+                    const val = raw && raw.__num__ ? raw.__num__ : raw;
+                    let finalVal: any = val === undefined ? null : val;
+                    if (finalVal === '') finalVal = null;
+                    if (finalVal !== null && finalVal !== undefined) allEmpty = false;
+                    const t = colTypes[idx];
+                    if (finalVal != null && (t === 'integer' || t === 'real')) {
+                        const n = Number(finalVal);
+                        finalVal = Number.isNaN(n) ? null : n;
+                    }
+                    obj[c.name] = finalVal;
+                });
+                return { rowObj: obj, allEmpty };
+            };
+
+            const prepareTable = async (trx: Knex.Transaction) => {
+                if (tableReady) return;
+                if (!headerSlice || headerSlice.length === 0) return;
+
+                const initialColumns = headerSlice.map((h: any, i: number) => ({ name: sanitizeColumnName(h, startColIdx0 + i), original: h, idxAbs: startColIdx0 + i }));
+                const seen: Record<string, number> = {};
+                columns = initialColumns.map(col => {
+                    let baseName = col.name || `col_${col.idxAbs}`;
+                    if (!baseName || baseName.toString().trim() === '') baseName = `col_${col.idxAbs}`;
+                    if (!seen[baseName]) { seen[baseName] = 1; return { name: baseName, original: col.original, idxAbs: col.idxAbs }; }
+                    seen[baseName] += 1;
+                    return { name: `${baseName}_${seen[baseName]}`, original: col.original, idxAbs: col.idxAbs };
+                });
+
+                colTypes = columns.map((c, colIdx) => {
+                    let isInteger = true; let isNumber = true;
+                    for (const r of sampleRows) {
+                        const v = r ? r[colIdx] : undefined;
+                        if (v === null || v === undefined || v === '') continue;
+                        const n = Number(v);
+                        if (Number.isNaN(n)) { isNumber = false; isInteger = false; break; }
+                        if (!Number.isInteger(n)) isInteger = false;
+                    }
+                    if (isInteger) return 'integer'; if (isNumber) return 'real'; return 'text';
+                });
+
+                await this.applyPragmas(trx);
+
+                const exists = await trx.schema.hasTable(tableName);
+                if (exists) throw new Error(`Table ${tableName} already exists`);
+
+                await trx.schema.createTable(tableName, (t: Knex.CreateTableBuilder) => {
+                    t.increments('id').primary();
+                    columns.forEach((c, idx) => {
+                        const colType = colTypes[idx];
+                        if (colType === 'text') {
+                            t.text(c.name).nullable();
+                        } else {
+                            t.decimal(c.name, 30, 10).nullable();
+                        }
+                    });
+                    t.timestamp('created_at').defaultTo(trx.fn.now()).notNullable();
+                });
+
+                try {
+                    const mappings = columns.map((c, idx) => ({ base_id: baseId, col_index: startColIdx0 + idx + 1, excel_name: c.original == null ? null : String(c.original), sqlite_name: c.name }));
+                    if (mappings.length > 0) await trx('base_columns').insert(mappings);
+                } catch (e: any) {
+                    await this.appendIngestLog('Error saving base_columns mapping', { baseId, error: e && (e.stack || e.message || String(e)) });
+                }
+
+                await trx('bases').where({ id: baseId }).update({ tabela_sqlite: tableName });
+
+                tableReady = true;
+            };
+
+            await db.transaction(async trx => {
+                for await (const line of rl) {
+                    if (!line || !line.trim()) continue;
                     const parsed = JSON.parse(line);
-                    if (parsed && parsed.meta) continue; // skip meta
-                    // meaningful data row
-                    dataLineNum += 1;
-                    // determine header row using dataLineNum
-                    if (dataLineNum <= headerLinhaInicial) {
-                        if (dataLineNum === headerLinhaInicial) continue; // header row itself
+                    if (parsed && parsed.meta && !headerSlice) {
+                        headerSlice = parsed.meta.headers || null;
                         continue;
                     }
-                    const rowArr = Array.isArray(parsed) ? parsed.slice(startColIdx0) : Object.values(parsed).slice(startColIdx0);
-                    const rowObj: Record<string, any> = {};
-                    let allEmpty = true;
-                    columns.forEach((c, idx) => {
-                        const raw = rowArr ? rowArr[idx] : undefined;
-                        const val = raw && raw.__num__ ? raw.__num__ : raw;
-                        let finalVal: any = val === undefined ? null : val;
-                        if (finalVal === '') finalVal = null;
-                        if (finalVal !== null && finalVal !== undefined) allEmpty = false;
-                        const t = colTypes[idx];
-                        if (finalVal != null && (t === 'integer' || t === 'real')) {
-                            const n = Number(finalVal);
-                            finalVal = Number.isNaN(n) ? null : n;
-                        }
-                        rowObj[c.name] = finalVal;
-                    });
+                    if (!headerSlice) {
+                        dataLineIndex += 1;
+                        if (dataLineIndex < headerLinhaInicial) continue;
+                        headerSlice = Array.isArray(parsed) ? parsed.slice(headerColunaInicial - 1) : Object.keys(parsed).slice(headerColunaInicial - 1);
+                        continue;
+                    }
 
-                    if (!allEmpty) batches.push(rowObj);
-                    if (batches.length >= BATCH_SIZE) {
-                        try { await db(tableName).insert(batches); inserted += batches.length; } catch (err: any) { await this.appendIngestLog('Error inserting batch', { table: tableName, batchSize: batches.length, sample: batches.slice(0, 5), error: err && (err.stack || err.message || String(err)) }); throw err; }
-                        batches = [];
+                    dataLineIndex += 1;
+                    if (dataLineIndex <= headerLinhaInicial) continue; // header row itself
+
+                    const rowArr = Array.isArray(parsed) ? parsed.slice(startColIdx0) : Object.values(parsed).slice(startColIdx0);
+                    const normalizedRowArr = rowArr.map(v => (v && v.__num__ ? v.__num__ : v));
+
+                    if (!tableReady) {
+                        sampleRows.push(normalizedRowArr);
+                        pendingRowArrays.push(normalizedRowArr);
+                        if (sampleRows.length >= SAMPLE_ROWS) {
+                            await prepareTable(trx);
+                            for (const arr of pendingRowArrays) {
+                                const { rowObj, allEmpty } = buildRowObj(arr);
+                                if (!allEmpty) {
+                                    batch.push(rowObj);
+                                    if (batch.length >= BATCH_SIZE) {
+                                        await trx(tableName).insert(batch);
+                                        inserted += batch.length;
+                                        batch = [];
+                                    }
+                                }
+                            }
+                            pendingRowArrays.length = 0;
+                        }
+                        continue;
+                    }
+
+                    const { rowObj, allEmpty } = buildRowObj(normalizedRowArr);
+                    if (!allEmpty) {
+                        batch.push(rowObj);
+                        if (batch.length >= BATCH_SIZE) {
+                            await trx(tableName).insert(batch);
+                            inserted += batch.length;
+                            batch = [];
+                        }
                     }
                 }
-            } finally {
-                rl2.close();
-            }
-            if (batches.length > 0) { try { await db(tableName).insert(batches); inserted += batches.length; } catch (err: any) { await this.appendIngestLog('Error inserting final batch', { table: tableName, batchSize: batches.length, sample: batches.slice(0, 5), error: err && (err.stack || err.message || String(err)) }); throw err; } }
 
-            // update bases.tabela_sqlite
-            await db('bases').where({ id: baseId }).update({ tabela_sqlite: tableName });
+                if (!tableReady) {
+                    await prepareTable(trx);
+                    for (const arr of pendingRowArrays) {
+                        const { rowObj, allEmpty } = buildRowObj(arr);
+                        if (!allEmpty) batch.push(rowObj);
+                        if (batch.length >= BATCH_SIZE) {
+                            await trx(tableName).insert(batch);
+                            inserted += batch.length;
+                            batch = [];
+                        }
+                    }
+                }
+
+                if (batch.length > 0) {
+                    await trx(tableName).insert(batch);
+                    inserted += batch.length;
+                    batch = [];
+                }
+            });
 
             try { const idxHelpers = await import('../db/indexHelpers'); await idxHelpers.ensureIndicesForBaseFromConfigs(baseId); } catch (e: any) { await this.appendIngestLog('Error ensuring indices for base after ingest', { baseId, error: e && (e.stack || e.message || String(e)) }); }
 
-            // Perform synchronous post-ingest cleanup (delete files, clear DB fields)
+            try { await this.analyzeTable(db, tableName); } catch (_) { }
+
             await this.performPostIngestCleanup(baseId, base);
 
             return { tableName, rowsInserted: inserted };
@@ -350,7 +440,7 @@ export class ExcelIngestService {
                     const rowArr: any[] = [];
                     for (let c = startColOne; c < startColOne + columnsCount; c++) {
                         const cell = row.getCell(c);
-                        rowArr.push(cell ? (cell.value ?? null) : null);
+                        rowArr.push(extractCellValue(cell));
                     }
                     sampleRows.push(rowArr);
                     if (sampleRows.length < SAMPLE_ROWS) continue;
@@ -414,41 +504,41 @@ export class ExcelIngestService {
 
         const tableName = `base_${baseId}`;
 
-        const exists = await db.schema.hasTable(tableName);
-        if (exists) throw new Error(`Table ${tableName} already exists`);
-
-        // create table
-        await db.schema.createTable(tableName, (t: Knex.CreateTableBuilder) => {
-            t.increments('id').primary();
-            columns.forEach((c, idx) => {
-                const colType = colTypes[idx];
-                if (colType === 'text') {
-                    t.text(c.name).nullable();
-                } else {
-                    t.decimal(c.name, 30, 10).nullable();
-                }
-            });
-            t.timestamp('created_at').defaultTo(db.fn.now()).notNullable();
-        });
-
-        // save mapping between original excel header and sqlite column name
-        try {
-            const mappings = columns.map((c, idx) => ({
-                base_id: baseId,
-                col_index: startColIdx0 + idx + 1, // 1-based absolute column index
-                excel_name: c.original == null ? null : String(c.original),
-                sqlite_name: c.name
-            }));
-            if (mappings.length > 0) {
-                await db('base_columns').insert(mappings);
-            }
-        } catch (e) {
-            await this.appendIngestLog('Error saving base_columns mapping', { baseId, error: e && (e instanceof Error ? (e.stack || e.message) : String(e)) });
-        }
-
-        // Streamed insertion pass: re-open reader and insert in batches
         let inserted = 0;
+
         await db.transaction(async trx => {
+            await this.applyPragmas(trx);
+
+            const exists = await trx.schema.hasTable(tableName);
+            if (exists) throw new Error(`Table ${tableName} already exists`);
+
+            await trx.schema.createTable(tableName, (t: Knex.CreateTableBuilder) => {
+                t.increments('id').primary();
+                columns.forEach((c, idx) => {
+                    const colType = colTypes[idx];
+                    if (colType === 'text') {
+                        t.text(c.name).nullable();
+                    } else {
+                        t.decimal(c.name, 30, 10).nullable();
+                    }
+                });
+                t.timestamp('created_at').defaultTo(trx.fn.now()).notNullable();
+            });
+
+            try {
+                const mappings = columns.map((c, idx) => ({
+                    base_id: baseId,
+                    col_index: startColIdx0 + idx + 1,
+                    excel_name: c.original == null ? null : String(c.original),
+                    sqlite_name: c.name
+                }));
+                if (mappings.length > 0) {
+                    await trx('base_columns').insert(mappings);
+                }
+            } catch (e) {
+                await this.appendIngestLog('Error saving base_columns mapping', { baseId, error: e && (e instanceof Error ? (e.stack || e.message) : String(e)) });
+            }
+
             const insertReader = new (ExcelJS as any).stream.xlsx.WorkbookReader(filePath);
             let batch: Record<string, any>[] = [];
             let processingRows = false;
@@ -459,14 +549,14 @@ export class ExcelIngestService {
                         if (row.number < headerRowNum) continue;
                         if (row.number === headerRowNum) {
                             processingRows = true;
-                            continue; // skip header
+                            continue;
                         }
                     }
 
                     const rowArr: any[] = [];
                     for (let c = startColOne; c < startColOne + columnsCount; c++) {
                         const cell = row.getCell(c);
-                        rowArr.push(cell ? (cell.value ?? null) : null);
+                        rowArr.push(extractCellValue(cell));
                     }
 
                     const allEmpty = rowArr.every(v => v === null || v === undefined || v === '');
@@ -502,7 +592,7 @@ export class ExcelIngestService {
                         batch = [];
                     }
                 }
-                break; // only first worksheet
+                break;
             }
 
             if (batch.length > 0) {
@@ -518,12 +608,14 @@ export class ExcelIngestService {
                     });
                     throw insertErr;
                 }
-                batch = [];
             }
+
+            await trx('bases').where({ id: baseId }).update({ tabela_sqlite: tableName });
         });
 
-        // update bases.tabela_sqlite
-        await db('bases').where({ id: baseId }).update({ tabela_sqlite: tableName, });
+        try { const idxHelpers = await import('../db/indexHelpers'); await idxHelpers.ensureIndicesForBaseFromConfigs(baseId); } catch (e) { await this.appendIngestLog('Error ensuring indices for base after ingest', { baseId, error: e && (e instanceof Error ? (e.stack || e.message) : String(e)) }); }
+
+        try { await this.analyzeTable(db, tableName); } catch (_) { }
 
         // Ensure indices based on existing configs that reference this base
         try {

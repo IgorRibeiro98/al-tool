@@ -2,12 +2,24 @@ import { MetricCard } from "@/components/MetricCard";
 import { StatusChip } from "@/components/StatusChip";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Database, CheckCircle2, XCircle, PlayCircle, Plus } from "lucide-react";
+import { Database, CheckCircle2, XCircle, PlayCircle, Plus, Eraser, Trash } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { fetchBases } from '@/services/baseService';
 import { fetchConciliacoes } from '@/services/conciliacaoService';
 import { fetchConfigsConciliacao, fetchConfigsEstorno, fetchConfigsCancelamento, fetchConfigsMapeamento } from '@/services/configsService';
+import { maintenanceCleanup, maintenanceCleanupStorage } from '@/services/maintenanceService';
+import { toast } from 'sonner';
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const Dashboard = () => {
     const navigate = useNavigate();
@@ -18,6 +30,10 @@ const Dashboard = () => {
     const [configsEstorno, setConfigsEstorno] = useState<ConfigEstorno[]>([]);
     const [configsCancelamento, setConfigsCancelamento] = useState<ConfigCancelamento[]>([]);
     const [configsMapeamento, setConfigsMapeamento] = useState<ConfigMapeamento[]>([]);
+    const [cleaning, setCleaning] = useState(false);
+    const [cleaningStorage, setCleaningStorage] = useState(false);
+    const [confirmCleanupOpen, setConfirmCleanupOpen] = useState(false);
+    const [confirmCleanupStorageOpen, setConfirmCleanupStorageOpen] = useState(false);
 
     useEffect(() => {
         let mounted = true;
@@ -74,6 +90,40 @@ const Dashboard = () => {
     const fiscalIngestedThisMonth = bases.filter(b => b.tipo === 'FISCAL' && b.created_at && new Date(b.created_at) > cutoff).length;
     const percentActive = totalConciliacoes > 0 ? Math.round((runningJobs / totalConciliacoes) * 100) : 0;
 
+    const executeCleanup = async () => {
+        if (cleaning) return;
+        setCleaning(true);
+        try {
+            const res = await maintenanceCleanup();
+            const payload = res.data || res;
+            toast.success('Limpeza concluída', {
+                description: `Uploads: ${payload.deletedUploads ?? 0}, Ingests: ${payload.deletedIngests ?? 0}, Exports: ${payload.deletedExports ?? 0}, Bases removidas: ${payload.deletedBases ?? 0}, Conciliações removidas: ${payload.deletedJobs ?? 0}, Tabelas base dropadas: ${(payload.droppedTables || []).length}, Resultados dropados: ${(payload.droppedResultTables || []).length}`
+            });
+        } catch (e: any) {
+            console.error('Cleanup failed', e);
+            toast.error('Falha ao executar limpeza', { description: e?.response?.data?.error || e?.message });
+        } finally {
+            setCleaning(false);
+        }
+    };
+
+    const executeCleanupStorage = async () => {
+        if (cleaningStorage) return;
+        setCleaningStorage(true);
+        try {
+            const res = await maintenanceCleanupStorage();
+            const payload = res.data || res;
+            toast.success('Limpeza de arquivos concluída', {
+                description: `Uploads: ${payload.deletedUploads ?? 0}, Ingests: ${payload.deletedIngests ?? 0}, Exports: ${payload.deletedExports ?? 0}`
+            });
+        } catch (e: any) {
+            console.error('Cleanup storage failed', e);
+            toast.error('Falha ao limpar arquivos', { description: e?.response?.data?.error || e?.message });
+        } finally {
+            setCleaningStorage(false);
+        }
+    };
+
     return (
         <div className="space-y-6">
             <div>
@@ -121,6 +171,14 @@ const Dashboard = () => {
                         <Button className="w-full justify-start" variant="outline" onClick={() => navigate("/conciliacoes/new")}>
                             <Plus className="mr-2 h-4 w-4" />
                             Nova Conciliação
+                        </Button>
+                        <Button className="w-full justify-start" variant="secondary" onClick={() => setConfirmCleanupOpen(true)} disabled={cleaning}>
+                            <Eraser className="mr-2 h-4 w-4" />
+                            {cleaning ? 'Limpando...' : 'Limpar dados da aplicação'}
+                        </Button>
+                        <Button className="w-full justify-start" variant="outline" onClick={() => setConfirmCleanupStorageOpen(true)} disabled={cleaningStorage}>
+                            <Trash className="mr-2 h-4 w-4" />
+                            {cleaningStorage ? 'Limpando arquivos...' : 'Limpar apenas arquivos'}
                         </Button>
                     </CardContent>
                 </Card>
@@ -174,6 +232,36 @@ const Dashboard = () => {
                     </div>
                 </CardContent>
             </Card>
+
+            <AlertDialog open={confirmCleanupOpen} onOpenChange={setConfirmCleanupOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Confirmar limpeza completa</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Essa ação remove uploads, ingests, exports, conciliações e todos os registros de bases. Deseja continuar?
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel disabled={cleaning} onClick={() => setConfirmCleanupOpen(false)}>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction disabled={cleaning} onClick={() => { setConfirmCleanupOpen(false); executeCleanup(); }}>Confirmar</AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            <AlertDialog open={confirmCleanupStorageOpen} onOpenChange={setConfirmCleanupStorageOpen}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Confirmar limpeza de arquivos</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Essa ação remove apenas arquivos (uploads, ingests, exports). Nenhum dado do banco será alterado. Deseja continuar?
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel disabled={cleaningStorage} onClick={() => setConfirmCleanupStorageOpen(false)}>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction disabled={cleaningStorage} onClick={() => { setConfirmCleanupStorageOpen(false); executeCleanupStorage(); }}>Confirmar</AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </div>
     );
 };

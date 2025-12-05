@@ -45,16 +45,40 @@ const db = createKnex(config);
  SQLITE_CACHE_SIZE, SQLITE_TEMP_STORE. Adjust based on load and safety requirements.
 */
 
-const pragmaJournal = process.env.SQLITE_JOURNAL_MODE || 'WAL';
-const pragmaSynchronous = process.env.SQLITE_SYNCHRONOUS || 'NORMAL';
-const pragmaCacheSize = process.env.SQLITE_CACHE_SIZE || '-2000'; // negative -> pages in memory
-const pragmaTempStore = process.env.SQLITE_TEMP_STORE || 'MEMORY';
-const pragmaBusyTimeout = process.env.SQLITE_BUSY_TIMEOUT || '5000'; // ms
+const nodeEnv = process.env.NODE_ENV || 'development';
+const defaultPragmas = {
+    journal: 'WAL',
+    synchronous: process.env.SQLITE_SYNCHRONOUS || 'NORMAL',
+    cacheSize: (() => {
+        if (process.env.SQLITE_CACHE_SIZE) return process.env.SQLITE_CACHE_SIZE;
+        if (nodeEnv === 'production') return '-8000';
+        if (nodeEnv === 'test') return '-1000';
+        return '-4000';
+    })(),
+    tempStore: process.env.SQLITE_TEMP_STORE || 'MEMORY',
+    busyTimeout: (() => {
+        if (process.env.SQLITE_BUSY_TIMEOUT) return process.env.SQLITE_BUSY_TIMEOUT;
+        if (nodeEnv === 'production') return '8000';
+        if (nodeEnv === 'test') return '2000';
+        return '5000';
+    })(),
+    foreignKeys: process.env.SQLITE_FOREIGN_KEYS || 'ON'
+};
+
+const pragmaJournal = process.env.SQLITE_JOURNAL_MODE || defaultPragmas.journal;
+const pragmaSynchronous = process.env.SQLITE_SYNCHRONOUS || defaultPragmas.synchronous;
+const pragmaCacheSize = defaultPragmas.cacheSize; // negative -> pages in memory
+const pragmaTempStore = defaultPragmas.tempStore;
+const pragmaBusyTimeout = defaultPragmas.busyTimeout; // ms
+const pragmaForeignKeys = defaultPragmas.foreignKeys;
 
 (async () => {
     try {
         // Set busy timeout to avoid SQLITE_BUSY during heavy writes
         await db.raw(`PRAGMA busy_timeout = ${Number(pragmaBusyTimeout)}`);
+
+        // Enforce referential integrity
+        await db.raw(`PRAGMA foreign_keys = ${pragmaForeignKeys}`);
 
         // journal_mode should be set and the returned row may contain the final mode
         await db.raw(`PRAGMA journal_mode = ${pragmaJournal}`);
@@ -74,7 +98,9 @@ const pragmaBusyTimeout = process.env.SQLITE_BUSY_TIMEOUT || '5000'; // ms
             synchronous: pragmaSynchronous,
             cache_size: pragmaCacheSize,
             temp_store: pragmaTempStore,
-            busy_timeout: pragmaBusyTimeout
+            busy_timeout: pragmaBusyTimeout,
+            foreign_keys: pragmaForeignKeys,
+            node_env: nodeEnv
         });
     } catch (err) {
         console.error('Error applying SQLite PRAGMAs', err);

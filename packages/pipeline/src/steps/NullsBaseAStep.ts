@@ -17,6 +17,10 @@ export class NullsBaseAStep implements PipelineStep {
         this.db = db;
     }
 
+    private wrapIdentifier(value: string) {
+        return `"${value.replace(/"/g, '""')}"`;
+    }
+
     async execute(ctx: PipelineContext): Promise<void> {
         const baseContabilId = ctx.baseContabilId;
         if (!baseContabilId) {
@@ -25,50 +29,49 @@ export class NullsBaseAStep implements PipelineStep {
         }
 
         // find the table name for the base
-        const base = await this.db('bases').where({ id: baseContabilId }).first();
+        const base = ctx.getBaseMeta ? await ctx.getBaseMeta(baseContabilId) : await this.db('bases').where({ id: baseContabilId }).first();
         if (!base || !base.tabela_sqlite) return;
         const tableName: string = base.tabela_sqlite;
 
         const has = await this.db.schema.hasTable(tableName);
         if (!has) return;
 
-        // get column info
         const colInfo = await this.db(tableName).columnInfo();
 
-        // process each column
-        for (const col of Object.keys(colInfo || {})) {
-            // skip metadata columns
-            if (col === 'id' || col === 'created_at' || col === 'updated_at') continue;
+        const numericCols: string[] = [];
+        const textCols: string[] = [];
 
+        for (const col of Object.keys(colInfo || {})) {
+            if (col === 'id' || col === 'created_at' || col === 'updated_at') continue;
             const info = (colInfo as any)[col] || {};
             const type: string = (info.type || '').toString().toLowerCase();
-
             const isNumeric = /int|real|float|numeric|decimal|number/.test(type);
-
-            // Build update: target only rows with NULL or empty string
-            try {
-                await this.db.transaction(async trx => {
-                    if (isNumeric) {
-                        // set numeric nulls/empty to 0
-                        await trx(tableName)
-                            .whereNull(col)
-                            .orWhere(col, '')
-                            .update({ [col]: 0 });
-                    } else {
-                        // set text nulls/empty to 'NULL'
-                        await trx(tableName)
-                            .whereNull(col)
-                            .orWhere(col, '')
-                            .update({ [col]: 'NULL' });
-                    }
-                });
-            } catch (err) {
-                // log and continue; step should be resilient
-                // Note: in a real system use a logger
-                // eslint-disable-next-line no-console
-                console.error(`NullsBaseA: failed processing column ${col} on ${tableName}:`, err);
+            if (isNumeric) {
+                numericCols.push(col);
+            } else {
+                textCols.push(col);
             }
         }
+
+        if (!numericCols.length && !textCols.length) return;
+
+        const tableIdent = this.wrapIdentifier(tableName);
+
+        await this.db.transaction(async trx => {
+            if (numericCols.length) {
+                const setClause = numericCols
+                    .map(col => `${this.wrapIdentifier(col)} = CASE WHEN ${this.wrapIdentifier(col)} IS NULL OR ${this.wrapIdentifier(col)} = '' THEN 0 ELSE ${this.wrapIdentifier(col)} END`)
+                    .join(', ');
+                await trx.raw(`UPDATE ${tableIdent} SET ${setClause}`);
+            }
+
+            if (textCols.length) {
+                const setClause = textCols
+                    .map(col => `${this.wrapIdentifier(col)} = CASE WHEN ${this.wrapIdentifier(col)} IS NULL OR ${this.wrapIdentifier(col)} = '' THEN 'NULL' ELSE ${this.wrapIdentifier(col)} END`)
+                    .join(', ');
+                await trx.raw(`UPDATE ${tableIdent} SET ${setClause}`);
+            }
+        });
     }
 }
 

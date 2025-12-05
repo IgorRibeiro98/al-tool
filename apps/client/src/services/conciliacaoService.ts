@@ -42,8 +42,12 @@ export function getDownloadUrl(id: number) {
     return `${api.defaults.baseURL || ''}/conciliacoes/${id}/download`;
 }
 
+export function downloadConciliacaoFile(id: number) {
+    return api.get(`/conciliacoes/${id}/download`, { responseType: 'blob' });
+}
+
 export function deleteConciliacao(id: number) {
     return api.delete(`/conciliacoes/${id}`);
 }
 
-export default { fetchConciliacoes, createConciliacao, getConciliacao, fetchConciliacaoResultado, exportConciliacao, getExportStatus, getDownloadUrl, deleteConciliacao };
+export default { fetchConciliacoes, createConciliacao, getConciliacao, fetchConciliacaoResultado, exportConciliacao, getExportStatus, getDownloadUrl, downloadConciliacaoFile, deleteConciliacao };

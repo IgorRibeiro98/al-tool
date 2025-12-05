@@ -14,7 +14,7 @@ type MappingPair = { coluna_contabil: string; coluna_fiscal: string };
 interface BaseSheetMetadata {
     baseId: number;
     tableName: string;
-    columns: Array<{ sqliteName: string; header: string }>;
+    columns: Array<{ sqliteName: string; header: string; sqliteType?: string | null }>;
 }
 
 interface StreamRowPayload {
@@ -230,14 +230,93 @@ async function getBaseSheetMetadata(baseId: number): Promise<BaseSheetMetadata> 
     if (!tableName) throw new Error(`base ${baseId} has no tabela_sqlite`);
     const cols = await db('base_columns').where({ base_id: baseId }).orderBy('col_index', 'asc');
     if (!cols || cols.length === 0) throw new Error(`no base_columns metadata for base ${baseId}`);
+
+    // capture sqlite column types to allow proper defaults when mapping missing columns
+    const safeTable = tableName.replace(/"/g, '""');
+    const pragma = await db.raw(`PRAGMA table_info("${safeTable}")`).then((r: any) => r && (r[0] ?? r));
+    const typeMap = new Map<string, string | null>();
+    if (Array.isArray(pragma)) {
+        pragma.forEach((row: any) => {
+            if (row && row.name) typeMap.set(row.name, row.type || null);
+        });
+    }
+
     return {
         baseId,
         tableName,
         columns: cols.map((c: any) => ({
             sqliteName: c.sqlite_name,
             header: c.excel_name == null ? c.sqlite_name : String(c.excel_name),
+            sqliteType: typeMap.get(c.sqlite_name) ?? null,
         })),
     };
+}
+
+function isNumericType(sqliteType?: string | null) {
+    if (!sqliteType || typeof sqliteType !== 'string') return false;
+    const t = sqliteType.toUpperCase();
+    return /INT|REAL|NUM|DEC|DOUBLE|FLOAT/.test(t);
+}
+
+function isDateType(sqliteType?: string | null) {
+    if (!sqliteType || typeof sqliteType !== 'string') return false;
+    return sqliteType.toUpperCase().includes('DATE');
+}
+
+function formatDateForExport(value: any) {
+    if (value instanceof Date && !isNaN(value.getTime())) {
+        const day = String(value.getDate()).padStart(2, '0');
+        const month = String(value.getMonth() + 1).padStart(2, '0');
+        const year = value.getFullYear();
+        return `${day}/${month}/${year}`;
+    }
+
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmed)) return trimmed;
+        const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (isoMatch) {
+            const [, y, m, d] = isoMatch;
+            return `${d}/${m}/${y}`;
+        }
+    }
+
+    return value;
+}
+
+function formatIfDateLike(value: any) {
+    if (value === null || value === undefined || value === '') return value;
+    if (value instanceof Date && !isNaN(value.getTime())) return formatDateForExport(value);
+    if (typeof value !== 'string') return value;
+
+    const trimmed = value.trim();
+    // Accept pure date (YYYY-MM-DD) or ISO-like with time (YYYY-MM-DDTHH:mm:ss[.SSS][Z])
+    const isoLike = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z)?)?$/);
+    if (isoLike) {
+        const [, y, m, d] = isoLike;
+        return `${d}/${m}/${y}`;
+    }
+
+    // Already formatted
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmed)) return trimmed;
+
+    return value;
+}
+
+function coerceValue(value: any, sqliteType?: string | null) {
+    const isNullish = value === null || value === undefined || value === '';
+    if (isNumericType(sqliteType)) {
+        return isNullish ? 0 : value;
+    }
+    if (isDateType(sqliteType)) {
+        if (isNullish) return 'NULL';
+        return formatDateForExport(value);
+    }
+    if (!isNullish) {
+        const maybeDate = formatIfDateLike(value);
+        if (maybeDate !== value) return maybeDate;
+    }
+    return isNullish ? 'NULL' : value;
 }
 
 function buildColumnMapping(metaA: BaseSheetMetadata, metaB: BaseSheetMetadata, pairs: MappingPair[]): Map<string, string> {
@@ -341,7 +420,7 @@ async function buildSheetFileForBase(params: {
             onRow: (row) => {
                 const rowArr = meta.columns.map((col) => {
                     const value = row.baseValues[col.sqliteName];
-                    return value === undefined ? null : value;
+                    return coerceValue(value, col.sqliteType);
                 });
                 for (const key of keyIds) rowArr.push(row.keyValues[key] ?? null);
                 rowArr.push(row.status ?? null);
@@ -386,7 +465,7 @@ async function buildCombinedWorkbook(params: {
             onRow: (row) => {
                 const rowArr = metaA.columns.map((col) => {
                     const value = row.baseValues[col.sqliteName];
-                    return value === undefined ? null : value;
+                    return coerceValue(value, col.sqliteType);
                 });
                 for (const key of keyIds) rowArr.push(row.keyValues[key] ?? null);
                 rowArr.push(row.status ?? null);
@@ -406,9 +485,11 @@ async function buildCombinedWorkbook(params: {
             onRow: (row) => {
                 const rowArr = metaA.columns.map((col) => {
                     const mappedCol = mapping.get(col.sqliteName);
-                    if (!mappedCol) return null;
+                    if (!mappedCol) {
+                        return coerceValue(null, col.sqliteType);
+                    }
                     const value = row.baseValues[mappedCol];
-                    return value === undefined ? null : value;
+                    return coerceValue(value, col.sqliteType);
                 });
                 for (const key of keyIds) rowArr.push(row.keyValues[key] ?? null);
                 rowArr.push(row.status ?? null);

@@ -17,11 +17,15 @@ export class NullsBaseBStep implements PipelineStep {
         this.db = db;
     }
 
+    private wrapIdentifier(value: string) {
+        return `"${value.replace(/"/g, '""')}"`;
+    }
+
     async execute(ctx: PipelineContext): Promise<void> {
         const baseFiscalId = ctx.baseFiscalId;
         if (!baseFiscalId) return;
 
-        const base = await this.db('bases').where({ id: baseFiscalId }).first();
+        const base = ctx.getBaseMeta ? await ctx.getBaseMeta(baseFiscalId) : await this.db('bases').where({ id: baseFiscalId }).first();
         if (!base || !base.tabela_sqlite) return;
         const tableName: string = base.tabela_sqlite;
 
@@ -30,32 +34,40 @@ export class NullsBaseBStep implements PipelineStep {
 
         const colInfo = await this.db(tableName).columnInfo();
 
+        const numericCols: string[] = [];
+        const textCols: string[] = [];
+
         for (const col of Object.keys(colInfo || {})) {
             if (col === 'id' || col === 'created_at' || col === 'updated_at') continue;
-
             const info = (colInfo as any)[col] || {};
             const type: string = (info.type || '').toString().toLowerCase();
             const isNumeric = /int|real|float|numeric|decimal|number/.test(type);
-
-            try {
-                await this.db.transaction(async trx => {
-                    if (isNumeric) {
-                        await trx(tableName)
-                            .whereNull(col)
-                            .orWhere(col, '')
-                            .update({ [col]: 0 });
-                    } else {
-                        await trx(tableName)
-                            .whereNull(col)
-                            .orWhere(col, '')
-                            .update({ [col]: 'NULL' });
-                    }
-                });
-            } catch (err) {
-                // eslint-disable-next-line no-console
-                console.error(`NullsBaseB: failed processing column ${col} on ${tableName}:`, err);
+            if (isNumeric) {
+                numericCols.push(col);
+            } else {
+                textCols.push(col);
             }
         }
+
+        if (!numericCols.length && !textCols.length) return;
+
+        const tableIdent = this.wrapIdentifier(tableName);
+
+        await this.db.transaction(async trx => {
+            if (numericCols.length) {
+                const setClause = numericCols
+                    .map(col => `${this.wrapIdentifier(col)} = CASE WHEN ${this.wrapIdentifier(col)} IS NULL OR ${this.wrapIdentifier(col)} = '' THEN 0 ELSE ${this.wrapIdentifier(col)} END`)
+                    .join(', ');
+                await trx.raw(`UPDATE ${tableIdent} SET ${setClause}`);
+            }
+
+            if (textCols.length) {
+                const setClause = textCols
+                    .map(col => `${this.wrapIdentifier(col)} = CASE WHEN ${this.wrapIdentifier(col)} IS NULL OR ${this.wrapIdentifier(col)} = '' THEN 'NULL' ELSE ${this.wrapIdentifier(col)} END`)
+                    .join(', ');
+                await trx.raw(`UPDATE ${tableIdent} SET ${setClause}`);
+            }
+        });
     }
 }
 

@@ -8,6 +8,16 @@ import fs from 'fs/promises';
 
 const router = Router();
 
+const DEFAULT_PAGE_SIZE = Math.max(1, Number(process.env.API_DEFAULT_PAGE_SIZE || 20));
+const MAX_PAGE_SIZE = Math.max(1, Number(process.env.API_MAX_PAGE_SIZE || 100));
+
+function parsePagination(req: Request) {
+    const page = Math.max(1, Number(req.query.page ? Number(req.query.page) : 1));
+    const requestedSize = Number(req.query.pageSize ? Number(req.query.pageSize) : req.query.limit) || DEFAULT_PAGE_SIZE;
+    const pageSize = Math.max(1, Math.min(MAX_PAGE_SIZE, requestedSize));
+    return { page, pageSize };
+}
+
 async function resolveBaseOverride(raw: any, expectedType: 'CONTABIL' | 'FISCAL', fieldName: string) {
     if (raw === undefined || raw === null || raw === '' || raw === 'config') return null;
     const parsed = Number(raw);
@@ -113,8 +123,7 @@ router.post('/', async (req: Request, res: Response) => {
 // GET /conciliacoes - list jobs (paginated)
 router.get('/', async (req: Request, res: Response) => {
     try {
-        const page = Math.max(1, Number(req.query.page ? Number(req.query.page) : 1));
-        const pageSize = Math.max(1, Math.min(100, Number(req.query.pageSize ? Number(req.query.pageSize) : 20)));
+        const { page, pageSize } = parsePagination(req);
         const status = req.query.status as string | undefined;
 
         // count total
@@ -132,7 +141,7 @@ router.get('/', async (req: Request, res: Response) => {
             .limit(pageSize)
             .offset(offset);
 
-        const totalPages = Math.ceil(total / pageSize);
+        const totalPages = Math.max(1, Math.ceil(total / pageSize));
         return res.json({ page, pageSize, total, totalPages, data: rows });
     } catch (err: any) {
         console.error(err);

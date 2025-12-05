@@ -5,7 +5,7 @@ import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, For
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ArrowLeft, Plus, Trash2, Upload } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { createBases } from '@/services/baseService';
 import { useForm, useFieldArray } from 'react-hook-form';
@@ -38,6 +38,7 @@ type FormValues = z.infer<typeof schema>;
 const NewBase = () => {
     const navigate = useNavigate();
     const [submitting, setSubmitting] = useState(false);
+    const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
 
     const form = useForm<FormValues>({
         resolver: zodResolver(schema),
@@ -58,6 +59,8 @@ const NewBase = () => {
     const baseValues = watch('bases');
 
     const selectedFiles = baseValues?.map((base) => base?.arquivo) ?? [];
+
+    const acceptMime = useMemo(() => ['.xlsx', '.xls', '.csv', '.xlsb'], []);
 
     const addBaseRow = () => {
         append({
@@ -198,7 +201,19 @@ const NewBase = () => {
                                             <FormItem>
                                                 <FormLabel>Arquivo *</FormLabel>
                                                 <FormControl>
-                                                    <div className="border-2 border-dashed rounded-lg p-8 text-center hover:border-primary transition-colors cursor-pointer">
+                                                    <div
+                                                        className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer ${draggingIndex === index ? 'border-primary bg-primary/5' : 'hover:border-primary'}`}
+                                                        onDragOver={(e) => { e.preventDefault(); setDraggingIndex(index); }}
+                                                        onDragLeave={() => setDraggingIndex((prev) => (prev === index ? null : prev))}
+                                                        onDrop={(e) => {
+                                                            e.preventDefault();
+                                                            setDraggingIndex(null);
+                                                            const f = e.dataTransfer?.files?.[0];
+                                                            if (f) {
+                                                                field.onChange(f);
+                                                            }
+                                                        }}
+                                                    >
                                                         <input
                                                             type="file"
                                                             id={`arquivo-${index}`}
@@ -207,7 +222,7 @@ const NewBase = () => {
                                                                 const f = e.target.files && e.target.files[0];
                                                                 if (f) field.onChange(f);
                                                             }}
-                                                            accept=".xlsx,.xls,.csv,.xlsb"
+                                                            accept={acceptMime.join(',')}
                                                         />
                                                         <label htmlFor={`arquivo-${index}`} className="cursor-pointer">
                                                             <Upload className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />

@@ -7,7 +7,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { useEffect, useState, useRef } from 'react';
 import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
-import { getConciliacao, fetchConciliacaoResultado, exportConciliacao, deleteConciliacao, getDownloadUrl } from '@/services/conciliacaoService';
+import { getConciliacao, fetchConciliacaoResultado, exportConciliacao, deleteConciliacao, downloadConciliacaoFile } from '@/services/conciliacaoService';
+import { downloadFromResponse } from '@/lib/download';
 import {
     AlertDialog,
     AlertDialogContent,
@@ -260,9 +261,18 @@ const ConciliacaoDetails = () => {
                                     </Button>
                                 )
                             ) : (
-                                <Button onClick={() => { if (!id) return; window.location.href = getDownloadUrl(Number(id)); }}>
+                                <Button onClick={async () => {
+                                    if (!id) return;
+                                    try {
+                                        const res = await downloadConciliacaoFile(Number(id));
+                                        downloadFromResponse(res as any,  job?.nome || 'conciliacao');
+                                    } catch (err) {
+                                        console.error('Falha ao baixar exportação', err);
+                                        toast.error('Falha ao baixar exportação');
+                                    }
+                                }}>
                                     <Download className="mr-2 h-4 w-4" />
-                                    Baixar
+                                    Baixar ZIP
                                 </Button>
                             )}
 
@@ -276,9 +286,6 @@ const ConciliacaoDetails = () => {
                                 </div>
                             )}
                         </div>
-                        <Button variant="destructive" size="icon" onClick={() => { if (!id) return; setPendingDeleteId(Number(id)); setDeleteDialogOpen(true); }} aria-label="Deletar conciliação">
-                            <Trash className="h-4 w-4" />
-                        </Button>
                     </div>
                 </div>
 

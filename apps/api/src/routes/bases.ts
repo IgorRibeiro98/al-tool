@@ -11,6 +11,16 @@ import fs from 'fs/promises';
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
+const DEFAULT_PAGE_SIZE = Math.max(1, Number(process.env.API_DEFAULT_PAGE_SIZE || 20));
+const MAX_PAGE_SIZE = Math.max(1, Number(process.env.API_MAX_PAGE_SIZE || 100));
+
+function parsePagination(req: Request) {
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const requestedSize = Number(req.query.pageSize || req.query.limit) || DEFAULT_PAGE_SIZE;
+    const pageSize = Math.max(1, Math.min(MAX_PAGE_SIZE, requestedSize));
+    return { page, pageSize };
+}
+
 function forceArray<T = string>(value: T | T[] | undefined | null): T[] {
     if (value === undefined || value === null) return [];
     return Array.isArray(value) ? value : [value];
@@ -34,12 +44,11 @@ async function ensureIngestDirectory() {
 // GET /bases - list with pagination and optional filters
 router.get('/', async (req: Request, res: Response) => {
     try {
-        const page = Math.max(1, Number(req.query.page) || 1);
-        const pageSize = Math.max(1, Math.min(100, Number(req.query.pageSize) || 20));
+        const { page, pageSize } = parsePagination(req);
         const tipo = req.query.tipo as string | undefined;
         const periodo = req.query.periodo as string | undefined;
 
-        const qb = db('bases').select('*');
+        const qb = db('bases').select('*').orderBy('created_at', 'desc').orderBy('id', 'desc');
         if (tipo) qb.where('tipo', tipo);
         if (periodo) qb.where('periodo', periodo);
 
@@ -50,16 +59,21 @@ router.get('/', async (req: Request, res: Response) => {
         const baseIds = rows.map((r: any) => r.id).filter(Boolean);
         const latestJobByBase = new Map<number, any>();
         if (baseIds.length > 0) {
-            const jobs = await db('ingest_jobs')
+            const latestIds = await db('ingest_jobs')
                 .whereIn('base_id', baseIds)
-                .select('id', 'base_id', 'status', 'erro', 'created_at', 'updated_at')
-                .orderBy('base_id', 'asc')
-                .orderBy('id', 'desc');
+                .groupBy('base_id')
+                .select('base_id')
+                .max('id as id');
 
-            for (const job of jobs) {
-                if (!job) continue;
-                if (latestJobByBase.has(job.base_id)) continue;
-                latestJobByBase.set(job.base_id, job);
+            const idList = latestIds.map((j: any) => j.id).filter(Boolean);
+            if (idList.length) {
+                const jobs = await db('ingest_jobs')
+                    .whereIn('id', idList)
+                    .select('id', 'base_id', 'status', 'erro', 'created_at', 'updated_at');
+                for (const job of jobs) {
+                    if (!job) continue;
+                    latestJobByBase.set(job.base_id, job);
+                }
             }
         }
 
@@ -75,7 +89,9 @@ router.get('/', async (req: Request, res: Response) => {
             };
         });
 
-        res.json({ data: enriched, page, pageSize, total: Number(count) });
+        const total = Number(count || 0);
+        const totalPages = Math.max(1, Math.ceil(total / pageSize));
+        res.json({ data: enriched, page, pageSize, total, totalPages });
     } catch (err: any) {
         console.error(err);
         res.status(400).json({ error: 'Erro ao listar bases' });
