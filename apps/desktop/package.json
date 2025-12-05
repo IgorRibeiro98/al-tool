@@ -87,6 +87,13 @@
                 "filter": [
                     "**/*"
                 ]
+            },
+            {
+                "from": "./python-runtime-win",
+                "to": "python-win",
+                "filter": [
+                    "**/*"
+                ]
             }
         ],
         "directories": {

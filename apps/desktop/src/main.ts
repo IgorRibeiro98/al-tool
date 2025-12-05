@@ -268,17 +268,29 @@ function startPythonConversionWorker({ isPackaged, envForApi, logsDir }: { isPac
         return;
     }
 
-    const devPythonBase = path.join(repoRoot, 'apps', 'desktop', 'python-runtime');
-    const pythonBaseDir = isPackaged ? path.join(process.resourcesPath, 'python') : devPythonBase;
+    const devPythonBase = process.platform === 'win32'
+        ? path.join(repoRoot, 'apps', 'desktop', 'python-runtime')
+        : path.join(repoRoot, 'apps', 'desktop', 'python-runtime');
+    const pythonBaseDir = isPackaged
+        ? path.join(process.resourcesPath, process.platform === 'win32' ? 'python' : 'python')
+        : devPythonBase;
     const pythonExec = resolvePythonExecutable(isPackaged, pythonBaseDir);
+    if (!pythonExec) {
+        console.error('[electron] Python executable not found; conversion worker will not start');
+        console.error('[electron] On Windows packaged builds, bundle python-runtime-win (Python embeddable + deps) under apps/desktop/python-runtime-win');
+        console.error('[electron] Alternatively set ALLOW_SYSTEM_PYTHON=1 and ensure python.exe is on PATH');
+        return;
+    }
     const pollSeconds = process.env.WORKER_POLL_SECONDS || '5';
     const sitePackages = pythonBaseDir ? findEmbeddedSitePackages(pythonBaseDir) : undefined;
     const pythonEnv = {
         ...envForApi,
         PYTHONUNBUFFERED: '1',
+        PYTHONIOENCODING: 'utf-8',
         POLL_INTERVAL: pollSeconds,
         INGESTS_DIR: envForApi.INGESTS_DIR,
         REPO_ROOT: repoRoot,
+        PYTHON_EXECUTABLE: pythonExec,
     } as NodeJS.ProcessEnv;
 
     if (pythonBaseDir && fs.existsSync(pythonBaseDir)) {
@@ -326,6 +338,7 @@ function startPythonConversionWorker({ isPackaged, envForApi, logsDir }: { isPac
 
 function resolvePythonExecutable(isPackaged: boolean, pythonBaseDir?: string): string {
     const candidates: string[] = [];
+    const allowSystemPython = !isPackaged || process.env.ALLOW_SYSTEM_PYTHON === '1';
     if (process.env.PYTHON_EXECUTABLE) {
         candidates.push(process.env.PYTHON_EXECUTABLE);
     }
@@ -340,43 +353,85 @@ function resolvePythonExecutable(isPackaged: boolean, pythonBaseDir?: string): s
     }
 
     if (isPackaged) {
-        const binDir = process.platform === 'win32' ? '' : 'bin';
-        const base = path.join(process.resourcesPath, 'python');
-        const binNames = process.platform === 'win32' ? ['python.exe'] : ['python3', 'python'];
-        for (const name of binNames) {
-            candidates.push(path.join(base, binDir, name));
-            candidates.push(path.join(base, name));
+        const binDirWin = '';
+        const binDirNix = 'bin';
+        const baseWin = path.join(process.resourcesPath, 'python');
+        const baseNix = path.join(process.resourcesPath, 'python');
+        const binNamesWin = ['python.exe'];
+        const binNamesNix = ['python3', 'python'];
+
+        // Prefer platform-specific embedded runtime
+        if (process.platform === 'win32') {
+            for (const name of binNamesWin) {
+                candidates.push(path.join(baseWin, binDirWin, name));
+                candidates.push(path.join(baseWin, name));
+            }
+        } else {
+            for (const name of binNamesNix) {
+                candidates.push(path.join(baseNix, binDirNix, name));
+                candidates.push(path.join(baseNix, name));
+            }
+        }
+
+        // As a fallback (if someone packaged only one runtime), include both bases
+        for (const name of binNamesWin) {
+            candidates.push(path.join(baseWin, binDirWin, name));
+            candidates.push(path.join(baseWin, name));
+        }
+        for (const name of binNamesNix) {
+            candidates.push(path.join(baseNix, binDirNix, name));
+            candidates.push(path.join(baseNix, name));
         }
     }
 
-    const defaultBins = process.platform === 'win32' ? ['python.exe'] : ['python3', 'python'];
-    candidates.push(...defaultBins);
+    const defaultBins = process.platform === 'win32' ? ['python.exe', 'python'] : ['python3', 'python'];
+    if (allowSystemPython) {
+        candidates.push(...defaultBins);
+    }
 
     for (const candidate of candidates) {
         if (!candidate) continue;
         try {
             if (!candidate.includes(path.sep)) {
-                return candidate;
+                // bare command; keep as last resort if nothing else exists
+                continue;
             }
             if (fs.existsSync(candidate)) {
                 return candidate;
             }
-        } catch (e) {
+        } catch {
             continue;
         }
     }
-    return process.platform === 'win32' ? 'python.exe' : 'python3';
+
+    // If system Python is allowed, fallback to bare commands; otherwise fail (return empty)
+    if (allowSystemPython) {
+        const bare = defaultBins.find((bin) => !!bin);
+        return bare || '';
+    }
+
+    return '';
 }
 
 function findEmbeddedSitePackages(pythonBaseDir: string): string | undefined {
     try {
-        const libDir = path.join(pythonBaseDir, 'lib');
-        const entries = fs.readdirSync(libDir, { withFileTypes: true });
-        const pyDir = entries.find((entry) => entry.isDirectory() && entry.name.startsWith('python3'));
-        if (!pyDir) return undefined;
-        const sitePackages = path.join(libDir, pyDir.name, 'site-packages');
-        if (fs.existsSync(sitePackages)) {
-            return sitePackages;
+        // Unix-like venv layout: lib/python3.x/site-packages
+        const libDirUnix = path.join(pythonBaseDir, 'lib');
+        if (fs.existsSync(libDirUnix)) {
+            const entries = fs.readdirSync(libDirUnix, { withFileTypes: true });
+            const pyDir = entries.find((entry) => entry.isDirectory() && entry.name.startsWith('python3'));
+            if (pyDir) {
+                const sitePackages = path.join(libDirUnix, pyDir.name, 'site-packages');
+                if (fs.existsSync(sitePackages)) {
+                    return sitePackages;
+                }
+            }
+        }
+
+        // Windows venv layout: Lib/site-packages
+        const libDirWin = path.join(pythonBaseDir, 'Lib', 'site-packages');
+        if (fs.existsSync(libDirWin)) {
+            return libDirWin;
         }
     } catch (err) {
         console.warn('[electron] Failed to locate embedded site-packages', err);

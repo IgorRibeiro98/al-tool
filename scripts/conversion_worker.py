@@ -13,6 +13,7 @@ This is a small, pragmatic worker for development environments. For production,
 replace with a queue backed worker and proper locking.
 """
 import os
+import sys
 import time
 import sqlite3
 import subprocess
@@ -25,6 +26,7 @@ INGESTS_DIR = os.environ.get('INGESTS_DIR', '/home/app/apps/api/storage/ingests'
 UPLOAD_DIR_ENV = os.environ.get('UPLOAD_DIR')
 DATA_DIR_ENV = os.environ.get('DATA_DIR')
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONVERTER_SCRIPT = os.path.join(SCRIPT_DIR, 'xlsb_to_xlsx.py')
 REPO_ROOT = os.environ.get('REPO_ROOT', os.path.abspath(os.path.join(SCRIPT_DIR, '..')))
 
 
@@ -130,8 +132,9 @@ def update_status(conn, base_id, status, jsonl_rel=None, error_msg=None):
 
 
 def run_conversion(abs_input, abs_output):
-    # Use the converter script; it supports xlsb and xlsx when --jsonl is used
-    cmd = ['python3', 'scripts/xlsb_to_xlsx.py', '--jsonl', abs_input, abs_output]
+    # Use the same interpreter that started the worker, unless explicitly overridden
+    python_cmd = os.environ.get('PYTHON_EXECUTABLE') or sys.executable or 'python'
+    cmd = [python_cmd, CONVERTER_SCRIPT, '--jsonl', abs_input, abs_output]
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return p.returncode, p.stdout.decode('utf-8', errors='replace'), p.stderr.decode('utf-8', errors='replace')
 
