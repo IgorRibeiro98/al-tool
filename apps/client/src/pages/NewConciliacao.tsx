@@ -70,13 +70,8 @@ const NewConciliacao = () => {
     const effectiveBaseContabilId = watchBaseContabilId ?? selectedConciliacao?.base_contabil_id ?? null;
     const effectiveBaseFiscalId = watchBaseFiscalId ?? selectedConciliacao?.base_fiscal_id ?? null;
 
-    const availableMapConfigs = useMemo(() => {
-        if (!effectiveBaseContabilId || !effectiveBaseFiscalId) return [];
-        return mapConfigs.filter((cfg) => (
-            cfg.base_contabil_id === effectiveBaseContabilId &&
-            cfg.base_fiscal_id === effectiveBaseFiscalId
-        ));
-    }, [mapConfigs, effectiveBaseContabilId, effectiveBaseFiscalId]);
+    // Allow user to pick any mapping config (do not filter by selected bases)
+    const availableMapConfigs = useMemo(() => mapConfigs, [mapConfigs]);
 
     const configBaseContabil = useMemo(() => {
         if (!selectedConciliacao) return null;
@@ -94,17 +89,7 @@ const NewConciliacao = () => {
         form.setValue('configMapeamentoId', null);
     }, [watchConciliacaoId, form]);
 
-    useEffect(() => {
-        if (!watchMapeamentoId) return;
-        const selectedMap = mapConfigs.find((cfg) => cfg.id === watchMapeamentoId);
-        if (!selectedMap) {
-            form.setValue('configMapeamentoId', null);
-            return;
-        }
-        if (selectedMap.base_contabil_id !== effectiveBaseContabilId || selectedMap.base_fiscal_id !== effectiveBaseFiscalId) {
-            form.setValue('configMapeamentoId', null);
-        }
-    }, [watchMapeamentoId, effectiveBaseContabilId, effectiveBaseFiscalId, mapConfigs, form]);
+    // NOTE: We intentionally allow selecting any mapping config regardless of currently selected bases.
 
     useEffect(() => {
         fetchBases({ pageSize: 200 }).then(r => {
@@ -263,7 +248,7 @@ const NewConciliacao = () => {
                                                     </SelectTrigger>
                                                     <SelectContent>
                                                         <SelectItem value="none">Nenhuma</SelectItem>
-                                                        {mapConfigs.map((cfg) => (
+                                                        {availableMapConfigs.map((cfg) => (
                                                             <SelectItem key={cfg.id} value={String(cfg.id)}>{cfg.nome}</SelectItem>
                                                         ))}
                                                     </SelectContent>

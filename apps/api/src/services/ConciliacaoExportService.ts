@@ -1,5 +1,5 @@
 import db from '../db/knex';
-import XLSX from 'xlsx';
+// removed SheetJS in favor of ExcelJS streaming for styled exports
 import ExcelJS from 'exceljs';
 import { fileStorage } from '../infra/storage/FileStorage';
 import * as jobsRepo from '../repos/jobsRepository';
@@ -17,6 +17,16 @@ interface BaseSheetMetadata {
     columns: Array<{ sqliteName: string; header: string; sqliteType?: string | null }>;
 }
 
+function extractKeyIdentifiers(cfgRow: any): string[] {
+    const chavesContabil = parseChaves(cfgRow?.chaves_contabil);
+    const chavesFiscal = parseChaves(cfgRow?.chaves_fiscal);
+    return Array.from(new Set([...Object.keys(chavesContabil || {}), ...Object.keys(chavesFiscal || {})]));
+}
+
+function buildKeyHeaders(keyIds: string[]): string[] {
+    return keyIds.map((key) => key.replace('_', ' '));
+}
+
 interface StreamRowPayload {
     baseValues: Record<string, any>;
     keyValues: Record<string, any>;
@@ -26,6 +36,19 @@ interface StreamRowPayload {
 }
 
 const EXTRA_FINAL_HEADERS = ['status', 'chave', 'grupo'];
+
+// Color definitions for Base A and Base B (ARGB format with full opacity)
+const BASE_A_STYLES = {
+    header: 'FF3C78D8',
+    rowColor1: 'FFFFFFFF',
+    rowColor2: 'FFE8F0FE',
+};
+
+const BASE_B_STYLES = {
+    header: 'FF78909C',
+    rowColor1: 'FFEBEFF1',
+    rowColor2: 'FFD9D9D9',
+};
 
 function parseChaves(raw: any): Record<string, string[]> {
     try {
@@ -56,17 +79,7 @@ function parseMappingPairs(raw: any): MappingPair[] {
         })
         .filter((item: MappingPair) => item.coluna_contabil.length > 0 && item.coluna_fiscal.length > 0);
 }
-
-function extractKeyIdentifiers(cfgRow: any): string[] {
-    const chavesContabil = parseChaves(cfgRow?.chaves_contabil);
-    const chavesFiscal = parseChaves(cfgRow?.chaves_fiscal);
-    return Array.from(new Set([...Object.keys(chavesContabil || {}), ...Object.keys(chavesFiscal || {})]));
-}
-
-function buildKeyHeaders(keyIds: string[]): string[] {
-    return keyIds.map((key) => key.replace('_', ' '));
-}
-
+    
 export async function exportJobResultToXlsx(jobId: number) {
     const job = await jobsRepo.getJobById(jobId);
     if (!job) throw new Error('job not found');
@@ -79,39 +92,72 @@ export async function exportJobResultToXlsx(jobId: number) {
     if (!cfgRow) throw new Error('config conciliacao not found for job');
 
     const keyIdentifiers = extractKeyIdentifiers(cfgRow);
-    const rows = await db(resultTable).select('*').orderBy('id', 'asc');
+    const keyHeaders = buildKeyHeaders(keyIdentifiers);
 
-    // Prepare rows for sheet: include dynamic key columns + status, grupo, chave, value_a, value_b, difference, a_values, b_values
-    const sheetData = rows.map((r: any) => {
-        const base: any = {
-            id: r.id,
-            chave: r.chave,
-            status: r.status,
-            grupo: r.grupo,
-            a_row_id: r.a_row_id,
-            b_row_id: r.b_row_id,
-            value_a: r.value_a,
-            value_b: r.value_b,
-            difference: r.difference,
-            a_values: typeof r.a_values === 'string' ? r.a_values : JSON.stringify(r.a_values || null),
-            b_values: typeof r.b_values === 'string' ? r.b_values : JSON.stringify(r.b_values || null),
-            created_at: r.created_at
-        };
-        for (const kid of keyIdentifiers) base[kid] = r[kid] ?? null;
-        return base;
-    });
-
-    const ws = XLSX.utils.json_to_sheet(sheetData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'resultado');
-
-    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-
-    // ensure exports dir exists and save file
+    // stream to an ExcelJS file to avoid loading all rows in memory
+    await fs.mkdir(EXPORT_DIR, { recursive: true });
     const filename = `conciliacao_${jobId}.xlsx`;
-    const relPath = await fileStorage.saveFile(Buffer.from(buffer), filename);
+    const filePath = path.join(EXPORT_DIR, filename);
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, useStyles: true, useSharedStrings: true });
+    const sheet = workbook.addWorksheet('resultado');
 
-    // update job record with path
+    const baseHeaders = ['id', 'chave', 'status', 'grupo', 'a_row_id', 'b_row_id', 'value_a', 'value_b', 'difference', 'a_values', 'b_values', 'created_at'];
+    const finalHeaders = baseHeaders.concat(keyHeaders);
+
+    // header styling (use neutral header from Base A colors)
+    const headerRow = sheet.addRow(finalHeaders);
+    headerRow.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: BASE_A_STYLES.header === undefined ? 'FFFFFFFF' : 'FFFFFFFF' } } as any;
+        cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: BASE_A_STYLES.header },
+        } as any;
+        cell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
+    });
+    headerRow.commit();
+
+    // stream rows from DB
+    const query = db.select('*').from(resultTable).orderBy('id', 'asc');
+    const stream: any = await (query as any).stream();
+    let rowIndex = 2;
+    try {
+        for await (const r of stream) {
+            const rowArr: any[] = [];
+            rowArr.push(r.id);
+            rowArr.push(r.chave ?? null);
+            rowArr.push(r.status ?? null);
+            rowArr.push(r.grupo ?? null);
+            rowArr.push(r.a_row_id ?? null);
+            rowArr.push(r.b_row_id ?? null);
+            rowArr.push(r.value_a ?? null);
+            rowArr.push(r.value_b ?? null);
+            rowArr.push(r.difference ?? null);
+            rowArr.push(typeof r.a_values === 'string' ? r.a_values : JSON.stringify(r.a_values || null));
+            rowArr.push(typeof r.b_values === 'string' ? r.b_values : JSON.stringify(r.b_values || null));
+            rowArr.push(formatIfDateLike(r.created_at ?? null));
+            for (const kid of keyIdentifiers) rowArr.push(r[kid] ?? null);
+
+            const excelRow = sheet.addRow(rowArr);
+            if ((rowIndex % 2) === 0) {
+                excelRow.eachCell((cell) => {
+                    cell.fill = {
+                        type: 'pattern',
+                        pattern: 'solid',
+                        fgColor: { argb: 'FFF2F2F2' },
+                    } as any;
+                });
+            }
+            excelRow.commit();
+            rowIndex += 1;
+        }
+    } finally {
+        try { stream.destroy && stream.destroy(); } catch (err) { }
+        (sheet as any).commit?.();
+        await workbook.commit();
+    }
+
+    const relPath = path.relative(process.cwd(), filePath).split(path.sep).join(path.posix.sep);
     await jobsRepo.setJobExportPath(jobId, relPath);
 
     return { path: relPath, filename };
@@ -405,12 +451,26 @@ async function buildSheetFileForBase(params: {
     await fs.mkdir(EXPORT_DIR, { recursive: true });
     const fileName = `${side === 'A' ? 'Base_A' : 'Base_B'}_${jobId}.xlsx`;
     const filePath = path.join(EXPORT_DIR, fileName);
-    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath });
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, useStyles: true, useSharedStrings: true });
     const sheet = workbook.addWorksheet(side === 'A' ? 'Base_A' : 'Base_B');
     const baseHeaders = meta.columns.map((col) => col.header);
     const finalHeaders = baseHeaders.concat(keyHeaders, EXTRA_FINAL_HEADERS);
-    sheet.addRow(finalHeaders).commit();
 
+    // Add styled header row (stream-safe): style before commit
+    const headerRow = sheet.addRow(finalHeaders);
+    const styles = side === 'A' ? BASE_A_STYLES : BASE_B_STYLES;
+    headerRow.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' } } as any;
+        cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: styles.header },
+        } as any;
+        cell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
+    });
+    headerRow.commit();
+
+    let rowIndex = 2; // starting after header
     try {
         await streamBaseRows({
             meta,
@@ -426,7 +486,16 @@ async function buildSheetFileForBase(params: {
                 rowArr.push(row.status ?? null);
                 rowArr.push(row.chave ?? null);
                 rowArr.push(row.grupo ?? null);
-                sheet.addRow(rowArr).commit();
+
+                const excelRow = sheet.addRow(rowArr);
+                // alternating row shading: even rows get a light fill specific to the base
+                const isEven = (rowIndex % 2) === 0;
+                if (isEven) {
+                    const rowFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: styles.rowColor2 } } as any;
+                    excelRow.eachCell((cell) => { cell.fill = rowFill; });
+                }
+                excelRow.commit();
+                rowIndex += 1;
             }
         });
     } finally {
@@ -450,12 +519,25 @@ async function buildCombinedWorkbook(params: {
     await fs.mkdir(EXPORT_DIR, { recursive: true });
     const fileName = `Base_Comparativo_${jobId}.xlsx`;
     const filePath = path.join(EXPORT_DIR, fileName);
-    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath });
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, useStyles: true, useSharedStrings: true });
     const sheetResultado = workbook.addWorksheet('Resultado');
     const baseHeaders = metaA.columns.map((col) => col.header);
     const finalHeaders = baseHeaders.concat(keyHeaders, EXTRA_FINAL_HEADERS);
-    sheetResultado.addRow(finalHeaders).commit();
 
+    // styled header row for combined sheet (use Base A header color)
+    const headerRow = sheetResultado.addRow(finalHeaders);
+    headerRow.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' } } as any;
+        cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: BASE_A_STYLES.header },
+        } as any;
+        cell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
+    });
+    headerRow.commit();
+
+    let rowIndex = 2;
     try {
         await streamBaseRows({
             meta: metaA,
@@ -471,7 +553,15 @@ async function buildCombinedWorkbook(params: {
                 rowArr.push(row.status ?? null);
                 rowArr.push(row.chave ?? null);
                 rowArr.push(row.grupo ?? null);
-                sheetResultado.addRow(rowArr).commit();
+
+                const excelRow = sheetResultado.addRow(rowArr);
+                // apply Base A alternating shading
+                if ((rowIndex % 2) === 0) {
+                    const rowFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BASE_A_STYLES.rowColor2 } } as any;
+                    excelRow.eachCell((cell) => { cell.fill = rowFill; });
+                }
+                excelRow.commit();
+                rowIndex += 1;
             }
         });
 
@@ -495,7 +585,15 @@ async function buildCombinedWorkbook(params: {
                 rowArr.push(row.status ?? null);
                 rowArr.push(row.chave ?? null);
                 rowArr.push(row.grupo ?? null);
-                sheetResultado.addRow(rowArr).commit();
+
+                const excelRow = sheetResultado.addRow(rowArr);
+                // apply Base B alternating shading
+                if ((rowIndex % 2) === 0) {
+                    const rowFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BASE_B_STYLES.rowColor2 } } as any;
+                    excelRow.eachCell((cell) => { cell.fill = rowFill; });
+                }
+                excelRow.commit();
+                rowIndex += 1;
             }
         });
     } finally {
