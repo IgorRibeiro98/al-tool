@@ -115,3 +115,37 @@
 - [ ] Testar `machineFingerprint` e licenciamento no Electron com envs simulados (sem LICENSE_API_BASE_URL, token ausente, expirado, revoke) e retries com timeout.
 - [ ] Testar hooks utilitários (`useIsMobile`) e componentes básicos (StatusChip, Sidebar, Header) com variações de estado/tema.
 - [ ] Adicionar smoke de componentes shadcn (button/input/select/sidebar) para garantir renderização e variantes.
+
+## Modo Econômico / Modo Desempenho (feature)
+
+- **Objetivo:** permitir que o usuário escolha um perfil de execução global (ou por job) para priorizar estabilidade/baixo uso de recursos (`Modo Econômico`) ou throughput/tempo de processamento (`Modo Desempenho`).
+
+- **Where to surface:** preferencialmente no Electron (Settings) com toggle persistido; possibilitar override por job na tela de criação de `Conciliacao`.
+
+- **Valores esperados:** `economico` | `desempenho` | `auto` (default `auto` pode mapear para `economico` em máquinas com poucos recursos).
+
+- **Principais ajustes por modo:**
+  - Concurrency: `economico` -> 1 worker; `desempenho` -> `max(1, os.cpus().length - 1)`.
+  - Batch / chunk sizes: `economico` -> 200; `desempenho` -> 1000 (ajustáveis por configuração).
+  - SQLite PRAGMAs: aplicar PRAGMAs por job (conexão isolada) — `economico` com `synchronous=FULL`, `journal_mode=DELETE`, `temp_store=FILE`; `desempenho` com `journal_mode=WAL`, `synchronous=NORMAL` (ou `OFF` com aviso), `temp_store=MEMORY`, `cache_size` maior.
+  - IO / streaming: `economico` -> streaming/menos buffering; `desempenho` -> buffering maior para throughput.
+  - Prioridade de processo: `economico` -> `nice +10`/lower priority (quando possível); `desempenho` -> prioridade normal.
+
+- **Persistência:** adicionar coluna `performance_mode` (string) na tabela `jobs` e incluir no payload de criação de job. Documentar no OpenAPI/DTOs.
+
+- **Integração pipeline:** ao iniciar um job, ler `performance_mode` e criar/obter uma conexão `knex` dedicada para aplicar PRAGMAs sem afetar outras execuções; ajustar `WorkerPool`, `batchSize`, `inserts` chunk e `process.setPriority` conforme o modo.
+
+- **UX / Mensagens:** mostrar badge/tooltip explicando trade-offs (p.ex. "Modo Desempenho usa mais RAM/IO e menos durabilidade em crash se `synchronous=OFF` estiver habilitado"). Permitir confirmação ao escolher `desempenho` com `synchronous=OFF`.
+
+- **Testes e validação:** criar cenários automatizados (máquina baixa vs alta) que verifiquem consumo de RAM/CPU/IO e tempo de conclusão; testar integridade dos dados com `synchronous=FULL` vs `NORMAL/OFF` e documentar riscos.
+
+- **Rollout incremental (passos curtos):**
+  1. Migration: adicionar coluna `performance_mode` em `ingest_jobs`/`jobs` (default `auto`).
+  2. API: aceitar `performance_mode` no endpoint de criação de job e persistir no repositório (`jobsRepository`).
+  3. Electron: adicionar toggle em Settings com persistência local (`electron-store`) e incluir valor no payload de criação do job.
+  4. Pipeline: implementar `applySqliteMode(knex, mode)` e usar conexão isolada por job; ajustar `concurrency` e `batchSize` onde aplicável.
+  5. Testes: adicionar testes de integração e benchmarks; documentar defaults no README/Help.
+
+- **Notas de segurança/operacional:** evitar aplicar `synchronous=OFF` por padrão; se usado, exibir aviso explícito no UI. Criar fallback/monitor para recuperar jobs que falharem por corrupção (incluir checksum/export parcial).
+
+```

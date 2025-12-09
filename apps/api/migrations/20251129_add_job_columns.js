@@ -1,38 +1,33 @@
 /**
- * Add denormalized columns to jobs_conciliacao
+ * Add denormalized columns to `jobs_conciliacao`.
  */
-exports.up = async function (knex) {
-    const has = await knex.schema.hasTable('jobs_conciliacao');
-    if (!has) return;
+const NEW_COLUMNS = [
+    { name: 'arquivo_exportado', builder: (t) => t.string('arquivo_exportado').nullable() },
+    { name: 'config_estorno_nome', builder: (t) => t.string('config_estorno_nome').nullable() },
+    { name: 'config_cancelamento_nome', builder: (t) => t.string('config_cancelamento_nome').nullable() }
+];
 
-    const hasArquivo = await knex.schema.hasColumn('jobs_conciliacao', 'arquivo_exportado');
-    if (!hasArquivo) {
-        await knex.schema.table('jobs_conciliacao', (t) => {
-            t.string('arquivo_exportado').nullable();
-        });
-    }
+exports.up = async function up(knex) {
+    const tableExists = await knex.schema.hasTable('jobs_conciliacao');
+    if (!tableExists) return;
 
-    const hasEstornoNome = await knex.schema.hasColumn('jobs_conciliacao', 'config_estorno_nome');
-    if (!hasEstornoNome) {
-        await knex.schema.table('jobs_conciliacao', (t) => {
-            t.string('config_estorno_nome').nullable();
-        });
-    }
-
-    const hasCancelNome = await knex.schema.hasColumn('jobs_conciliacao', 'config_cancelamento_nome');
-    if (!hasCancelNome) {
-        await knex.schema.table('jobs_conciliacao', (t) => {
-            t.string('config_cancelamento_nome').nullable();
-        });
+    for (const col of NEW_COLUMNS) {
+        // eslint-disable-next-line no-await-in-loop
+        const exists = await knex.schema.hasColumn('jobs_conciliacao', col.name);
+        if (!exists) {
+            // eslint-disable-next-line no-await-in-loop
+            await knex.schema.table('jobs_conciliacao', (t) => col.builder(t));
+        }
     }
 };
 
-exports.down = async function (knex) {
-    const has = await knex.schema.hasTable('jobs_conciliacao');
-    if (!has) return;
+exports.down = async function down(knex) {
+    const tableExists = await knex.schema.hasTable('jobs_conciliacao');
+    if (!tableExists) return;
+
     await knex.schema.table('jobs_conciliacao', (t) => {
-        t.dropColumn('arquivo_exportado');
-        t.dropColumn('config_estorno_nome');
-        t.dropColumn('config_cancelamento_nome');
+        for (const col of NEW_COLUMNS) {
+            t.dropColumn(col.name);
+        }
     });
 };

@@ -1,8 +1,11 @@
 /**
- * Add arquivo_jsonl_path and conversion_status to bases
+ * Add `arquivo_jsonl_path` and conversion metadata columns to `bases`.
  */
-exports.up = function (knex) {
-    return knex.schema.table('bases', function (table) {
+exports.up = async function up(knex) {
+    const exists = await knex.schema.hasTable('bases');
+    if (!exists) return;
+
+    await knex.schema.table('bases', (table) => {
         table.string('arquivo_jsonl_path').nullable();
         table.string('conversion_status').nullable(); // PENDING, READY, FAILED
         table.timestamp('conversion_started_at').nullable();
@@ -11,8 +14,11 @@ exports.up = function (knex) {
     });
 };
 
-exports.down = function (knex) {
-    return knex.schema.table('bases', function (table) {
+exports.down = async function down(knex) {
+    const exists = await knex.schema.hasTable('bases');
+    if (!exists) return;
+
+    await knex.schema.table('bases', (table) => {
         table.dropColumn('arquivo_jsonl_path');
         table.dropColumn('conversion_status');
         table.dropColumn('conversion_started_at');

@@ -1,49 +1,54 @@
 /**
- * Create configs_mapeamento_bases table and add optional mapping references to jobs_conciliacao
+ * Create `configs_mapeamento_bases` and add optional mapping refs to `jobs_conciliacao`.
  */
-exports.up = async function (knex) {
-    const hasMappingTable = await knex.schema.hasTable('configs_mapeamento_bases');
-    if (!hasMappingTable) {
+const { addTimestamps } = require('./helpers/migrationHelpers');
+
+exports.up = async function up(knex) {
+    const mappingExists = await knex.schema.hasTable('configs_mapeamento_bases');
+    if (!mappingExists) {
         await knex.schema.createTable('configs_mapeamento_bases', (table) => {
             table.increments('id').primary();
             table.string('nome').notNullable();
             table.integer('base_contabil_id').unsigned().notNullable();
             table.integer('base_fiscal_id').unsigned().notNullable();
             table.text('mapeamentos').notNullable().defaultTo('[]');
-            table.timestamp('created_at').defaultTo(knex.fn.now()).notNullable();
-            table.timestamp('updated_at').defaultTo(knex.fn.now()).notNullable();
+            addTimestamps(table, knex);
         });
     }
 
-    const hasJobsTable = await knex.schema.hasTable('jobs_conciliacao');
-    if (!hasJobsTable) return;
+    const jobsExist = await knex.schema.hasTable('jobs_conciliacao');
+    if (!jobsExist) return;
 
-    const hasMapId = await knex.schema.hasColumn('jobs_conciliacao', 'config_mapeamento_id');
-    const hasMapNome = await knex.schema.hasColumn('jobs_conciliacao', 'config_mapeamento_nome');
+    const columnsToEnsure = [
+        { name: 'config_mapeamento_id', builder: (t) => t.integer('config_mapeamento_id').unsigned().nullable() },
+        { name: 'config_mapeamento_nome', builder: (t) => t.string('config_mapeamento_nome').nullable() }
+    ];
 
-    if (!hasMapId || !hasMapNome) {
-        await knex.schema.table('jobs_conciliacao', (table) => {
-            if (!hasMapId) table.integer('config_mapeamento_id').unsigned().nullable();
-            if (!hasMapNome) table.string('config_mapeamento_nome').nullable();
-        });
+    for (const col of columnsToEnsure) {
+        // eslint-disable-next-line no-await-in-loop
+        const exists = await knex.schema.hasColumn('jobs_conciliacao', col.name);
+        if (!exists) {
+            // eslint-disable-next-line no-await-in-loop
+            await knex.schema.table('jobs_conciliacao', (table) => col.builder(table));
+        }
     }
 };
 
-exports.down = async function (knex) {
-    const hasJobsTable = await knex.schema.hasTable('jobs_conciliacao');
-    if (hasJobsTable) {
-        const hasMapId = await knex.schema.hasColumn('jobs_conciliacao', 'config_mapeamento_id');
-        const hasMapNome = await knex.schema.hasColumn('jobs_conciliacao', 'config_mapeamento_nome');
-        if (hasMapId || hasMapNome) {
+exports.down = async function down(knex) {
+    const jobsExist = await knex.schema.hasTable('jobs_conciliacao');
+    if (jobsExist) {
+        const mapIdExists = await knex.schema.hasColumn('jobs_conciliacao', 'config_mapeamento_id');
+        const mapNomeExists = await knex.schema.hasColumn('jobs_conciliacao', 'config_mapeamento_nome');
+        if (mapIdExists || mapNomeExists) {
             await knex.schema.table('jobs_conciliacao', (table) => {
-                if (hasMapId) table.dropColumn('config_mapeamento_id');
-                if (hasMapNome) table.dropColumn('config_mapeamento_nome');
+                if (mapIdExists) table.dropColumn('config_mapeamento_id');
+                if (mapNomeExists) table.dropColumn('config_mapeamento_nome');
             });
         }
     }
 
-    const hasMappingTable = await knex.schema.hasTable('configs_mapeamento_bases');
-    if (hasMappingTable) {
+    const mappingExists = await knex.schema.hasTable('configs_mapeamento_bases');
+    if (mappingExists) {
         await knex.schema.dropTableIfExists('configs_mapeamento_bases');
     }
 };

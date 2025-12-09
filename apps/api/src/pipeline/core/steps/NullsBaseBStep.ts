@@ -1,55 +1,59 @@
 import { PipelineStep, PipelineContext } from '../index';
 import { Knex } from 'knex';
 
+/*
+    Nulls replacement for Base B (fiscal).
+    - numeric columns -> 0
+    - other columns -> 'NULL' (string)
+*/
+
+const IGNORED_COLUMNS = new Set(['id', 'created_at', 'updated_at']);
+
 export class NullsBaseBStep implements PipelineStep {
     name = 'NullsBaseB';
 
-    private db: Knex;
+    constructor(private readonly db: Knex) {}
 
-    constructor(db: Knex) {
-        this.db = db;
+    private isNumericColumn(type?: string | null): boolean {
+        if (!type) return false;
+        return /int|real|float|numeric|decimal|number/.test(type.toLowerCase());
+    }
+
+    private async updateNulls(tableName: string, column: string, replacement: any) {
+        await this.db.transaction(async trx => {
+            await trx(tableName).whereNull(column).orWhere(column, '').update({ [column]: replacement });
+        });
     }
 
     async execute(ctx: PipelineContext): Promise<void> {
-        const baseFiscalId = ctx.baseFiscalId;
-        if (!baseFiscalId) return;
+        const baseId = ctx.baseFiscalId;
+        if (!baseId) return;
 
-        const base = await this.db('bases').where({ id: baseFiscalId }).first();
+        const base = await this.db<BaseRow>('bases').where({ id: baseId }).first();
         if (!base || !base.tabela_sqlite) return;
-        const tableName: string = base.tabela_sqlite;
+        const tableName = base.tabela_sqlite as string;
 
-        const has = await this.db.schema.hasTable(tableName);
-        if (!has) return;
+        const exists = await this.db.schema.hasTable(tableName);
+        if (!exists) return;
 
         const colInfo = await this.db(tableName).columnInfo();
+        if (!colInfo) return;
 
-        for (const col of Object.keys(colInfo || {})) {
-            if (col === 'id' || col === 'created_at' || col === 'updated_at') continue;
-
+        const columns = Object.keys(colInfo).filter(c => !IGNORED_COLUMNS.has(c));
+        for (const col of columns) {
             const info = (colInfo as any)[col] || {};
-            const type: string = (info.type || '').toString().toLowerCase();
-            const isNumeric = /int|real|float|numeric|decimal|number/.test(type);
-
+            const type = info.type ? String(info.type) : '';
+            const numeric = this.isNumericColumn(type);
             try {
-                await this.db.transaction(async trx => {
-                    if (isNumeric) {
-                        await trx(tableName)
-                            .whereNull(col)
-                            .orWhere(col, '')
-                            .update({ [col]: 0 });
-                    } else {
-                        await trx(tableName)
-                            .whereNull(col)
-                            .orWhere(col, '')
-                            .update({ [col]: 'NULL' });
-                    }
-                });
+                await this.updateNulls(tableName, col, numeric ? 0 : 'NULL');
             } catch (err) {
                 // eslint-disable-next-line no-console
-                console.error(`NullsBaseB: failed processing column ${col} on ${tableName}:`, err);
+                console.error(`NullsBaseB: failed updating ${col} on ${tableName}:`, (err as Error).message ?? err);
             }
         }
     }
 }
+
+type BaseRow = { id: number; tabela_sqlite?: string | null };
 
 export default NullsBaseBStep;

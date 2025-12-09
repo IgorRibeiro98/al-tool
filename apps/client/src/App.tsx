@@ -1,10 +1,9 @@
-import { Toaster } from "@/components/ui/toaster";
-import { Toaster as Sonner } from "@/components/ui/sonner";
+import { Toaster as AppToaster } from "@/components/ui/toaster";
+import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, useLocation, useNavigate } from "react-router-dom";
 import { useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { fetchLicenseStatus } from '@/services/licenseService';
 import { Layout } from "@/components/Layout";
 import { ThemeProvider } from "next-themes";
@@ -38,27 +37,22 @@ const queryClient = new QueryClient();
 function LicenseGate(): null {
     const { pathname } = useLocation();
     const navigate = useNavigate();
+
     const { data, isLoading, isError } = useQuery<any>({
         queryKey: ['licenseStatus'],
-        queryFn: async () => {
-            return fetchLicenseStatus()
-                .then((res) => {
-                    return res.data;
-                }).catch((err) => {
-                    console.log('Error fetching license status:', err);
-                    return err;
-                });
+        queryFn: () => {
+            return fetchLicenseStatus().then((res) => res.data);
         },
-        staleTime: 10000,
+        staleTime: 10_000,
         retry: false,
         refetchOnWindowFocus: false,
     });
 
     useEffect(() => {
         if (isLoading) return;
-        // Allow any /license/* routes to render (activation/blocked pages)
+        // Allow any /license/* routes (activation/blocked pages) to render without redirect
         if (pathname.startsWith('/license')) return;
-        if (isError) return; // leave navigation as-is when status can't be fetched
+        if (isError) return; // cannot determine license — allow user to proceed
 
         const status = data?.status;
         if (!status || status === 'not_activated') {
@@ -70,8 +64,6 @@ function LicenseGate(): null {
             navigate('/license/blocked', { replace: true });
             return;
         }
-
-        // status === 'active' -> do nothing, allow app to proceed
     }, [isLoading, isError, data, pathname, navigate]);
 
     return null;
@@ -81,8 +73,8 @@ const App = () => (
     <ThemeProvider attribute="class" defaultTheme="system">
         <QueryClientProvider client={queryClient}>
             <TooltipProvider>
-                <Toaster />
-                <Sonner />
+                <AppToaster />
+                <SonnerToaster />
                 <BrowserRouter>
                     <LicenseGate />
                     <Routes>

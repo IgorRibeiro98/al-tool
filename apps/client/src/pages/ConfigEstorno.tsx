@@ -3,11 +3,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useEffect, useState } from 'react';
-import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
-import { fetchConfigsEstorno, updateConfigEstorno, deleteConfigEstorno } from '@/services/configsService';
-import { fetchBases, getBaseColumns } from '@/services/baseService';
-import { toast } from 'sonner';
+import { useCallback, useEffect, useState } from "react";
+import type { FC } from "react";
+import PageSkeletonWrapper from "@/components/PageSkeletonWrapper";
+import { fetchConfigsEstorno, updateConfigEstorno, deleteConfigEstorno } from "@/services/configsService";
+import { fetchBases, getBaseColumns } from "@/services/baseService";
+import { toast } from "sonner";
 import {
     AlertDialog,
     AlertDialogContent,
@@ -17,103 +18,184 @@ import {
     AlertDialogFooter,
     AlertDialogAction,
     AlertDialogCancel,
-} from '@/components/ui/alert-dialog';
+} from "@/components/ui/alert-dialog";
 
-const ConfigEstorno = () => {
+const SCOPE = "ConfigEstorno";
+const MSG_LOAD_FAILED = "Falha ao carregar configurações";
+const MSG_UPDATED = "Configuração atualizada";
+const MSG_REMOVED = "Configuração removida";
+
+type EstornoConfig = {
+    id: number;
+    nome?: string | null;
+    base_id?: number | null;
+    coluna_a?: string | null;
+    coluna_b?: string | null;
+    coluna_soma?: string | null;
+    limite_zero?: boolean | null;
+    ativa?: boolean;
+};
+
+type BaseItem = { id: number; nome?: string | null };
+type ColumnsMap = Record<string, string>;
+
+const buildBasesMap = (bases: BaseItem[]) =>
+    bases.reduce<Record<number, string>>((acc, b) => {
+        if (b?.id != null) acc[b.id] = b.nome ?? String(b.id);
+        return acc;
+    }, {});
+
+const fetchColumnsForBaseIds = async (ids: number[]) => {
+    const results: Record<number, ColumnsMap> = {};
+    await Promise.all(
+        ids.map(async (id) => {
+            try {
+                const res = await getBaseColumns(id);
+                const rows: any[] = res.data?.data ?? [];
+                results[id] = rows.reduce<ColumnsMap>((acc, r: any) => {
+                    if (r?.sqlite_name) acc[r.sqlite_name] = r.excel_name ?? r.sqlite_name;
+                    return acc;
+                }, {} as ColumnsMap);
+            } catch (err) {
+                // eslint-disable-next-line no-console
+                console.error(`${SCOPE} - failed to fetch columns for base ${id}`, err);
+                results[id] = {};
+            }
+        })
+    );
+    return results;
+};
+
+const formatColumnDisplay = (columnsByBase: Record<number, ColumnsMap>, baseId?: number | null, sqliteName?: string) => {
+    if (!sqliteName) return "-";
+    const map = columnsByBase[Number(baseId)] || {};
+    return map[sqliteName] ?? sqliteName;
+};
+
+const EstornoRow: FC<{
+    config: EstornoConfig;
+    baseLabel?: string;
+    columnsByBase: Record<number, ColumnsMap>;
+    onToggleActive: (c: EstornoConfig) => void;
+    onEdit: (id: number) => void;
+    onRequestDelete: (id: number) => void;
+}> = ({ config, baseLabel, columnsByBase, onToggleActive, onEdit, onRequestDelete }) => {
+    const colA = formatColumnDisplay(columnsByBase, config.base_id, config.coluna_a);
+    const colB = formatColumnDisplay(columnsByBase, config.base_id, config.coluna_b);
+    const colSum = formatColumnDisplay(columnsByBase, config.base_id, config.coluna_soma);
+
+    return (
+        <div className="flex items-center justify-between p-4 rounded-lg border hover:bg-muted/50 transition-colors">
+            <div className="flex-1 space-y-1">
+                <p className="font-medium">{config.nome}</p>
+                <div className="flex gap-4 text-sm text-muted-foreground">
+                    <span>
+                        Coluna A: <span className="font-mono">{colA}</span>
+                    </span>
+                    <span>
+                        Coluna B: <span className="font-mono">{colB}</span>
+                    </span>
+                    <span>
+                        Soma: <span className="font-mono">{colSum}</span>
+                    </span>
+                    <span>Limite Zero: {config.limite_zero ? "Sim" : "Não"}</span>
+                </div>
+                <p className="text-sm text-muted-foreground">{baseLabel ?? String(config.base_id ?? "-")}</p>
+            </div>
+            <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                    <Switch checked={!!config.ativa} onCheckedChange={() => onToggleActive(config)} />
+                    <span className="text-sm">{config.ativa ? "Ativa" : "Inativa"}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                    <Button variant="ghost" size="sm" onClick={() => onEdit(config.id)}>
+                        <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => onRequestDelete(config.id)}>
+                        <Trash2 className="h-4 w-4" />
+                    </Button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const ConfigEstorno: FC = () => {
     const navigate = useNavigate();
 
-    const [configs, setConfigs] = useState<any[]>([]);
+    const [configs, setConfigs] = useState<EstornoConfig[]>([]);
     const [basesMap, setBasesMap] = useState<Record<number, string>>({});
-    const [columnsByBase, setColumnsByBase] = useState<Record<number, Record<string, string>>>({});
-    const [loading, setLoading] = useState<boolean>(true);
+    const [columnsByBase, setColumnsByBase] = useState<Record<number, ColumnsMap>>({});
+    const [loading, setLoading] = useState(true);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
 
-    useEffect(() => {
-        let mounted = true;
+    const loadAll = useCallback(async () => {
         setLoading(true);
-        Promise.all([fetchConfigsEstorno(), fetchBases()])
-            .then(async ([cfgResp, basesResp]) => {
-                if (!mounted) return;
-                const cfgs = cfgResp.data || [];
-                setConfigs(cfgs);
-                const bases = basesResp.data.data || [];
-                const map: Record<number, string> = {};
-                bases.forEach((b: any) => { if (b.id) map[b.id] = b.nome ?? String(b.id); });
-                setBasesMap(map);
+        try {
+            const [cfgResp, basesResp] = await Promise.all([fetchConfigsEstorno(), fetchBases()]);
+            const cfgs: EstornoConfig[] = cfgResp.data ?? [];
+            setConfigs(cfgs);
 
-                const uniqueBaseIds = Array.from(new Set((cfgs || []).map((c: any) => c.base_id).filter((id: any) => id)));
-                if (uniqueBaseIds.length === 0) return;
+            const bases: BaseItem[] = basesResp.data?.data ?? [];
+            setBasesMap(buildBasesMap(bases));
 
-                const columnsResponses = await Promise.all(
-                    uniqueBaseIds.map(async (id: number) => {
-                        try {
-                            const res = await getBaseColumns(id);
-                            return { id, rows: res.data?.data || [] };
-                        } catch (err) {
-                            console.error('failed to fetch columns for base', id, err);
-                            return { id, rows: [] };
-                        }
-                    })
-                );
-
-                const nextColumns: Record<number, Record<string, string>> = {};
-                columnsResponses.forEach(({ id, rows }) => {
-                    const mapCols: Record<string, string> = {};
-                    rows.forEach((c: any) => {
-                        if (c?.sqlite_name) mapCols[c.sqlite_name] = c.excel_name ?? c.sqlite_name;
-                    });
-                    nextColumns[id] = mapCols;
-                });
-                setColumnsByBase(nextColumns);
-            })
-            .catch((err) => {
-                console.error('failed to load estorno configs', err);
-                toast.error('Falha ao carregar configurações');
-            })
-            .finally(() => { if (mounted) setLoading(false); });
-
-        return () => { mounted = false; };
+            const uniqueBaseIds = Array.from(new Set(cfgs.map((c) => Number(c.base_id)).filter(Boolean))) as number[];
+            if (uniqueBaseIds.length > 0) {
+                const cols = await fetchColumnsForBaseIds(uniqueBaseIds);
+                setColumnsByBase(cols);
+            }
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error(`${SCOPE} - failed to load data`, err);
+            toast.error(MSG_LOAD_FAILED);
+        } finally {
+            setLoading(false);
+        }
     }, []);
 
-    const toggleActive = async (cfg: any) => {
+    useEffect(() => {
+        loadAll();
+    }, [loadAll]);
+
+    const toggleActive = useCallback(async (cfg: EstornoConfig) => {
         const id = cfg.id;
+        setConfigs((cur) => cur.map((c) => (c.id === id ? { ...c, ativa: !c.ativa } : c)));
         try {
-            const updated = { ...cfg, ativa: !cfg.ativa };
-            await updateConfigEstorno(id, updated);
-            setConfigs((cur) => cur.map(c => c.id === id ? { ...c, ativa: !c.ativa } : c));
-            toast.success('Configuração atualizada');
+            await updateConfigEstorno(id, { ...cfg, ativa: !cfg.ativa });
+            toast.success(MSG_UPDATED);
         } catch (err) {
-            console.error('toggle failed', err);
+            // rollback
+            setConfigs((cur) => cur.map((c) => (c.id === id ? { ...c, ativa: !!cfg.ativa } : c)));
+            // eslint-disable-next-line no-console
+            console.error(`${SCOPE} - toggle failed`, err);
             toast.error('Falha ao atualizar configuração');
         }
-    };
+    }, []);
 
-    const confirmDelete = (id: number) => {
+    const requestDelete = useCallback((id: number) => {
         setPendingDeleteId(id);
         setDeleteDialogOpen(true);
-    };
+    }, []);
 
-    const handleDelete = async (id: number | null) => {
-        if (id === null) return;
+    const confirmDelete = useCallback(async () => {
+        const id = pendingDeleteId;
+        if (id == null) return;
         try {
             await deleteConfigEstorno(id);
-            setConfigs((cur) => cur.filter(c => c.id !== id));
-            toast.success('Configuração removida');
+            setConfigs((cur) => cur.filter((c) => c.id !== id));
+            toast.success(MSG_REMOVED);
         } catch (err) {
-            console.error('delete failed', err);
+            // eslint-disable-next-line no-console
+            console.error(`${SCOPE} - delete failed`, err);
             toast.error('Falha ao remover configuração');
         } finally {
             setDeleteDialogOpen(false);
             setPendingDeleteId(null);
         }
-    };
+    }, [pendingDeleteId]);
 
-    const resolveColumnName = (config: any, sqliteName?: string) => {
-        if (!sqliteName) return '-';
-        const map = columnsByBase[config.base_id] || {};
-        return map[sqliteName] || sqliteName;
-    };
+    const handleEdit = useCallback((id: number) => navigate(`/configs/estorno/${id}`), [navigate]);
 
     return (
         <PageSkeletonWrapper loading={loading}>
@@ -139,49 +221,39 @@ const ConfigEstorno = () => {
                                 <div className="text-sm text-muted-foreground">Carregando...</div>
                             ) : (
                                 configs.map((config) => (
-                                    <div
+                                    <EstornoRow
                                         key={config.id}
-                                        className="flex items-center justify-between p-4 rounded-lg border hover:bg-muted/50 transition-colors"
-                                    >
-                                        <div className="flex-1 space-y-1">
-                                            <p className="font-medium">{config.nome}</p>
-                                            <div className="flex gap-4 text-sm text-muted-foreground">
-                                                <span>Coluna A: <span className="font-mono">{resolveColumnName(config, config.coluna_a)}</span></span>
-                                                <span>Coluna B: <span className="font-mono">{resolveColumnName(config, config.coluna_b)}</span></span>
-                                                <span>Soma: <span className="font-mono">{resolveColumnName(config, config.coluna_soma)}</span></span>
-                                                <span>Limite Zero: {config.limite_zero ? "Sim" : "Não"}</span>
-                                            </div>
-                                            <p className="text-sm text-muted-foreground">{basesMap[config.base_id] ?? String(config.base_id ?? '-')}</p>
-                                        </div>
-                                        <div className="flex items-center gap-4">
-                                            <div className="flex items-center gap-2">
-                                                <Switch checked={config.ativa} onCheckedChange={() => toggleActive(config)} />
-                                                <span className="text-sm">{config.ativa ? "Ativa" : "Inativa"}</span>
-                                            </div>
-                                            <div className="flex items-center gap-2">
-                                                <Button variant="ghost" size="sm" onClick={() => navigate(`/configs/estorno/${config.id}`)}>
-                                                    <Pencil className="h-4 w-4" />
-                                                </Button>
-                                                <Button variant="ghost" size="sm" onClick={() => confirmDelete(config.id)}>
-                                                    <Trash2 className="h-4 w-4" />
-                                                </Button>
-                                            </div>
-                                        </div>
-                                    </div>
+                                        config={config}
+                                        baseLabel={config.base_id ? basesMap[Number(config.base_id)] : undefined}
+                                        columnsByBase={columnsByBase}
+                                        onToggleActive={toggleActive}
+                                        onEdit={handleEdit}
+                                        onRequestDelete={requestDelete}
+                                    />
                                 ))
                             )}
                         </div>
                     </CardContent>
                 </Card>
+
                 <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
                     <AlertDialogContent>
                         <AlertDialogHeader>
                             <AlertDialogTitle>Confirmação de Exclusão</AlertDialogTitle>
-                            <AlertDialogDescription>Deseja realmente deletar esta configuração? Esta ação não pode ser desfeita.</AlertDialogDescription>
+                            <AlertDialogDescription>
+                                Deseja realmente deletar esta configuração? Esta ação não pode ser desfeita.
+                            </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
-                            <AlertDialogCancel onClick={() => { setDeleteDialogOpen(false); setPendingDeleteId(null); }}>Cancelar</AlertDialogCancel>
-                            <AlertDialogAction onClick={() => handleDelete(pendingDeleteId)}>Excluir</AlertDialogAction>
+                            <AlertDialogCancel
+                                onClick={() => {
+                                    setDeleteDialogOpen(false);
+                                    setPendingDeleteId(null);
+                                }}
+                            >
+                                Cancelar
+                            </AlertDialogCancel>
+                            <AlertDialogAction onClick={confirmDelete}>Excluir</AlertDialogAction>
                         </AlertDialogFooter>
                     </AlertDialogContent>
                 </AlertDialog>

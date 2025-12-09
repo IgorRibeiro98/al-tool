@@ -1,129 +1,157 @@
 import db from '../db/knex';
+import type { Knex } from 'knex';
 
 export type JobStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED';
 
-export async function createJob(payload: Partial<any>) {
+export type JobsRow = {
+    id: number;
+    status?: JobStatus;
+    erro?: string | null;
+    arquivo_exportado?: string | null;
+    export_progress?: number | null;
+    export_status?: string | null;
+    pipeline_stage?: string | null;
+    pipeline_stage_label?: string | null;
+    pipeline_progress?: number | null;
+    created_at?: string;
+    updated_at?: string;
+    [key: string]: any;
+};
+
+function validateId(id: number) {
+    if (!Number.isInteger(id) || id <= 0) throw new TypeError('id must be a positive integer');
+}
+
+async function ensureTable(knexInstance?: Knex) {
+    const k = knexInstance ?? db;
+    const exists = await k.schema.hasTable('jobs_conciliacao');
+    if (!exists) {
+        throw new Error("Missing DB table 'jobs_conciliacao'. Run the API migrations to create required tables.");
+    }
+}
+
+async function addOptionalJobColumns(knexInstance?: Knex) {
+    const k = knexInstance ?? db;
+    await k.schema.table('jobs_conciliacao', t => {
+        try { t.string('arquivo_exportado').nullable(); } catch (_) { }
+        try { t.string('config_estorno_nome').nullable(); } catch (_) { }
+        try { t.string('config_cancelamento_nome').nullable(); } catch (_) { }
+        try { t.integer('config_mapeamento_id').unsigned().nullable(); } catch (_) { }
+        try { t.string('config_mapeamento_nome').nullable(); } catch (_) { }
+        try { t.integer('base_contabil_id_override').unsigned().nullable(); } catch (_) { }
+        try { t.integer('base_fiscal_id_override').unsigned().nullable(); } catch (_) { }
+    });
+}
+
+async function ensureColumnsAndRetryUpdate(knexInstance: Knex, id: number, update: Record<string, any>, columnHints: string[]) {
     try {
-        const [id] = await db('jobs_conciliacao').insert(payload);
-        return await db('jobs_conciliacao').where({ id }).first();
+        await knexInstance('jobs_conciliacao').where({ id }).update(update);
     } catch (err: any) {
-        // If DB schema is missing denormalized columns (e.g., config_estorno_nome), try to add them and retry.
+        const msg = err && (err.message || String(err)) || '';
+        const missing = columnHints.some(h => msg.includes(h) || /no such column/.test(msg) || /no column named/.test(msg));
+        if (missing) {
+            try {
+                await knexInstance.schema.table('jobs_conciliacao', t => {
+                    for (const col of columnHints) {
+                        try {
+                            // map known hints to column creations
+                            if (col === 'arquivo_exportado') t.string('arquivo_exportado').nullable();
+                            if (col === 'export_progress') t.integer('export_progress').nullable();
+                            if (col === 'export_status') t.string('export_status').nullable();
+                            if (col === 'pipeline_stage') t.string('pipeline_stage').nullable();
+                            if (col === 'pipeline_stage_label') t.string('pipeline_stage_label').nullable();
+                            if (col === 'pipeline_progress') t.integer('pipeline_progress').nullable();
+                        } catch (_) { }
+                    }
+                });
+                await knexInstance('jobs_conciliacao').where({ id }).update(update);
+            } catch (addErr) {
+                throw addErr;
+            }
+        } else {
+            throw err;
+        }
+    }
+}
+
+export async function createJob(payload: Record<string, any>, options?: { knex?: Knex }) {
+    const knex = options?.knex ?? db;
+    await ensureTable(knex);
+    try {
+        const result = await knex('jobs_conciliacao').insert(payload);
+        const id = Array.isArray(result) ? result[0] : result;
+        if (!id) throw new Error('Failed to insert job');
+        const row = (await knex('jobs_conciliacao').where({ id }).first()) as JobsRow | undefined;
+        return row ?? null;
+    } catch (err: any) {
         const msg = err && (err.message || String(err)) || '';
         if (msg.includes('no such column') || msg.includes('no column named') || /no such column:/.test(msg)) {
-            // attempt to add common optional columns used by newer code paths
             try {
-                await db.schema.table('jobs_conciliacao', t => {
-                    // add nullable textual columns if not present
-                    // use try/catch per column in case some already exist
-                    try { t.string('arquivo_exportado').nullable(); } catch (_) { }
-                    try { t.string('config_estorno_nome').nullable(); } catch (_) { }
-                    try { t.string('config_cancelamento_nome').nullable(); } catch (_) { }
-                    try { t.integer('config_mapeamento_id').unsigned().nullable(); } catch (_) { }
-                    try { t.string('config_mapeamento_nome').nullable(); } catch (_) { }
-                    try { t.integer('base_contabil_id_override').unsigned().nullable(); } catch (_) { }
-                    try { t.integer('base_fiscal_id_override').unsigned().nullable(); } catch (_) { }
-                });
-            } catch (addErr) {
-                // ignore and rethrow original error below
+                await addOptionalJobColumns(knex);
+            } catch (_) {
+                // ignore - will rethrow original error below
             }
-            // retry insert once
-            const [id2] = await db('jobs_conciliacao').insert(payload);
-            return await db('jobs_conciliacao').where({ id: id2 }).first();
+            const retry = await knex('jobs_conciliacao').insert(payload);
+            const id2 = Array.isArray(retry) ? retry[0] : retry;
+            const row = (await knex('jobs_conciliacao').where({ id: id2 }).first()) as JobsRow | undefined;
+            return row ?? null;
         }
         throw err;
     }
 }
 
-export async function updateJobStatus(id: number, status: JobStatus, error?: string) {
-    const update: any = { status, updated_at: db.fn.now() };
+export async function updateJobStatus(id: number, status: JobStatus, error?: string, options?: { knex?: Knex }) {
+    validateId(id);
+    const knex = options?.knex ?? db;
+    await ensureTable(knex);
+    const update: Record<string, any> = { status, updated_at: knex.fn.now() };
     if (error) update.erro = error;
-    await db('jobs_conciliacao').where({ id }).update(update);
-    return await db('jobs_conciliacao').where({ id }).first();
+    await knex('jobs_conciliacao').where({ id }).update(update);
+    const row = (await knex('jobs_conciliacao').where({ id }).first()) as JobsRow | undefined;
+    return row ?? null;
 }
 
-export async function getJobById(id: number) {
-    return await db('jobs_conciliacao').where({ id }).first();
+export async function getJobById(id: number, options?: { knex?: Knex }) {
+    validateId(id);
+    const knex = options?.knex ?? db;
+    await ensureTable(knex);
+    const row = (await knex('jobs_conciliacao').where({ id }).first()) as JobsRow | undefined;
+    return row ?? null;
 }
 
-export async function setJobExportPath(id: number, arquivoPath: string | null) {
-    const update: any = { arquivo_exportado: arquivoPath, updated_at: db.fn.now() };
-    try {
-        await db('jobs_conciliacao').where({ id }).update(update);
-    } catch (err: any) {
-        // If the column doesn't exist (older DB), attempt to add it and retry
-        const msg = err && (err.message || String(err)) || '';
-        if (msg.includes('no such column') || msg.includes('no column named') || /no such column: arquivo_exportado/.test(msg)) {
-            try {
-                await db.schema.table('jobs_conciliacao', t => {
-                    t.string('arquivo_exportado').nullable();
-                });
-                await db('jobs_conciliacao').where({ id }).update(update);
-            } catch (addErr) {
-                // rethrow the original error if adding column failed
-                throw addErr;
-            }
-        } else {
-            throw err;
-        }
-    }
-    return await db('jobs_conciliacao').where({ id }).first();
+export async function setJobExportPath(id: number, arquivoPath: string | null, options?: { knex?: Knex }) {
+    validateId(id);
+    const knex = options?.knex ?? db;
+    await ensureTable(knex);
+    const update: Record<string, any> = { arquivo_exportado: arquivoPath, updated_at: knex.fn.now() };
+    await ensureColumnsAndRetryUpdate(knex, id, update, ['arquivo_exportado']);
+    const row = (await knex('jobs_conciliacao').where({ id }).first()) as JobsRow | undefined;
+    return row ?? null;
 }
 
-export async function setJobExportProgress(id: number, progress: number | null, status?: string | null) {
-    const update: any = {};
+export async function setJobExportProgress(id: number, progress: number | null, status?: string | null, options?: { knex?: Knex }) {
+    validateId(id);
+    const knex = options?.knex ?? db;
+    await ensureTable(knex);
+    const update: Record<string, any> = { updated_at: knex.fn.now() };
     if (progress !== null && progress !== undefined) update.export_progress = progress;
     if (status !== undefined) update.export_status = status;
-    update.updated_at = db.fn.now();
-
-    try {
-        await db('jobs_conciliacao').where({ id }).update(update);
-    } catch (err: any) {
-        const msg = err && (err.message || String(err)) || '';
-        if (msg.includes('no such column') || msg.includes('no column named') || /no such column: export_progress/.test(msg) || /no such column: export_status/.test(msg)) {
-            try {
-                await db.schema.table('jobs_conciliacao', t => {
-                    try { t.integer('export_progress').nullable(); } catch (_) { }
-                    try { t.string('export_status').nullable(); } catch (_) { }
-                });
-                await db('jobs_conciliacao').where({ id }).update(update);
-            } catch (addErr) {
-                throw addErr;
-            }
-        } else {
-            throw err;
-        }
-    }
-
-    return await db('jobs_conciliacao').where({ id }).first();
+    await ensureColumnsAndRetryUpdate(knex, id, update, ['export_progress', 'export_status']);
+    const row = (await knex('jobs_conciliacao').where({ id }).first()) as JobsRow | undefined;
+    return row ?? null;
 }
 
-export async function setJobPipelineStage(id: number, stage: string | null, progress?: number | null, label?: string | null) {
-    const update: any = { updated_at: db.fn.now() };
+export async function setJobPipelineStage(id: number, stage: string | null, progress?: number | null, label?: string | null, options?: { knex?: Knex }) {
+    validateId(id);
+    const knex = options?.knex ?? db;
+    await ensureTable(knex);
+    const update: Record<string, any> = { updated_at: knex.fn.now() };
     if (stage !== undefined) update.pipeline_stage = stage;
     if (label !== undefined) update.pipeline_stage_label = label;
     if (progress !== undefined) update.pipeline_progress = progress;
-
-    try {
-        await db('jobs_conciliacao').where({ id }).update(update);
-    } catch (err: any) {
-        const msg = err && (err.message || String(err)) || '';
-        if (/pipeline_stage/.test(msg) || /pipeline_stage_label/.test(msg) || /pipeline_progress/.test(msg) || msg.includes('no such column')) {
-            try {
-                await db.schema.table('jobs_conciliacao', t => {
-                    try { t.string('pipeline_stage').nullable(); } catch (_) { }
-                    try { t.string('pipeline_stage_label').nullable(); } catch (_) { }
-                    try { t.integer('pipeline_progress').nullable(); } catch (_) { }
-                });
-                await db('jobs_conciliacao').where({ id }).update(update);
-            } catch (addErr) {
-                throw addErr;
-            }
-        } else {
-            throw err;
-        }
-    }
-
-    return await db('jobs_conciliacao').where({ id }).first();
+    await ensureColumnsAndRetryUpdate(knex, id, update, ['pipeline_stage', 'pipeline_stage_label', 'pipeline_progress']);
+    const row = (await knex('jobs_conciliacao').where({ id }).first()) as JobsRow | undefined;
+    return row ?? null;
 }
 
-export default { createJob, updateJobStatus, getJobById };
+export default { createJob, updateJobStatus, getJobById, setJobExportPath, setJobExportProgress, setJobPipelineStage };

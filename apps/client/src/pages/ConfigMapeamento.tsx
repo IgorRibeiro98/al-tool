@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Pencil, Trash2, Link2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -18,61 +18,135 @@ import {
     AlertDialogAction,
     AlertDialogCancel,
 } from '@/components/ui/alert-dialog';
+import type { FC } from 'react';
 
-const ConfigMapeamento = () => {
+const SCOPE = 'ConfigMapeamento';
+const MSG_LOAD_FAILED = 'Falha ao carregar configurações de mapeamento';
+const MSG_REMOVED = 'Configuração removida';
+
+type MappingPair = { coluna_contabil: string; coluna_fiscal: string };
+type ConfigMapeamento = {
+    id: number;
+    nome?: string | null;
+    base_contabil_id?: number | null;
+    base_fiscal_id?: number | null;
+    mapeamentos?: MappingPair[] | null;
+};
+
+type Base = { id: number; nome?: string | null };
+
+type ColumnsMap = Record<string, string>;
+
+const buildBasesMap = (bases: Base[]) =>
+    bases.reduce<Record<number, string>>((acc, b) => {
+        if (b?.id != null) acc[b.id] = b.nome ?? `Base ${b.id}`;
+        return acc;
+    }, {});
+
+const MapRow: FC<{
+    config: ConfigMapeamento;
+    baseLabels: Record<number, string>;
+    onEdit: (id: number) => void;
+    onRequestDelete: (id: number) => void;
+}> = ({ config, baseLabels, onEdit, onRequestDelete }) => {
+    const mappedCount = config.mapeamentos?.length ?? 0;
+    const preview = (config.mapeamentos ?? []).slice(0, 4);
+
+    return (
+        <div className="p-4 rounded-lg border hover:bg-muted/50 transition-colors">
+            <div className="flex items-start justify-between gap-4">
+                <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                        <Link2 className="h-4 w-4 text-muted-foreground" />
+                        <p className="font-semibold text-lg">{config.nome}</p>
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                        <span>Base Contábil: {baseLabels[Number(config.base_contabil_id)] ?? `#${config.base_contabil_id}`}</span>
+                        <span className="mx-2">•</span>
+                        <span>Base Fiscal: {baseLabels[Number(config.base_fiscal_id)] ?? `#${config.base_fiscal_id}`}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        <Badge variant="secondary">{mappedCount} colunas mapeadas</Badge>
+                    </div>
+                    {mappedCount > 0 && (
+                        <div className="flex flex-wrap gap-2 mt-2">
+                            {preview.map((pair) => (
+                                <Badge key={`${pair.coluna_contabil}-${pair.coluna_fiscal}`} variant="outline" className="font-mono text-xs">
+                                    {pair.coluna_contabil} → {pair.coluna_fiscal}
+                                </Badge>
+                            ))}
+                            {mappedCount > preview.length && <Badge variant="outline">+{mappedCount - preview.length}</Badge>}
+                        </div>
+                    )}
+                </div>
+
+                <div className="flex gap-2">
+                    <Button variant="ghost" size="icon" onClick={() => onEdit(config.id)} aria-label="Editar">
+                        <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button variant="ghost" size="icon" onClick={() => onRequestDelete(config.id)} aria-label="Excluir">
+                        <Trash2 className="h-4 w-4" />
+                    </Button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const ConfigMapeamento: FC = () => {
     const navigate = useNavigate();
+
     const [configs, setConfigs] = useState<ConfigMapeamento[]>([]);
     const [basesMap, setBasesMap] = useState<Record<number, string>>({});
     const [loading, setLoading] = useState(true);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
 
-    useEffect(() => {
-        let mounted = true;
-        const loadData = async () => {
-            setLoading(true);
-            try {
-                const [cfgResp, basesResp] = await Promise.all([fetchConfigsMapeamento(), fetchBases()]);
-                if (!mounted) return;
-                const cfgs = cfgResp.data || [];
-                const bases = basesResp.data?.data || basesResp.data || [];
-                setConfigs(cfgs as ConfigMapeamento[]);
-                const names: Record<number, string> = {};
-                (bases as Base[]).forEach((b) => { if (b.id) names[b.id] = b.nome ?? `Base ${b.id}`; });
-                setBasesMap(names);
-            } catch (err) {
-                console.error('failed to load mapping configs', err);
-                if (mounted) {
-                    toast.error('Falha ao carregar configurações de mapeamento');
-                    setConfigs([]);
-                }
-            } finally {
-                if (mounted) setLoading(false);
-            }
-        };
-        loadData();
-        return () => { mounted = false; };
+    const loadAll = useCallback(async () => {
+        setLoading(true);
+        try {
+            const [cfgResp, basesResp] = await Promise.all([fetchConfigsMapeamento(), fetchBases()]);
+            const cfgs: ConfigMapeamento[] = cfgResp.data ?? [];
+            setConfigs(cfgs);
+            const bases: Base[] = basesResp.data?.data ?? basesResp.data ?? [];
+            setBasesMap(buildBasesMap(bases));
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error(`${SCOPE} - failed to load mapping configs`, err);
+            toast.error(MSG_LOAD_FAILED);
+            setConfigs([]);
+        } finally {
+            setLoading(false);
+        }
     }, []);
 
-    const confirmDelete = (id: number) => {
+    useEffect(() => {
+        loadAll();
+    }, [loadAll]);
+
+    const requestDelete = useCallback((id: number) => {
         setPendingDeleteId(id);
         setDeleteDialogOpen(true);
-    };
+    }, []);
 
-    const handleDelete = async () => {
-        if (!pendingDeleteId) return;
+    const confirmDelete = useCallback(async () => {
+        const id = pendingDeleteId;
+        if (id == null) return;
         try {
-            await deleteConfigMapeamento(pendingDeleteId);
-            setConfigs((prev) => prev.filter((cfg) => cfg.id !== pendingDeleteId));
-            toast.success('Configuração removida');
+            await deleteConfigMapeamento(id);
+            setConfigs((prev) => prev.filter((cfg) => cfg.id !== id));
+            toast.success(MSG_REMOVED);
         } catch (err) {
-            console.error('failed to delete mapping config', err);
+            // eslint-disable-next-line no-console
+            console.error(`${SCOPE} - failed to delete mapping config`, err);
             toast.error('Falha ao excluir configuração');
         } finally {
             setDeleteDialogOpen(false);
             setPendingDeleteId(null);
         }
-    };
+    }, [pendingDeleteId]);
+
+    const handleEdit = useCallback((id: number) => navigate(`/configs/mapeamento/${id}`), [navigate]);
 
     return (
         <PageSkeletonWrapper loading={loading}>
@@ -98,44 +172,7 @@ const ConfigMapeamento = () => {
                         ) : (
                             <div className="space-y-4">
                                 {configs.map((config) => (
-                                    <div key={config.id} className="p-4 rounded-lg border hover:bg-muted/50 transition-colors">
-                                        <div className="flex items-start justify-between gap-4">
-                                            <div className="space-y-2">
-                                                <div className="flex items-center gap-2">
-                                                    <Link2 className="h-4 w-4 text-muted-foreground" />
-                                                    <p className="font-semibold text-lg">{config.nome}</p>
-                                                </div>
-                                                <div className="text-sm text-muted-foreground">
-                                                    <span>Base Contábil: {basesMap[config.base_contabil_id] ?? `#${config.base_contabil_id}`}</span>
-                                                    <span className="mx-2">•</span>
-                                                    <span>Base Fiscal: {basesMap[config.base_fiscal_id] ?? `#${config.base_fiscal_id}`}</span>
-                                                </div>
-                                                <div className="flex flex-wrap gap-2">
-                                                    <Badge variant="secondary">{config.mapeamentos?.length ?? 0} colunas mapeadas</Badge>
-                                                </div>
-                                                {config.mapeamentos && config.mapeamentos.length > 0 && (
-                                                    <div className="flex flex-wrap gap-2 mt-2">
-                                                        {config.mapeamentos.slice(0, 4).map((pair) => (
-                                                            <Badge key={`${pair.coluna_contabil}-${pair.coluna_fiscal}`} variant="outline" className="font-mono text-xs">
-                                                                {pair.coluna_contabil} → {pair.coluna_fiscal}
-                                                            </Badge>
-                                                        ))}
-                                                        {config.mapeamentos.length > 4 && (
-                                                            <Badge variant="outline">+{config.mapeamentos.length - 4}</Badge>
-                                                        )}
-                                                    </div>
-                                                )}
-                                            </div>
-                                            <div className="flex gap-2">
-                                                <Button variant="ghost" size="icon" onClick={() => navigate(`/configs/mapeamento/${config.id}`)} aria-label="Editar">
-                                                    <Pencil className="h-4 w-4" />
-                                                </Button>
-                                                <Button variant="ghost" size="icon" onClick={() => confirmDelete(config.id)} aria-label="Excluir">
-                                                    <Trash2 className="h-4 w-4" />
-                                                </Button>
-                                            </div>
-                                        </div>
-                                    </div>
+                                    <MapRow key={config.id} config={config} baseLabels={basesMap} onEdit={handleEdit} onRequestDelete={requestDelete} />
                                 ))}
                             </div>
                         )}
@@ -149,8 +186,15 @@ const ConfigMapeamento = () => {
                             <AlertDialogDescription>Essa ação removerá o mapeamento selecionado e não poderá ser desfeita.</AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
-                            <AlertDialogCancel onClick={() => { setDeleteDialogOpen(false); setPendingDeleteId(null); }}>Cancelar</AlertDialogCancel>
-                            <AlertDialogAction onClick={handleDelete}>Excluir</AlertDialogAction>
+                            <AlertDialogCancel
+                                onClick={() => {
+                                    setDeleteDialogOpen(false);
+                                    setPendingDeleteId(null);
+                                }}
+                            >
+                                Cancelar
+                            </AlertDialogCancel>
+                            <AlertDialogAction onClick={confirmDelete}>Excluir</AlertDialogAction>
                         </AlertDialogFooter>
                     </AlertDialogContent>
                 </AlertDialog>

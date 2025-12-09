@@ -50,6 +50,29 @@ const BASE_B_STYLES = {
     rowColor2: 'FFD9D9D9',
 };
 
+const LOG_PREFIX = '[conciliacao-export]';
+const ZIP_COMPRESSION_LEVEL = 9;
+const WORKBOOK_OPTIONS = { useStyles: true, useSharedStrings: true } as const;
+
+function createWorkbookWriter(filePath: string) {
+    return new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, ...WORKBOOK_OPTIONS });
+}
+
+function styleHeaderRow(row: ExcelJS.Row, headerColor: string) {
+    row.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' } } as any;
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: headerColor } } as any;
+        cell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
+    });
+    row.commit();
+}
+
+function applyAlternateRowShading(row: ExcelJS.Row, isEven: boolean, color: string) {
+    if (!isEven) return;
+    const fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: color } } as any;
+    row.eachCell((cell) => { cell.fill = fill; });
+}
+
 function parseChaves(raw: any): Record<string, string[]> {
     try {
         const parsed = raw ? JSON.parse(raw) : {};
@@ -98,7 +121,7 @@ export async function exportJobResultToXlsx(jobId: number) {
     await fs.mkdir(EXPORT_DIR, { recursive: true });
     const filename = `conciliacao_${jobId}.xlsx`;
     const filePath = path.join(EXPORT_DIR, filename);
-    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, useStyles: true, useSharedStrings: true });
+    const workbook = createWorkbookWriter(filePath);
     const sheet = workbook.addWorksheet('resultado');
 
     const baseHeaders = ['id', 'chave', 'status', 'grupo', 'a_row_id', 'b_row_id', 'value_a', 'value_b', 'difference', 'a_values', 'b_values', 'created_at'];
@@ -106,16 +129,7 @@ export async function exportJobResultToXlsx(jobId: number) {
 
     // header styling (use neutral header from Base A colors)
     const headerRow = sheet.addRow(finalHeaders);
-    headerRow.eachCell((cell) => {
-        cell.font = { bold: true, color: { argb: BASE_A_STYLES.header === undefined ? 'FFFFFFFF' : 'FFFFFFFF' } } as any;
-        cell.fill = {
-            type: 'pattern',
-            pattern: 'solid',
-            fgColor: { argb: BASE_A_STYLES.header },
-        } as any;
-        cell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
-    });
-    headerRow.commit();
+    styleHeaderRow(headerRow, BASE_A_STYLES.header);
 
     // stream rows from DB
     const query = db.select('*').from(resultTable).orderBy('id', 'asc');
@@ -139,15 +153,7 @@ export async function exportJobResultToXlsx(jobId: number) {
             for (const kid of keyIdentifiers) rowArr.push(r[kid] ?? null);
 
             const excelRow = sheet.addRow(rowArr);
-            if ((rowIndex % 2) === 0) {
-                excelRow.eachCell((cell) => {
-                    cell.fill = {
-                        type: 'pattern',
-                        pattern: 'solid',
-                        fgColor: { argb: 'FFF2F2F2' },
-                    } as any;
-                });
-            }
+            applyAlternateRowShading(excelRow, (rowIndex % 2) === 0, 'FFF2F2F2');
             excelRow.commit();
             rowIndex += 1;
         }
@@ -451,7 +457,7 @@ async function buildSheetFileForBase(params: {
     await fs.mkdir(EXPORT_DIR, { recursive: true });
     const fileName = `${side === 'A' ? 'Base_A' : 'Base_B'}_${jobId}.xlsx`;
     const filePath = path.join(EXPORT_DIR, fileName);
-    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, useStyles: true, useSharedStrings: true });
+    const workbook = createWorkbookWriter(filePath);
     const sheet = workbook.addWorksheet(side === 'A' ? 'Base_A' : 'Base_B');
     const baseHeaders = meta.columns.map((col) => col.header);
     const finalHeaders = baseHeaders.concat(keyHeaders, EXTRA_FINAL_HEADERS);
@@ -459,16 +465,7 @@ async function buildSheetFileForBase(params: {
     // Add styled header row (stream-safe): style before commit
     const headerRow = sheet.addRow(finalHeaders);
     const styles = side === 'A' ? BASE_A_STYLES : BASE_B_STYLES;
-    headerRow.eachCell((cell) => {
-        cell.font = { bold: true, color: { argb: 'FFFFFFFF' } } as any;
-        cell.fill = {
-            type: 'pattern',
-            pattern: 'solid',
-            fgColor: { argb: styles.header },
-        } as any;
-        cell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
-    });
-    headerRow.commit();
+    styleHeaderRow(headerRow, styles.header);
 
     let rowIndex = 2; // starting after header
     try {
@@ -488,12 +485,8 @@ async function buildSheetFileForBase(params: {
                 rowArr.push(row.grupo ?? null);
 
                 const excelRow = sheet.addRow(rowArr);
-                // alternating row shading: even rows get a light fill specific to the base
                 const isEven = (rowIndex % 2) === 0;
-                if (isEven) {
-                    const rowFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: styles.rowColor2 } } as any;
-                    excelRow.eachCell((cell) => { cell.fill = rowFill; });
-                }
+                applyAlternateRowShading(excelRow, isEven, styles.rowColor2);
                 excelRow.commit();
                 rowIndex += 1;
             }
@@ -519,23 +512,14 @@ async function buildCombinedWorkbook(params: {
     await fs.mkdir(EXPORT_DIR, { recursive: true });
     const fileName = `Base_Comparativo_${jobId}.xlsx`;
     const filePath = path.join(EXPORT_DIR, fileName);
-    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, useStyles: true, useSharedStrings: true });
+    const workbook = createWorkbookWriter(filePath);
     const sheetResultado = workbook.addWorksheet('Resultado');
     const baseHeaders = metaA.columns.map((col) => col.header);
     const finalHeaders = baseHeaders.concat(keyHeaders, EXTRA_FINAL_HEADERS);
 
     // styled header row for combined sheet (use Base A header color)
     const headerRow = sheetResultado.addRow(finalHeaders);
-    headerRow.eachCell((cell) => {
-        cell.font = { bold: true, color: { argb: 'FFFFFFFF' } } as any;
-        cell.fill = {
-            type: 'pattern',
-            pattern: 'solid',
-            fgColor: { argb: BASE_A_STYLES.header },
-        } as any;
-        cell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
-    });
-    headerRow.commit();
+    styleHeaderRow(headerRow, BASE_A_STYLES.header);
 
     let rowIndex = 2;
     try {
@@ -555,11 +539,7 @@ async function buildCombinedWorkbook(params: {
                 rowArr.push(row.grupo ?? null);
 
                 const excelRow = sheetResultado.addRow(rowArr);
-                // apply Base A alternating shading
-                if ((rowIndex % 2) === 0) {
-                    const rowFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BASE_A_STYLES.rowColor2 } } as any;
-                    excelRow.eachCell((cell) => { cell.fill = rowFill; });
-                }
+                applyAlternateRowShading(excelRow, (rowIndex % 2) === 0, BASE_A_STYLES.rowColor2);
                 excelRow.commit();
                 rowIndex += 1;
             }

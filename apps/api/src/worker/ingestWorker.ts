@@ -1,9 +1,38 @@
 import db from '../db/knex';
 import * as ingestRepo from '../repos/ingestJobsRepository';
 import path from 'path';
-import { fork } from 'child_process';
+import { fork, ChildProcess } from 'child_process';
 
 const DEFAULT_INTERVAL_SECONDS = Number(process.env.WORKER_POLL_SECONDS || 5);
+const LOG_PREFIX = '[ingestWorker]';
+
+type IngestJobRow = ingestRepo.IngestJobRow;
+
+async function fetchOldestPendingIngestJob(): Promise<IngestJobRow | null> {
+    const job = await db<IngestJobRow>('ingest_jobs').where({ status: 'PENDING' }).orderBy('created_at', 'asc').first();
+    return job || null;
+}
+
+async function claimIngestJob(jobId: number): Promise<boolean> {
+    const updated = await db('ingest_jobs').where({ id: jobId, status: 'PENDING' }).update({ status: 'RUNNING', updated_at: db.fn.now() });
+    return Boolean(updated);
+}
+
+function runnerScriptPath(): { script: string; useTsNode: boolean } {
+    const isProd = process.env.NODE_ENV === 'production';
+    if (isProd) return { script: path.resolve(__dirname, 'ingestRunner.js'), useTsNode: false };
+    return { script: path.resolve(__dirname, 'ingestRunner.ts'), useTsNode: true };
+}
+
+function spawnIngestRunner(jobId: number): ChildProcess {
+    const { script, useTsNode } = runnerScriptPath();
+    if (useTsNode) return fork(script, [String(jobId)], { stdio: 'inherit', execArgv: ['-r', 'ts-node/register'] });
+    return fork(script, [String(jobId)], { stdio: 'inherit' });
+}
+
+function safeUpdateStatus(jobId: number, status: ingestRepo.IngestJobStatus, message?: string) {
+    return ingestRepo.updateJobStatus(jobId, status, message || '').catch((err) => console.warn(`${LOG_PREFIX} Failed to update status for job ${jobId}`, err));
+}
 
 export function startIngestWorker(intervalSeconds = DEFAULT_INTERVAL_SECONDS) {
     let running = false;
@@ -12,45 +41,33 @@ export function startIngestWorker(intervalSeconds = DEFAULT_INTERVAL_SECONDS) {
         if (running) return;
         running = true;
         try {
-            const job: any = await db('ingest_jobs').where({ status: 'PENDING' }).orderBy('created_at', 'asc').first();
-            if (!job) { running = false; return; }
+            const job = await fetchOldestPendingIngestJob();
+            if (!job) return;
 
-            const claimed = await db('ingest_jobs').where({ id: job.id, status: 'PENDING' }).update({ status: 'RUNNING', updated_at: db.fn.now() });
-            if (!claimed) { running = false; return; }
+            const jobId = job.id;
+            const claimed = await claimIngestJob(jobId);
+            if (!claimed) return;
 
-            const jobId = job.id as number;
+            let child: ChildProcess;
             try {
-                const isProd = process.env.NODE_ENV === 'production';
-                let child: any;
-                if (isProd) {
-                    const prodRunner = path.resolve(__dirname, 'ingestRunner.js');
-                    child = fork(prodRunner, [String(jobId)], { stdio: 'inherit' });
-                } else {
-                    const runnerPath = path.resolve(__dirname, 'ingestRunner.ts');
-                    child = fork(runnerPath, [String(jobId)], {
-                        stdio: 'inherit',
-                        execArgv: ['-r', 'ts-node/register']
-                    });
-                }
-
-                child.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
-                    if (code !== 0) {
-                        console.error(`ingestRunner exited with code ${code} signal ${signal} for job ${jobId}`);
-                    } else {
-                        console.log(`ingestRunner completed for job ${jobId}`);
-                    }
-                });
-
-                child.on('error', (err: any) => {
-                    console.error('Failed to spawn ingestRunner child process', err);
-                    ingestRepo.updateJobStatus(jobId, 'FAILED', 'Failed to spawn ingest runner').catch(e => console.error(e));
-                });
-            } catch (err: any) {
-                console.error('Error while spawning ingest runner for job', jobId, err);
-                await ingestRepo.updateJobStatus(jobId, 'FAILED', String(err?.message || err));
+                child = spawnIngestRunner(jobId);
+            } catch (err) {
+                console.error(`${LOG_PREFIX} Error while spawning ingest runner for job ${jobId}`, err);
+                await safeUpdateStatus(jobId, 'FAILED', String((err as Error).message || err));
+                return;
             }
-        } catch (err: any) {
-            console.error('Ingest worker tick error', err);
+
+            child.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
+                if (code !== 0) console.error(`${LOG_PREFIX} ingestRunner exited with code ${code} signal ${signal} for job ${jobId}`);
+                else console.log(`${LOG_PREFIX} ingestRunner completed for job ${jobId}`);
+            });
+
+            child.on('error', (err: Error) => {
+                console.error(`${LOG_PREFIX} Failed to spawn ingestRunner child process for job ${jobId}`, err);
+                void safeUpdateStatus(jobId, 'FAILED', 'Failed to spawn ingest runner');
+            });
+        } catch (err) {
+            console.error(`${LOG_PREFIX} Ingest worker tick error`, err);
         } finally {
             running = false;
         }

@@ -2,9 +2,7 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { fileStorage } from '../infra/storage/FileStorage';
 import db from '../db/knex';
-import ExcelIngestService from '../services/ExcelIngestService';
 import * as ingestRepo from '../repos/ingestJobsRepository';
-import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs/promises';
 
@@ -41,6 +39,48 @@ async function ensureIngestDirectory() {
     }
 }
 
+function parseIdParam(req: Request): { ok: boolean; id?: number; error?: string } {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) return { ok: false, error: 'Invalid id' };
+    return { ok: true, id };
+}
+
+async function findBaseById(id: number) {
+    return await db('bases').where({ id }).first();
+}
+
+async function getLatestJobMapForBaseIds(baseIds: number[]) {
+    const map = new Map<number, any>();
+    if (!baseIds.length) return map;
+    const latestIds = await db('ingest_jobs')
+        .whereIn('base_id', baseIds)
+        .groupBy('base_id')
+        .select('base_id')
+        .max('id as id');
+
+    const idList = latestIds.map((j: any) => j.id).filter(Boolean);
+    if (!idList.length) return map;
+
+    const jobs = await db('ingest_jobs')
+        .whereIn('id', idList)
+        .select('id', 'base_id', 'status', 'erro', 'created_at', 'updated_at');
+
+    for (const job of jobs) map.set(job.base_id, job);
+    return map;
+}
+
+async function safeCountTableRows(tableName: string) {
+    try {
+        const raw = await db.raw(`select count(1) as cnt from "${tableName}"`);
+        // knex returns different shapes depending on dialect; normalize
+        const row = Array.isArray(raw) ? raw[0] : raw;
+        const cnt = row && (row.cnt ?? row[0]?.cnt ?? row.count);
+        return Number(cnt ?? 0);
+    } catch (_) {
+        return null;
+    }
+}
+
 // GET /bases - list with pagination and optional filters
 router.get('/', async (req: Request, res: Response) => {
     try {
@@ -52,30 +92,11 @@ router.get('/', async (req: Request, res: Response) => {
         if (tipo) qb.where('tipo', tipo);
         if (periodo) qb.where('periodo', periodo);
 
-        const [{ count }] = await db.count('* as count').from(qb.clone().as('sub')) as any[];
-
+        const [{ count }] = (await db.count('* as count').from(qb.clone().as('sub'))) as any[];
         const rows = await qb.offset((page - 1) * pageSize).limit(pageSize);
 
         const baseIds = rows.map((r: any) => r.id).filter(Boolean);
-        const latestJobByBase = new Map<number, any>();
-        if (baseIds.length > 0) {
-            const latestIds = await db('ingest_jobs')
-                .whereIn('base_id', baseIds)
-                .groupBy('base_id')
-                .select('base_id')
-                .max('id as id');
-
-            const idList = latestIds.map((j: any) => j.id).filter(Boolean);
-            if (idList.length) {
-                const jobs = await db('ingest_jobs')
-                    .whereIn('id', idList)
-                    .select('id', 'base_id', 'status', 'erro', 'created_at', 'updated_at');
-                for (const job of jobs) {
-                    if (!job) continue;
-                    latestJobByBase.set(job.base_id, job);
-                }
-            }
-        }
+        const latestJobByBase = await getLatestJobMapForBaseIds(baseIds);
 
         const enriched = rows.map((r: any) => {
             const latestJob = latestJobByBase.get(r.id) || null;
@@ -101,40 +122,27 @@ router.get('/', async (req: Request, res: Response) => {
 // GET /bases/:id - details for a single base
 router.get('/:id', async (req: Request, res: Response) => {
     try {
-        const id = Number(req.params.id);
-        if (Number.isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
+        const parsed = parseIdParam(req);
+        if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+        const id = parsed.id as number;
 
-        const base = await db('bases').where({ id }).first();
+        const base = await findBaseById(id);
         if (!base) return res.status(404).json({ error: 'Base not found' });
 
         const result: any = { ...base };
-        // attach latest ingest job info (if any)
-        try {
-            const latest = await db('ingest_jobs').where({ base_id: id }).orderBy('id', 'desc').first();
-            if (latest) {
-                result.ingest_job = latest;
-                result.ingest_status = latest.status;
-                result.ingest_in_progress = latest.status === 'PENDING' || latest.status === 'RUNNING';
-            } else {
-                result.ingest_job = null;
-                result.ingest_status = null;
-                result.ingest_in_progress = false;
-            }
-        } catch (e) {
+        const latest = await db('ingest_jobs').where({ base_id: id }).orderBy('id', 'desc').first();
+        if (latest) {
+            result.ingest_job = latest;
+            result.ingest_status = latest.status;
+            result.ingest_in_progress = latest.status === 'PENDING' || latest.status === 'RUNNING';
+        } else {
             result.ingest_job = null;
             result.ingest_status = null;
             result.ingest_in_progress = false;
         }
+
         if (base.tabela_sqlite) {
-            // try to count rows in the table if it exists
-            try {
-                const [{ cnt }] = await db.raw(`select count(1) as cnt from "${base.tabela_sqlite}"`)
-                    .then((r: any) => r && r); // knex returns different shapes per dialect
-                result.rowCount = Number(cnt ?? ((r: any) => r));
-            } catch (e) {
-                // ignore count errors
-                result.rowCount = null;
-            }
+            result.rowCount = await safeCountTableRows(base.tabela_sqlite);
         }
 
         res.json(result);
@@ -146,10 +154,11 @@ router.get('/:id', async (req: Request, res: Response) => {
 
 router.get('/:id/columns', async (req: Request, res: Response) => {
     try {
-        const id = Number(req.params.id);
-        if (Number.isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
+        const parsed = parseIdParam(req);
+        if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+        const id = parsed.id as number;
 
-        const base = await db('bases').where({ id }).first();
+        const base = await findBaseById(id);
         if (!base) return res.status(404).json({ error: 'Base not found' });
 
         const cols = await db('base_columns')
@@ -162,14 +171,12 @@ router.get('/:id/columns', async (req: Request, res: Response) => {
         console.error(err);
         res.status(400).json({ error: 'Erro ao obter base' });
     }
-})
+});
 
 router.post('/', upload.array('arquivo'), async (req: Request, res: Response) => {
     try {
         const files = (req.files || []) as Express.Multer.File[];
-        if (!files.length) {
-            return res.status(400).json({ error: 'Pelo menos um arquivo deve ser enviado.' });
-        }
+        if (!files.length) return res.status(400).json({ error: 'Pelo menos um arquivo deve ser enviado.' });
 
         const tipos = forceArray<string>(req.body.tipo as any);
         const nomes = forceArray<string>(req.body.nome as any);
@@ -189,23 +196,18 @@ router.post('/', upload.array('arquivo'), async (req: Request, res: Response) =>
             const headerLinhaValue = pickValue(headerLinhas, index);
             const headerColunaValue = pickValue(headerColunas, index);
 
-            if (!tipoValue || !['CONTABIL', 'FISCAL'].includes(tipoValue)) {
+            if (!tipoValue || !['CONTABIL', 'FISCAL'].includes(tipoValue))
                 return res.status(400).json({ error: `Campo "tipo" inválido para o arquivo ${file.originalname}. Use CONTABIL ou FISCAL.` });
-            }
-            if (!nomeValue) {
-                return res.status(400).json({ error: `Campo "nome" é obrigatório para o arquivo ${file.originalname}.` });
-            }
+            if (!nomeValue) return res.status(400).json({ error: `Campo "nome" é obrigatório para o arquivo ${file.originalname}.` });
 
-            const savedPath = await fileStorage.saveFile(file.buffer, file.originalname || 'upload.bin');
+            const savedPath = await fileStorage.save(file.buffer, file.originalname || 'upload.bin');
 
             const header_linha_inicial = Number(headerLinhaValue || 1);
             const header_coluna_inicial = Number(headerColunaValue || 1);
-            if (Number.isNaN(header_linha_inicial) || header_linha_inicial < 1) {
+            if (Number.isNaN(header_linha_inicial) || header_linha_inicial < 1)
                 return res.status(400).json({ error: `Campo "header_linha_inicial" inválido para o arquivo ${file.originalname}` });
-            }
-            if (Number.isNaN(header_coluna_inicial) || header_coluna_inicial < 1) {
+            if (Number.isNaN(header_coluna_inicial) || header_coluna_inicial < 1)
                 return res.status(400).json({ error: `Campo "header_coluna_inicial" inválido para o arquivo ${file.originalname}` });
-            }
 
             const [id] = await db('bases').insert({
                 tipo: tipoValue,
@@ -233,12 +235,12 @@ router.post('/', upload.array('arquivo'), async (req: Request, res: Response) =>
 
 router.post('/:id/ingest', async (req: Request, res: Response) => {
     try {
-        const id = Number(req.params.id);
-        if (Number.isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
+        const parsed = parseIdParam(req);
+        if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+        const id = parsed.id as number;
 
-        // create an ingest job to be processed by background worker
         const job = await ingestRepo.createJob({ base_id: id, status: 'PENDING' });
-        res.status(202).json({ jobId: job.id, status: job.status });
+        res.status(202).json({ jobId: job?.id ?? null, status: job?.status ?? null });
     } catch (err: any) {
         console.error(err);
         res.status(400).json({ error: err.message || 'Enqueue ingest failed' });
@@ -248,10 +250,11 @@ router.post('/:id/ingest', async (req: Request, res: Response) => {
 // DELETE /bases/:id - remove base, its metadata, files and sqlite table
 router.delete('/:id', async (req: Request, res: Response) => {
     try {
-        const id = Number(req.params.id);
-        if (Number.isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
+        const parsed = parseIdParam(req);
+        if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+        const id = parsed.id as number;
 
-        const base = await db('bases').where({ id }).first();
+        const base = await findBaseById(id);
         if (!base) return res.status(404).json({ error: 'Base not found' });
 
         // attempt to drop the sqlite table if present
@@ -264,10 +267,8 @@ router.delete('/:id', async (req: Request, res: Response) => {
             }
         }
 
-        // remove base_columns metadata
+        // remove base_columns metadata and ingest jobs (best-effort)
         try { await db('base_columns').where({ base_id: id }).del(); } catch (e) { }
-
-        // remove ingest jobs for this base
         try { await db('ingest_jobs').where({ base_id: id }).del(); } catch (e) { }
 
         // attempt to delete stored files (arquivo_caminho, arquivo_jsonl_path)
@@ -286,7 +287,6 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
         // finally remove base row
         await db('bases').where({ id }).del();
-
         return res.json({ success: true });
     } catch (err: any) {
         console.error(err);
@@ -297,15 +297,13 @@ router.delete('/:id', async (req: Request, res: Response) => {
 // GET /bases/:id/preview - return columns and first N rows from the ingested table
 router.get('/:id/preview', async (req: Request, res: Response) => {
     try {
-        const id = Number(req.params.id);
-        if (Number.isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
+        const parsed = parseIdParam(req);
+        if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+        const id = parsed.id as number;
 
-        const base = await db('bases').where({ id }).first();
+        const base = await findBaseById(id);
         if (!base) return res.status(404).json({ error: 'Base not found' });
-
-        if (!base.tabela_sqlite) {
-            return res.status(400).json({ error: 'Base not yet ingested (tabela_sqlite is null)' });
-        }
+        if (!base.tabela_sqlite) return res.status(400).json({ error: 'Base not yet ingested (tabela_sqlite is null)' });
 
         const tableName = base.tabela_sqlite;
         const exists = await db.schema.hasTable(tableName);

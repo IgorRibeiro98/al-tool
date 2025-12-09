@@ -1,20 +1,32 @@
-import { SidebarProvider } from "@/components/ui/sidebar";
-import { AppSidebar } from "@/components/AppSidebar";
-import { AppHeader } from "@/components/AppHeader";
-import { Outlet } from "react-router-dom";
+import React, { FC } from 'react';
+import { SidebarProvider } from '@/components/ui/sidebar';
+import { AppSidebar } from '@/components/AppSidebar';
+import { AppHeader } from '@/components/AppHeader';
+import { Outlet } from 'react-router-dom';
 
-export function Layout() {
-    return (
-        <SidebarProvider>
-            <div className="min-h-screen flex w-full">
-                <AppSidebar />
-                <div className="flex-1 flex flex-col">
-                    <AppHeader />
-                    <main className="flex-1 p-6">
-                        <Outlet />
-                    </main>
-                </div>
+type LayoutProps = {
+    children?: React.ReactNode;
+    className?: string;
+};
+
+const LAYOUT_WRAPPER = 'min-h-screen flex w-full';
+const CONTENT_COLUMN = 'flex-1 flex flex-col';
+const MAIN_CLASS = 'flex-1 p-6';
+
+export const Layout: FC<LayoutProps> = ({ children, className }) => {
+    const content = (
+        <div className={LAYOUT_WRAPPER + (className ? ` ${className}` : '')}>
+            <AppSidebar />
+            <div className={CONTENT_COLUMN}>
+                <AppHeader />
+                <main className={MAIN_CLASS} role="main">
+                    {children ?? <Outlet />}
+                </main>
             </div>
-        </SidebarProvider>
+        </div>
     );
-}
+
+    return <SidebarProvider>{content}</SidebarProvider>;
+};
+
+export default Layout;

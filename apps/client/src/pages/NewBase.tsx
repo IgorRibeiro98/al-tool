@@ -5,7 +5,7 @@ import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, For
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ArrowLeft, Plus, Trash2, Upload } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { toast } from "sonner";
 import { createBases } from '@/services/baseService';
 import { useForm, useFieldArray } from 'react-hook-form';
@@ -62,7 +62,20 @@ const NewBase = () => {
 
     const acceptMime = useMemo(() => ['.xlsx', '.xls', '.csv', '.xlsb'], []);
 
-    const addBaseRow = () => {
+    const renderFileInfo = useCallback((index: number) => {
+        const currentFile = selectedFiles[index] as File | undefined;
+        if (currentFile) {
+            return <p className="text-sm font-medium">{currentFile.name}</p>;
+        }
+        return (
+            <>
+                <p className="text-sm font-medium">Clique ou arraste um arquivo</p>
+                <p className="text-xs text-muted-foreground mt-1">Formatos aceitos: .xlsx, .xls, .csv, .xlsb</p>
+            </>
+        );
+    }, [selectedFiles]);
+
+    const addBaseRow = useCallback(() => {
         append({
             tipo: undefined as any,
             nome: '',
@@ -71,19 +84,26 @@ const NewBase = () => {
             header_linha_inicial: 1,
             header_coluna_inicial_letter: 'A',
         });
-    };
+    }, [append]);
 
-    const onSubmit = async (values: FormValues) => {
+    const mountedRef = useRef(true);
+    useEffect(() => {
+        mountedRef.current = true;
+        return () => { mountedRef.current = false; };
+    }, []);
+
+    const letterToNumber = useCallback((l: string) => {
+        if (!l) return 1;
+        const base = 'A'.charCodeAt(0);
+        const c = String(l).toUpperCase().charCodeAt(0);
+        if (Number.isNaN(c)) return 1;
+        if (c < base) return 1;
+        if (c > 'Z'.charCodeAt(0)) return 1;
+        return c - base + 1;
+    }, []);
+
+    const onSubmit = useCallback(async (values: FormValues) => {
         const fd = new FormData();
-        const letterToNumber = (l: string) => {
-            const base = 'A'.charCodeAt(0);
-            const c = l.toUpperCase().charCodeAt(0);
-            if (Number.isNaN(c)) return 1;
-            if (c < base) return 1;
-            if (c > 'Z'.charCodeAt(0)) return 1;
-            return c - base + 1;
-        };
-
         values.bases.forEach((base) => {
             fd.append('tipo', base.tipo);
             fd.append('nome', base.nome);
@@ -99,15 +119,15 @@ const NewBase = () => {
             const createdList: Base[] = resp?.data?.data ?? resp?.data ?? [];
             const total = Array.isArray(createdList) ? createdList.length : 1;
             toast.success(`${total} base(s) cadastrada(s) com sucesso!`);
-            navigate('/bases');
+            if (mountedRef.current) navigate('/bases');
         } catch (err: any) {
             console.error('create base failed', err);
             const msg = err?.response?.data?.error || err?.message || 'Erro ao cadastrar base';
             toast.error(msg);
         } finally {
-            setSubmitting(false);
+            if (mountedRef.current) setSubmitting(false);
         }
-    };
+    }, [navigate, letterToNumber]);
 
     return (
         <div className="space-y-6">
@@ -226,18 +246,7 @@ const NewBase = () => {
                                                         />
                                                         <label htmlFor={`arquivo-${index}`} className="cursor-pointer">
                                                             <Upload className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
-                                                            {(() => {
-                                                                const currentFile = selectedFiles[index] as File | undefined;
-                                                                if (currentFile) {
-                                                                    return <p className="text-sm font-medium">{currentFile.name}</p>;
-                                                                }
-                                                                return (
-                                                                    <>
-                                                                        <p className="text-sm font-medium">Clique ou arraste um arquivo</p>
-                                                                        <p className="text-xs text-muted-foreground mt-1">Formatos aceitos: .xlsx, .xls, .csv</p>
-                                                                    </>
-                                                                );
-                                                            })()}
+                                                            {renderFileInfo(index)}
                                                         </label>
                                                     </div>
                                                 </FormControl>

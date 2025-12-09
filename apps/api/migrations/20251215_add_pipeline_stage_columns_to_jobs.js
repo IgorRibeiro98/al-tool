@@ -1,39 +1,31 @@
 /**
- * Add pipeline stage tracking columns to jobs_conciliacao
+ * Add pipeline stage tracking columns to `jobs_conciliacao`.
  */
+const COLUMNS = [
+    { name: 'pipeline_stage', builder: (t) => t.string('pipeline_stage').nullable() },
+    { name: 'pipeline_stage_label', builder: (t) => t.string('pipeline_stage_label').nullable() },
+    { name: 'pipeline_progress', builder: (t) => t.integer('pipeline_progress').nullable() }
+];
+
 exports.up = async function up(knex) {
-    const hasTable = await knex.schema.hasTable('jobs_conciliacao');
-    if (!hasTable) return;
+    const tableExists = await knex.schema.hasTable('jobs_conciliacao');
+    if (!tableExists) return;
 
-    const ensureColumn = async (columnName, builderFn) => {
-        const exists = await knex.schema.hasColumn('jobs_conciliacao', columnName);
+    for (const col of COLUMNS) {
+        // eslint-disable-next-line no-await-in-loop
+        const exists = await knex.schema.hasColumn('jobs_conciliacao', col.name);
         if (!exists) {
-            await knex.schema.table('jobs_conciliacao', (table) => {
-                builderFn(table);
-            });
+            // eslint-disable-next-line no-await-in-loop
+            await knex.schema.table('jobs_conciliacao', (table) => col.builder(table));
         }
-    };
-
-    await ensureColumn('pipeline_stage', (table) => {
-        table.string('pipeline_stage').nullable();
-    });
-
-    await ensureColumn('pipeline_stage_label', (table) => {
-        table.string('pipeline_stage_label').nullable();
-    });
-
-    await ensureColumn('pipeline_progress', (table) => {
-        table.integer('pipeline_progress').nullable();
-    });
+    }
 };
 
 exports.down = async function down(knex) {
-    const hasTable = await knex.schema.hasTable('jobs_conciliacao');
-    if (!hasTable) return;
+    const tableExists = await knex.schema.hasTable('jobs_conciliacao');
+    if (!tableExists) return;
 
     await knex.schema.table('jobs_conciliacao', (table) => {
-        table.dropColumn('pipeline_stage');
-        table.dropColumn('pipeline_stage_label');
-        table.dropColumn('pipeline_progress');
+        for (const col of COLUMNS) table.dropColumn(col.name);
     });
 };

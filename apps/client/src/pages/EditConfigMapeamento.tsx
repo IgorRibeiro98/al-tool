@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { z } from 'zod';
 import { useForm } from 'react-hook-form';
@@ -25,6 +25,11 @@ const schema = z.object({
     path: ['baseFiscalId']
 });
 
+// Local types for clarity
+type Base = { id: number | string; nome?: string; tipo?: string };
+// Avoid re-declaring project BaseColumn type to prevent type conflicts
+type ConfigMapeamento = any;
+
 type FormValues = z.infer<typeof schema>;
 
 const EditConfigMapeamento = () => {
@@ -33,8 +38,8 @@ const EditConfigMapeamento = () => {
     const numericId = id ? Number(id) : NaN;
 
     const [bases, setBases] = useState<Base[]>([]);
-    const [baseAColumns, setBaseAColumns] = useState<BaseColumn[]>([]);
-    const [baseBColumns, setBaseBColumns] = useState<BaseColumn[]>([]);
+    const [baseAColumns, setBaseAColumns] = useState<any[]>([]);
+    const [baseBColumns, setBaseBColumns] = useState<any[]>([]);
     const [pairsForBuild, setPairsForBuild] = useState<Array<{ coluna_contabil: string; coluna_fiscal: string }>>([]);
     const [mappingState, setMappingState] = useState<MappingState>({});
     const [loading, setLoading] = useState(true);
@@ -42,6 +47,16 @@ const EditConfigMapeamento = () => {
     const [loadingColsA, setLoadingColsA] = useState(false);
     const [loadingColsB, setLoadingColsB] = useState(false);
     const [loadedConfig, setLoadedConfig] = useState<ConfigMapeamento | null>(null);
+
+    const MSG = useMemo(() => ({
+        INVALID_CONFIG: 'Configuração inválida',
+        LOAD_FAIL: 'Falha ao carregar configuração',
+        LOAD_COLS_A_FAIL: 'Falha ao carregar colunas contábeis',
+        LOAD_COLS_B_FAIL: 'Falha ao carregar colunas fiscais',
+        SAVE_SUCCESS: 'Configuração atualizada',
+        SAVE_FAIL: 'Falha ao atualizar configuração',
+        NEED_MAPPING: 'Defina ao menos um mapeamento',
+    }), []);
 
     const form = useForm<FormValues>({
         resolver: zodResolver(schema),
@@ -54,7 +69,7 @@ const EditConfigMapeamento = () => {
     useEffect(() => {
         let mounted = true;
         if (!numericId) {
-            toast.error('Configuração inválida');
+            toast.error(MSG.INVALID_CONFIG);
             navigate('/configs/mapeamento');
             return;
         }
@@ -75,12 +90,34 @@ const EditConfigMapeamento = () => {
             })
             .catch((err) => {
                 console.error('failed to load mapping config', err);
-                toast.error('Falha ao carregar configuração');
+                toast.error(MSG.LOAD_FAIL);
                 navigate('/configs/mapeamento');
             })
             .finally(() => { if (mounted) setLoading(false); });
         return () => { mounted = false; };
     }, [numericId, form, navigate]);
+
+    const mapColumns = useCallback((rows: any[]) => (rows || []).map((c: any) => ({ excel_name: c.excel_name, sqlite_name: c.sqlite_name, col_index: c.col_index })), []);
+
+    const loadColumnsForBase = useCallback(async (baseId: string | number | undefined, setter: (cols: any[]) => void, setLoading: (v: boolean) => void, failMsg?: string) => {
+        if (!baseId) {
+            setter([]);
+            return;
+        }
+        const idNum = Number(baseId);
+        if (!idNum || Number.isNaN(idNum)) return setter([]);
+        setLoading(true);
+        try {
+            const res = await getBaseColumns(idNum);
+            const cols = res.data?.data || res.data || [];
+            setter(mapColumns(cols));
+        } catch (e) {
+            if (failMsg) toast.error(failMsg);
+            setter([]);
+        } finally {
+            setLoading(false);
+        }
+    }, [mapColumns]);
 
     useEffect(() => {
         if (!watchBaseA) {
@@ -88,18 +125,8 @@ const EditConfigMapeamento = () => {
             setMappingState({});
             return;
         }
-        setLoadingColsA(true);
-        getBaseColumns(watchBaseA)
-            .then((res) => {
-                const cols = res.data?.data || res.data || [];
-                setBaseAColumns(cols as BaseColumn[]);
-            })
-            .catch(() => {
-                toast.error('Falha ao carregar colunas contábeis');
-                setBaseAColumns([]);
-            })
-            .finally(() => setLoadingColsA(false));
-    }, [watchBaseA]);
+        loadColumnsForBase(watchBaseA, setBaseAColumns, setLoadingColsA, MSG.LOAD_COLS_A_FAIL);
+    }, [watchBaseA, loadColumnsForBase, MSG]);
 
     useEffect(() => {
         if (!watchBaseB) {
@@ -107,18 +134,8 @@ const EditConfigMapeamento = () => {
             setMappingState({});
             return;
         }
-        setLoadingColsB(true);
-        getBaseColumns(watchBaseB)
-            .then((res) => {
-                const cols = res.data?.data || res.data || [];
-                setBaseBColumns(cols as BaseColumn[]);
-            })
-            .catch(() => {
-                toast.error('Falha ao carregar colunas fiscais');
-                setBaseBColumns([]);
-            })
-            .finally(() => setLoadingColsB(false));
-    }, [watchBaseB]);
+        loadColumnsForBase(watchBaseB, setBaseBColumns, setLoadingColsB, MSG.LOAD_COLS_B_FAIL);
+    }, [watchBaseB, loadColumnsForBase, MSG]);
 
     useEffect(() => {
         if (!watchBaseA || !watchBaseB) {
@@ -147,15 +164,15 @@ const EditConfigMapeamento = () => {
     const contabilBases = useMemo(() => bases.filter((b) => b.tipo === 'CONTABIL'), [bases]);
     const fiscalBases = useMemo(() => bases.filter((b) => b.tipo === 'FISCAL'), [bases]);
 
-    const handleMappingChange = (column: string, target: string | null) => {
+    const handleMappingChange = useCallback((column: string, target: string | null) => {
         setMappingState((prev) => ({ ...prev, [column]: target }));
-    };
+    }, []);
 
-    const onSubmit = async (values: FormValues) => {
+    const onSubmit = useCallback(async (values: FormValues) => {
         if (!numericId) return;
         const serialized = serializeMappingState(mappingState);
         if (serialized.length === 0) {
-            toast.error('Defina ao menos um mapeamento');
+            toast.error(MSG.NEED_MAPPING);
             return;
         }
         setSaving(true);
@@ -166,15 +183,15 @@ const EditConfigMapeamento = () => {
                 base_fiscal_id: values.baseFiscalId,
                 mapeamentos: serialized,
             });
-            toast.success('Configuração atualizada');
+            toast.success(MSG.SAVE_SUCCESS);
             navigate('/configs/mapeamento');
         } catch (err: any) {
             console.error('update mapping config failed', err);
-            toast.error(err?.response?.data?.error || 'Falha ao atualizar configuração');
+            toast.error(err?.response?.data?.error || MSG.SAVE_FAIL);
         } finally {
             setSaving(false);
         }
-    };
+    }, [numericId, mappingState, navigate, MSG]);
 
     const mappingEntries = Object.entries(mappingState);
     const mappingEnabled = baseAColumns.length > 0 && baseBColumns.length > 0;

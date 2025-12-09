@@ -1,14 +1,19 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Trash } from "lucide-react";
-import { useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft, Trash } from 'lucide-react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import { getBase, fetchBasePreview, getBaseColumns, deleteBase } from '@/services/baseService';
 import { toast } from 'sonner';
 import { StatusChip } from '@/components/StatusChip';
-import { getConversionStatusMeta, getIngestStatusMeta, isConversionStatusActive, isIngestStatusActive } from '@/lib/baseStatus';
+import {
+    getConversionStatusMeta,
+    getIngestStatusMeta,
+    isConversionStatusActive,
+    isIngestStatusActive,
+} from '@/lib/baseStatus';
 import {
     AlertDialog,
     AlertDialogContent,
@@ -20,17 +25,31 @@ import {
     AlertDialogCancel,
 } from '@/components/ui/alert-dialog';
 
-const truncate = (value?: string | null, maxLength = 200) => {
+const POLL_INTERVAL_MS = 5000;
+const PREVIEW_CONTAINER_MAX_HEIGHT = '48vh';
+const PREVIEW_CONTAINER_MAX_WIDTH = '80vw';
+const PREVIEW_MAX_DISPLAY_COLUMNS = 200;
+
+const truncate = (value?: string | null, maxLength = 200): string | null => {
     if (!value) return null;
     return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 };
+
+function formatDateOrDash(date?: string | null): string {
+    if (!date) return '-';
+    try {
+        return new Date(date).toLocaleDateString('pt-BR');
+    } catch {
+        return '-';
+    }
+}
 
 const BaseDetails = () => {
     const navigate = useNavigate();
     const { id } = useParams();
     const [base, setBase] = useState<Base | null>(null);
     const [preview, setPreview] = useState<BasePreview | null>(null);
-    const [baseColumns, setBaseColumns] = useState<any[] | null>(null);
+    const [baseColumns, setBaseColumns] = useState<BaseColumn[] | null>(null);
     const [loading, setLoading] = useState(false);
     const [previewLoading, setPreviewLoading] = useState(false);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -38,66 +57,56 @@ const BaseDetails = () => {
     const pollRef = useRef<number | null>(null);
     const lastBaseRef = useRef<Base | null>(null);
 
-    const loadPreviewAndColumns = useCallback(async (baseId: number) => {
-        setPreviewLoading(true);
-        try {
-            const [previewRes, colsRes] = await Promise.all([
-                fetchBasePreview(baseId),
-                getBaseColumns(baseId)
-            ]);
-            setPreview(previewRes.data);
-            setBaseColumns(colsRes.data.data ?? []);
-        } catch (err) {
-            console.error('Failed to refresh base preview', err);
-            toast.error('Falha ao atualizar preview da base');
-        } finally {
-            setPreviewLoading(false);
-        }
-    }, []);
+        const loadPreviewAndColumns = useCallback(async (baseId: number) => {
+            setPreviewLoading(true);
+            try {
+                const [previewRes, colsRes] = await Promise.all([fetchBasePreview(baseId), getBaseColumns(baseId)]);
+                setPreview(previewRes.data);
+                setBaseColumns(colsRes.data.data ?? []);
+            } catch (err) {
+                console.error('Failed to refresh base preview', err);
+                toast.error('Falha ao atualizar preview da base');
+            } finally {
+                setPreviewLoading(false);
+            }
+        }, []);
 
-    const loadBaseData = useCallback(async (options?: { includePreview?: boolean; silentError?: boolean }) => {
-        if (!id) return null;
-        const numId = Number(id);
-        const { includePreview = false, silentError = false } = options || {};
-        if (includePreview) setLoading(true);
-        try {
-            if (includePreview) {
-                const baseRes = await getBase(numId);
-                setBase(baseRes.data);
-                lastBaseRef.current = baseRes.data;
+        const loadBaseData = useCallback(
+            async (options?: { includePreview?: boolean; silentError?: boolean }) => {
+                if (!id) return null;
+                const numId = Number(id);
+                const { includePreview = false, silentError = false } = options || {};
+                if (includePreview) setLoading(true);
 
-                if (baseRes.data.tabela_sqlite) {
-                    const [previewRes, colsRes] = await Promise.all([
-                        fetchBasePreview(numId),
-                        getBaseColumns(numId)
-                    ]);
-                    setPreview(previewRes.data);
-                    setBaseColumns(colsRes.data.data ?? []);
-                } else {
-                    setPreview(null);
-                    setBaseColumns([]);
+                try {
+                    const baseRes = await getBase(numId);
+                    const previous = lastBaseRef.current;
+                    setBase(baseRes.data);
+                    lastBaseRef.current = baseRes.data;
+
+                    if (includePreview && baseRes.data.tabela_sqlite) {
+                        await loadPreviewAndColumns(numId);
+                    } else if (includePreview) {
+                        setPreview(null);
+                        setBaseColumns([]);
+                    }
+
+                    if (!previous?.tabela_sqlite && baseRes.data.tabela_sqlite) {
+                        toast.success('Ingestão concluída. Atualizando preview...');
+                        await loadPreviewAndColumns(numId);
+                    }
+
+                    return baseRes.data;
+                } catch (err) {
+                    console.error('Failed to load base details', err);
+                    if (!silentError) toast.error('Falha ao carregar detalhes da base');
+                    return null;
+                } finally {
+                    if (includePreview) setLoading(false);
                 }
-
-                return baseRes.data;
-            }
-
-            const baseRes = await getBase(numId);
-            const previous = lastBaseRef.current;
-            setBase(baseRes.data);
-            lastBaseRef.current = baseRes.data;
-            if (!previous?.tabela_sqlite && baseRes.data.tabela_sqlite) {
-                toast.success('Ingestão concluída. Atualizando preview...');
-                await loadPreviewAndColumns(numId);
-            }
-            return baseRes.data;
-        } catch (err) {
-            console.error('Failed to load base details', err);
-            if (!silentError) toast.error('Falha ao carregar detalhes da base');
-            return null;
-        } finally {
-            if (includePreview) setLoading(false);
-        }
-    }, [id, loadPreviewAndColumns]);
+            },
+            [id, loadPreviewAndColumns]
+        );
 
     useEffect(() => {
         loadBaseData({ includePreview: true });
@@ -105,31 +114,100 @@ const BaseDetails = () => {
 
     const shouldPoll = !!base && (isConversionStatusActive(base.conversion_status) || isIngestStatusActive(base));
 
-    useEffect(() => {
-        if (!id) return;
-        if (!shouldPoll) {
-            if (pollRef.current) {
-                clearInterval(pollRef.current);
-                pollRef.current = null;
+        useEffect(() => {
+            if (!id) return;
+            if (!shouldPoll) {
+                if (pollRef.current) {
+                    clearInterval(pollRef.current);
+                    pollRef.current = null;
+                }
+                return;
             }
-            return;
+
+            const interval = window.setInterval(() => {
+                loadBaseData({ silentError: true });
+            }, POLL_INTERVAL_MS);
+            pollRef.current = interval;
+
+            return () => {
+                clearInterval(interval);
+                pollRef.current = null;
+            };
+        }, [id, shouldPoll, loadBaseData]);
+
+        const conversionMeta = getConversionStatusMeta(base?.conversion_status);
+        const ingestMeta = getIngestStatusMeta(base ?? undefined);
+        const conversionError = base?.conversion_status === 'FAILED' ? truncate(base?.conversion_error) : null;
+        const ingestError = base?.ingest_status === 'FAILED' ? truncate(base?.ingest_job?.erro) : null;
+
+        const handleDelete = useCallback(async () => {
+            if (!pendingDelete) return;
+            try {
+                await deleteBase(pendingDelete);
+                toast.success('Base deletada');
+                navigate('/bases');
+            } catch (e) {
+                console.error('Delete base failed', e);
+                toast.error('Falha ao deletar base');
+            } finally {
+                setDeleteDialogOpen(false);
+                setPendingDelete(null);
+            }
+        }, [pendingDelete, navigate]);
+
+        function InfoBlock({ title, children }: { title: string; children: React.ReactNode }) {
+            return (
+                <div className="rounded-lg border p-3 flex flex-col gap-2 bg-muted/20">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">{title}</p>
+                    {children}
+                </div>
+            );
         }
 
-        const interval = window.setInterval(() => {
-            loadBaseData({ silentError: true });
-        }, 5000);
-        pollRef.current = interval;
-
-        return () => {
-            clearInterval(interval);
-            pollRef.current = null;
-        };
-    }, [id, shouldPoll, loadBaseData]);
-
-    const conversionMeta = getConversionStatusMeta(base?.conversion_status);
-    const ingestMeta = getIngestStatusMeta(base ?? undefined);
-    const conversionError = base?.conversion_status === 'FAILED' ? truncate(base?.conversion_error) : null;
-    const ingestError = base?.ingest_status === 'FAILED' ? truncate(base?.ingest_job?.erro) : null;
+        function renderPreviewTable() {
+            if (!preview) return null;
+            return (
+                <div className="rounded-md border overflow-auto" style={{ maxHeight: PREVIEW_CONTAINER_MAX_HEIGHT, maxWidth: PREVIEW_CONTAINER_MAX_WIDTH }}>
+                    <table className="min-w-max text-sm">
+                        <thead className="border-b bg-muted/50">
+                            <tr>
+                                {preview.columns.slice(0, PREVIEW_MAX_DISPLAY_COLUMNS).map((col) => {
+                                    const found = baseColumns?.find((bc) => bc.sqlite_name === col);
+                                    const label = found ? (found.excel_name || col) : col;
+                                    return (
+                                        <th key={col} className="px-4 py-3 text-left font-medium">
+                                            {label}
+                                        </th>
+                                    );
+                                })}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {Array.isArray(preview.rows) && preview.rows.length === 0 && (
+                                <tr>
+                                    <td className="p-4">Nenhuma linha</td>
+                                </tr>
+                            )}
+                            {preview.rows.map((row: any, idx: number) => (
+                                <tr key={idx} className="border-b hover:bg-muted/50 transition-colors">
+                                    {Array.isArray(row)
+                                        ? row.map((cell: any, i: number) => (
+                                                <td key={i} className="px-4 py-3">
+                                                    {String(cell ?? '')}
+                                                </td>
+                                            ))
+                                        : preview.columns.map((col) => (
+                                                <td key={col} className="px-4 py-3">
+                                                    {String(row[col] ?? '')}
+                                                </td>
+                                            ))}
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            );
+        }
 
     return (
         <PageSkeletonWrapper loading={loading}>

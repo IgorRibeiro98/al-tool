@@ -2,9 +2,9 @@ import { MetricCard } from "@/components/MetricCard";
 import { StatusChip } from "@/components/StatusChip";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Database, CheckCircle2, XCircle, PlayCircle, Plus, Eraser, Trash } from "lucide-react";
+import { Database, CheckCircle2, PlayCircle, Plus, Eraser, Trash } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchBases } from '@/services/baseService';
 import { fetchConciliacoes } from '@/services/conciliacaoService';
 import { fetchConfigsConciliacao, fetchConfigsEstorno, fetchConfigsCancelamento, fetchConfigsMapeamento } from '@/services/configsService';
@@ -21,7 +21,40 @@ import {
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-const Dashboard = () => {
+const SCOPE = 'Dashboard';
+const DAYS_30_MS = 30 * 24 * 60 * 60 * 1000;
+const MSG_CLEANUP_FAILED = 'Falha ao executar limpeza';
+const MSG_CLEANUP_STORAGE_FAILED = 'Falha ao limpar arquivos';
+const MSG_CLEANUP_DONE = 'Limpeza concluída';
+const MSG_CLEANUP_STORAGE_DONE = 'Limpeza de arquivos concluída';
+
+const formatDateOrEmpty = (d?: string | null) => {
+    if (!d) return '';
+    try {
+        return new Date(d).toLocaleDateString('pt-BR');
+    } catch {
+        return '';
+    }
+};
+
+const JobRow = ({ job, onView }: { job: JobConciliacao; onView: (id: number) => void }) => (
+    <div
+        key={job.id}
+        className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50 transition-colors cursor-pointer"
+        onClick={() => onView(job.id)}
+    >
+        <div className="flex-1">
+            <p className="font-medium">{job.nome || `Job ${job.id}`}</p>
+            <p className="text-sm text-muted-foreground">Config: {job.config_conciliacao_id}</p>
+        </div>
+        <div className="flex items-center gap-4">
+            <span className="text-sm text-muted-foreground">{formatDateOrEmpty(job.created_at)}</span>
+            <StatusChip status={(job.status || 'PENDING') as any} />
+        </div>
+    </div>
+);
+
+const Dashboard: React.FC = () => {
     const navigate = useNavigate();
 
     const [bases, setBases] = useState<Base[]>([]);
@@ -35,94 +68,98 @@ const Dashboard = () => {
     const [confirmCleanupOpen, setConfirmCleanupOpen] = useState(false);
     const [confirmCleanupStorageOpen, setConfirmCleanupStorageOpen] = useState(false);
 
-    useEffect(() => {
-        let mounted = true;
-        fetchBases().then((r: any) => {
-            if (!mounted) return;
-            const data = r.data?.data || r.data || [];
-            setBases(data as Base[]);
-        }).catch(() => setBases([]));
+    const loadAll = useCallback(async () => {
+        try {
+            const [basesRes, jobsRes, cfgCRes, cfgERes, cfgCancRes, cfgMapRes] = await Promise.all([
+                fetchBases(),
+                fetchConciliacoes(),
+                fetchConfigsConciliacao(),
+                fetchConfigsEstorno(),
+                fetchConfigsCancelamento(),
+                fetchConfigsMapeamento(),
+            ]);
 
-        fetchConciliacoes().then((r: any) => {
-            if (!mounted) return;
-            const data = r.data?.data || r.data || [];
-            setConciliacoes(data as JobConciliacao[]);
-        }).catch(() => setConciliacoes([]));
+            const basesData = basesRes.data?.data || basesRes.data || [];
+            const jobsData = jobsRes.data?.data || jobsRes.data || [];
+            const cfgCData = cfgCRes.data?.data || cfgCRes.data || [];
+            const cfgEData = cfgERes.data?.data || cfgERes.data || [];
+            const cfgCancData = cfgCancRes.data?.data || cfgCancRes.data || [];
+            const cfgMapData = cfgMapRes.data?.data || cfgMapRes.data || [];
 
-        fetchConfigsConciliacao().then((r: any) => {
-            if (!mounted) return;
-            const data = r.data?.data || r.data || [];
-            setConfigsConciliacao(data as ConfigConciliacao[]);
-        }).catch(() => setConfigsConciliacao([]));
-
-        fetchConfigsEstorno().then((r: any) => {
-            if (!mounted) return;
-            const data = r.data?.data || r.data || [];
-            setConfigsEstorno(data as ConfigEstorno[]);
-        }).catch(() => setConfigsEstorno([]));
-
-        fetchConfigsCancelamento().then((r: any) => {
-            if (!mounted) return;
-            const data = r.data?.data || r.data || [];
-            setConfigsCancelamento(data as ConfigCancelamento[]);
-        }).catch(() => setConfigsCancelamento([]));
-
-        fetchConfigsMapeamento().then((r: any) => {
-            if (!mounted) return;
-            const data = r.data?.data || r.data || [];
-            setConfigsMapeamento(data as ConfigMapeamento[]);
-        }).catch(() => setConfigsMapeamento([]));
-
-        return () => { mounted = false; };
+            setBases(basesData as Base[]);
+            setConciliacoes(jobsData as JobConciliacao[]);
+            setConfigsConciliacao(cfgCData as ConfigConciliacao[]);
+            setConfigsEstorno(cfgEData as ConfigEstorno[]);
+            setConfigsCancelamento(cfgCancData as ConfigCancelamento[]);
+            setConfigsMapeamento(cfgMapData as ConfigMapeamento[]);
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error(`${SCOPE} - failed to load dashboard data`, err);
+            // best-effort: clear affected states
+            setBases([]);
+            setConciliacoes([]);
+            setConfigsConciliacao([]);
+            setConfigsEstorno([]);
+            setConfigsCancelamento([]);
+            setConfigsMapeamento([]);
+        }
     }, []);
 
-    const contabilCount = bases.filter(b => b.tipo === 'CONTABIL').length;
-    const fiscalCount = bases.filter(b => b.tipo === 'FISCAL').length;
-    const totalConciliacoes = conciliacoes.length;
-    const runningJobs = conciliacoes.filter(j => j.status === 'RUNNING').length;
-    const basesNotIngested = bases.filter(b => !b.tabela_sqlite).length;
-    const totalConfigs = configsConciliacao.length + configsEstorno.length + configsCancelamento.length + configsMapeamento.length;
+    useEffect(() => {
+        loadAll();
+    }, [loadAll]);
 
-    const recentJobs = conciliacoes.slice(0, 6);
-
-    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const contabilIngestedThisMonth = bases.filter(b => b.tipo === 'CONTABIL' && b.created_at && new Date(b.created_at) > cutoff).length;
-    const fiscalIngestedThisMonth = bases.filter(b => b.tipo === 'FISCAL' && b.created_at && new Date(b.created_at) > cutoff).length;
-    const percentActive = totalConciliacoes > 0 ? Math.round((runningJobs / totalConciliacoes) * 100) : 0;
-
-    const executeCleanup = async () => {
+    const executeCleanup = useCallback(async () => {
         if (cleaning) return;
         setCleaning(true);
         try {
             const res = await maintenanceCleanup();
-            const payload = res.data || res;
-            toast.success('Limpeza concluída', {
-                description: `Uploads: ${payload.deletedUploads ?? 0}, Ingests: ${payload.deletedIngests ?? 0}, Exports: ${payload.deletedExports ?? 0}, Bases removidas: ${payload.deletedBases ?? 0}, Conciliações removidas: ${payload.deletedJobs ?? 0}, Tabelas base dropadas: ${(payload.droppedTables || []).length}, Resultados dropados: ${(payload.droppedResultTables || []).length}`
+            const payload = res.data || res || {};
+            toast.success(MSG_CLEANUP_DONE, {
+                description: `Uploads: ${payload.deletedUploads ?? 0}, Ingests: ${payload.deletedIngests ?? 0}, Exports: ${payload.deletedExports ?? 0}, Bases removidas: ${payload.deletedBases ?? 0}, Conciliações removidas: ${payload.deletedJobs ?? 0}, Tabelas base dropadas: ${(payload.droppedTables || []).length}, Resultados dropados: ${(payload.droppedResultTables || []).length}`,
             });
+            // refresh data after cleanup
+            await loadAll();
         } catch (e: any) {
-            console.error('Cleanup failed', e);
-            toast.error('Falha ao executar limpeza', { description: e?.response?.data?.error || e?.message });
+            // eslint-disable-next-line no-console
+            console.error(`${SCOPE} - cleanup failed`, e);
+            toast.error(MSG_CLEANUP_FAILED, { description: e?.response?.data?.error || e?.message });
         } finally {
             setCleaning(false);
         }
-    };
+    }, [cleaning, loadAll]);
 
-    const executeCleanupStorage = async () => {
+    const executeCleanupStorage = useCallback(async () => {
         if (cleaningStorage) return;
         setCleaningStorage(true);
         try {
             const res = await maintenanceCleanupStorage();
-            const payload = res.data || res;
-            toast.success('Limpeza de arquivos concluída', {
-                description: `Uploads: ${payload.deletedUploads ?? 0}, Ingests: ${payload.deletedIngests ?? 0}, Exports: ${payload.deletedExports ?? 0}`
+            const payload = res.data || res || {};
+            toast.success(MSG_CLEANUP_STORAGE_DONE, {
+                description: `Uploads: ${payload.deletedUploads ?? 0}, Ingests: ${payload.deletedIngests ?? 0}, Exports: ${payload.deletedExports ?? 0}`,
             });
         } catch (e: any) {
-            console.error('Cleanup storage failed', e);
-            toast.error('Falha ao limpar arquivos', { description: e?.response?.data?.error || e?.message });
+            // eslint-disable-next-line no-console
+            console.error(`${SCOPE} - cleanup storage failed`, e);
+            toast.error(MSG_CLEANUP_STORAGE_FAILED, { description: e?.response?.data?.error || e?.message });
         } finally {
             setCleaningStorage(false);
         }
-    };
+    }, [cleaningStorage]);
+
+    const contabilCount = useMemo(() => bases.filter(b => b.tipo === 'CONTABIL').length, [bases]);
+    const fiscalCount = useMemo(() => bases.filter(b => b.tipo === 'FISCAL').length, [bases]);
+    const totalConciliacoes = conciliacoes.length;
+    const runningJobs = useMemo(() => conciliacoes.filter(j => j.status === 'RUNNING').length, [conciliacoes]);
+    const basesNotIngested = useMemo(() => bases.filter(b => !b.tabela_sqlite).length, [bases]);
+    const totalConfigs = configsConciliacao.length + configsEstorno.length + configsCancelamento.length + configsMapeamento.length;
+
+    const recentJobs = useMemo(() => conciliacoes.slice(0, 6), [conciliacoes]);
+
+    const cutoff = useMemo(() => new Date(Date.now() - DAYS_30_MS), []);
+    const contabilIngestedThisMonth = useMemo(() => bases.filter(b => b.tipo === 'CONTABIL' && b.created_at && new Date(b.created_at) > cutoff).length, [bases, cutoff]);
+    const fiscalIngestedThisMonth = useMemo(() => bases.filter(b => b.tipo === 'FISCAL' && b.created_at && new Date(b.created_at) > cutoff).length, [bases, cutoff]);
+    const percentActive = totalConciliacoes > 0 ? Math.round((runningJobs / totalConciliacoes) * 100) : 0;
 
     return (
         <div className="space-y-6">

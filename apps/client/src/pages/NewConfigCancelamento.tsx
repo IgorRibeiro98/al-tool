@@ -9,10 +9,10 @@ import { ArrowLeft } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { useWatch } from 'react-hook-form';
 import { fetchBases, getBaseColumns } from '@/services/baseService';
 import { createConfigCancelamento } from '@/services/configsService';
-import { useWatch } from 'react-hook-form';
 import * as z from "zod";
 
 const formSchema = z.object({
@@ -30,7 +30,6 @@ type FormValues = z.infer<typeof formSchema>;
 
 const NewConfigCancelamento = () => {
     const navigate = useNavigate();
-
     const [bases, setBases] = useState<Array<{ id: string; nome?: string }>>([]);
 
     const form = useForm<FormValues>({
@@ -44,48 +43,58 @@ const NewConfigCancelamento = () => {
             ativa: true,
         },
     });
-
     const [columns, setColumns] = useState<Array<{ excel: string; sqlite: string; index: string }>>([]);
+    const mountedRef = useRef(true);
+
     useEffect(() => {
-        let mounted = true;
+        mountedRef.current = true;
+        return () => { mountedRef.current = false; };
+    }, []);
+
+    const MSG = useMemo(() => ({
+        LOAD_BASES_FAIL: 'Falha ao carregar bases',
+        LOAD_COLS_FAIL: 'Falha ao carregar colunas da base',
+        CREATE_SUCCESS: 'Configuração de cancelamento criada com sucesso!',
+        CREATE_FAIL: 'Falha ao criar configuração',
+    }), []);
+
+    useEffect(() => {
+        let active = true;
         fetchBases().then(r => {
-            if (!mounted) return;
-            setBases((r.data.data || []).map((b: any) => ({ id: String(b.id), nome: b.nome })));
+            if (!active) return;
+            const payload = (r.data?.data || r.data || []).map((b: any) => ({ id: String(b.id), nome: b.nome }));
+            setBases(payload);
         }).catch(err => {
             console.error('failed to fetch bases', err);
+            toast.error(MSG.LOAD_BASES_FAIL);
             setBases([]);
         });
-        return () => { mounted = false; };
-    }, []);
+        return () => { active = false; };
+    }, [MSG]);
 
     // watch base selection to load columns for autocomplete
     const selectedBaseId = useWatch({ control: form.control, name: 'baseId' });
 
-    useEffect(() => {
-        let mounted = true;
+    const loadColumnsForBase = useCallback(async (baseId?: string) => {
         setColumns([]);
-        if (!selectedBaseId) return;
-        const id = Number(selectedBaseId);
+        if (!baseId) return;
+        const id = Number(baseId);
         if (!id || Number.isNaN(id)) return;
-        getBaseColumns(id).then(r => {
-            if (!mounted) return;
-            const rows = r.data.data || [];
-            const cols = rows.map((c: any) => {
-                return {
-                    excel: c.excel_name,
-                    sqlite: c.sqlite_name,
-                    index: String(c.col_index),
-                }
-            });
-            setColumns(cols);
-        }).catch(err => {
+        try {
+            const r = await getBaseColumns(id);
+            const rows = r.data?.data || r.data || [];
+            const cols = rows.map((c: any) => ({ excel: c.excel_name, sqlite: c.sqlite_name, index: String(c.col_index) }));
+            if (mountedRef.current) setColumns(cols);
+        } catch (err) {
             console.error('failed to fetch base preview', err);
-            setColumns([]);
-        });
-        return () => { mounted = false; };
-    }, [selectedBaseId]);
+            toast.error(MSG.LOAD_COLS_FAIL);
+            if (mountedRef.current) setColumns([]);
+        }
+    }, [MSG]);
 
-    const onSubmit = async (data: FormValues) => {
+    useEffect(() => { void loadColumnsForBase(selectedBaseId); }, [selectedBaseId, loadColumnsForBase]);
+
+    const onSubmit = useCallback(async (data: FormValues) => {
         try {
             const payload = {
                 nome: data.nome,
@@ -96,13 +105,13 @@ const NewConfigCancelamento = () => {
                 ativa: !!data.ativa,
             };
             await createConfigCancelamento(payload);
-            toast.success("Configuração de cancelamento criada com sucesso!");
+            toast.success(MSG.CREATE_SUCCESS);
             navigate("/configs/cancelamento");
         } catch (err: any) {
             console.error('create config cancelamento failed', err);
-            toast.error(err?.response?.data?.error || 'Falha ao criar configuração');
+            toast.error(err?.response?.data?.error || MSG.CREATE_FAIL);
         }
-    };
+    }, [navigate, MSG]);
 
     return (
         <div className="space-y-6">

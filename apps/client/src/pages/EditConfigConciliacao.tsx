@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -35,13 +35,24 @@ const EditConfigConciliacao: React.FC = () => {
     const navigate = useNavigate();
     const { id } = useParams<{ id: string }>();
 
-    const [bases, setBases] = useState<any[]>([]);
-    const [colsContabeis, setColsContabeis] = useState<any[]>([]);
-    const [colsFiscais, setColsFiscais] = useState<any[]>([]);
+    type Base = { id: number; nome: string; tipo: 'CONTABIL' | 'FISCAL' | string };
+    type Column = { excel?: string; sqlite?: string; index?: string };
+    type ChaveCombination = { id: string; label: string; colunasContabil: string[]; colunasFiscal: string[] };
+
+    const [bases, setBases] = useState<Base[]>([]);
+    const [colsContabeis, setColsContabeis] = useState<Column[]>([]);
+    const [colsFiscais, setColsFiscais] = useState<Column[]>([]);
     const [basesLoading, setBasesLoading] = useState<boolean>(true);
     const [configLoading, setConfigLoading] = useState<boolean>(true);
-    type ChaveCombination = { id: string; label: string; colunasContabil: string[]; colunasFiscal: string[] };
     const [chaves, setChaves] = useState<ChaveCombination[]>([]);
+
+    const MSG = useMemo(() => ({
+        LOAD_CONFIG_FAIL: 'Falha ao carregar configuração',
+        SAVE_SUCCESS: 'Configuração atualizada',
+        SAVE_FAIL: 'Erro ao salvar configuração',
+        DELETE_SUCCESS: 'Configuração excluída',
+        DELETE_FAIL: 'Falha ao excluir configuração',
+    }), []);
 
     const form = useForm<FormValues>({
         resolver: zodResolver(schema),
@@ -62,52 +73,37 @@ const EditConfigConciliacao: React.FC = () => {
         fetchBases()
             .then((r: any) => {
                 if (!mounted) return;
-                setBases(r.data?.data || r.data || []);
+                setBases((r.data?.data || r.data || []) as Base[]);
             })
             .catch(() => setBases([]))
             .finally(() => { if (mounted) setBasesLoading(false); });
         return () => { mounted = false; };
     }, []);
 
-    useEffect(() => {
-        // watch base selections and load columns (use same mapping as NewConfigConciliacao)
-        const sub = form.watch((_, { name }) => {
-            if (name === 'baseContabilId') {
-                const bCont = Number(form.getValues('baseContabilId'));
-                if (bCont && !Number.isNaN(bCont)) {
-                    getBaseColumns(bCont).then((r: any) => {
-                        const rows = r.data?.data || [];
-                        const cols = rows.map((c: any) => ({
-                            excel: c.excel_name,
-                            sqlite: c.sqlite_name,
-                            index: String(c.col_index),
-                        }));
-                        setColsContabeis(cols);
-                    }).catch(() => setColsContabeis([]));
-                } else {
-                    setColsContabeis([]);
-                }
-            }
+    const mapColumns = useCallback((rows: any[]): Column[] => {
+        return (rows || []).map((c: any) => ({ excel: c.excel_name, sqlite: c.sqlite_name, index: String(c.col_index) }));
+    }, []);
 
-            if (name === 'baseFiscalId') {
-                const bFisc = Number(form.getValues('baseFiscalId'));
-                if (bFisc && !Number.isNaN(bFisc)) {
-                    getBaseColumns(bFisc).then((r: any) => {
-                        const rows = r.data?.data || [];
-                        const cols = rows.map((c: any) => ({
-                            excel: c.excel_name,
-                            sqlite: c.sqlite_name,
-                            index: String(c.col_index),
-                        }));
-                        setColsFiscais(cols);
-                    }).catch(() => setColsFiscais([]));
-                } else {
-                    setColsFiscais([]);
-                }
-            }
+    const loadColumnsForBase = useCallback(async (baseId: string | number | undefined, setter: React.Dispatch<React.SetStateAction<Column[]>>) => {
+        const idNum = baseId ? Number(baseId) : NaN;
+        if (!idNum || Number.isNaN(idNum)) return setter([]);
+        try {
+            const res = await getBaseColumns(idNum);
+            const rows = res.data?.data || [];
+            setter(mapColumns(rows));
+        } catch {
+            setter([]);
+        }
+    }, [mapColumns]);
+
+    useEffect(() => {
+        // subscribe to base selection changes and load columns accordingly
+        const sub = form.watch((_, { name }) => {
+            if (name === 'baseContabilId') loadColumnsForBase(form.getValues('baseContabilId'), setColsContabeis);
+            if (name === 'baseFiscalId') loadColumnsForBase(form.getValues('baseFiscalId'), setColsFiscais);
         });
         return () => sub.unsubscribe();
-    }, [form]);
+    }, [form, loadColumnsForBase]);
 
     useEffect(() => {
         let mounted = true;
@@ -136,13 +132,13 @@ const EditConfigConciliacao: React.FC = () => {
                 form.setValue('baseFiscalId', baseFisc, { shouldDirty: false, shouldTouch: false, shouldValidate: false });
 
                 // normalize chaves into combinations (support legacy arrays)
-                const parseChaves = (raw: any) => {
+                const parseChaves = (raw: any): Record<string, string[]> => {
                     try {
                         const p = raw || {};
                         if (Array.isArray(p)) return { CHAVE_1: p } as Record<string, string[]>;
                         if (p && typeof p === 'object') return p as Record<string, string[]>;
-                        return {} as Record<string, string[]>;
-                    } catch { return {} as Record<string, string[]>; }
+                        return {};
+                    } catch { return {}; }
                 };
                 const chCont = parseChaves(cfg.chaves_contabil);
                 const chFisc = parseChaves(cfg.chaves_fiscal);
@@ -152,30 +148,17 @@ const EditConfigConciliacao: React.FC = () => {
                 setChaves(combos);
 
                 // load columns for bases referenced by the config
-                if (cfg.base_contabil_id) {
-                    getBaseColumns(cfg.base_contabil_id).then((r: any) => {
-                        const rows = r.data?.data || [];
-                        const cols = rows.map((c: any) => ({ excel: c.excel_name, sqlite: c.sqlite_name, index: String(c.col_index) }));
-                        setColsContabeis(cols);
-                    }).catch(() => setColsContabeis([]));
-                }
-
-                if (cfg.base_fiscal_id) {
-                    getBaseColumns(cfg.base_fiscal_id).then((r: any) => {
-                        const rows = r.data?.data || [];
-                        const cols = rows.map((c: any) => ({ excel: c.excel_name, sqlite: c.sqlite_name, index: String(c.col_index) }));
-                        setColsFiscais(cols);
-                    }).catch(() => setColsFiscais([]));
-                }
+                if (cfg.base_contabil_id) loadColumnsForBase(cfg.base_contabil_id, setColsContabeis);
+                if (cfg.base_fiscal_id) loadColumnsForBase(cfg.base_fiscal_id, setColsFiscais);
             })
-            .catch(() => toast.error('Falha ao carregar configuração'))
+            .catch(() => toast.error(MSG.LOAD_CONFIG_FAIL))
             .finally(() => { if (mounted) setConfigLoading(false); });
 
         return () => { mounted = false; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [id]);
 
-    const onSubmit = async (values: FormValues) => {
+    const onSubmit = useCallback(async (values: FormValues) => {
         if (!id) return;
         try {
             // build chaves maps from combinations
@@ -202,25 +185,56 @@ const EditConfigConciliacao: React.FC = () => {
                 limite_diferenca_imaterial: values.diferencaImaterial ?? null,
             } as any;
             await updateConfigConciliacao(Number(id), payload);
-            toast.success('Configuração atualizada');
+            toast.success(MSG.SAVE_SUCCESS);
             navigate('/configs/conciliacao');
         } catch (err: any) {
             console.error('update failed', err);
-            toast.error(err?.response?.data?.error || 'Erro ao salvar configuração');
+            toast.error(err?.response?.data?.error || MSG.SAVE_FAIL);
         }
-    };
+    }, [chaves, id, navigate, MSG]);
 
-    const handleDelete = async () => {
+    const handleDelete = useCallback(async () => {
         if (!id) return;
         try {
             await deleteConfigConciliacao(Number(id));
-            toast.success('Configuração excluída');
+            toast.success(MSG.DELETE_SUCCESS);
             navigate('/configs/conciliacao');
         } catch (err: any) {
             console.error('delete failed', err);
-            toast.error(err?.response?.data?.error || 'Falha ao excluir configuração');
+            toast.error(err?.response?.data?.error || MSG.DELETE_FAIL);
         }
-    };
+    }, [id, navigate, MSG]);
+
+    const nextChaveLabel = useCallback((list: ChaveCombination[]) => `Chave ${list.length + 1}`, []);
+
+    const addChave = useCallback(() => {
+        setChaves(prev => {
+            const id = `CHAVE_${prev.length + 1}`;
+            return [...prev, { id, label: nextChaveLabel(prev), colunasContabil: [], colunasFiscal: [] }];
+        });
+    }, [nextChaveLabel]);
+
+    const removeChave = useCallback((chaveId: string) => {
+        setChaves(prev => prev.filter(c => c.id !== chaveId));
+    }, []);
+
+    const addColumnToChave = useCallback((chaveId: string, columnValue: string, side: 'contabil' | 'fiscal') => {
+        setChaves(prev => prev.map(ch => {
+            if (ch.id !== chaveId) return ch;
+            const key = side === 'contabil' ? 'colunasContabil' : 'colunasFiscal';
+            const existing = ch[key] || [];
+            if (existing.includes(columnValue)) return ch;
+            return { ...ch, [key]: [...existing, columnValue] } as ChaveCombination;
+        }));
+    }, []);
+
+    const removeColumnFromChave = useCallback((chaveId: string, columnValue: string, side: 'contabil' | 'fiscal') => {
+        setChaves(prev => prev.map(ch => {
+            if (ch.id !== chaveId) return ch;
+            const key = side === 'contabil' ? 'colunasContabil' : 'colunasFiscal';
+            return { ...ch, [key]: (ch[key] || []).filter(v => v !== columnValue) } as ChaveCombination;
+        }));
+    }, []);
 
     return (
         <PageSkeletonWrapper loading={basesLoading || configLoading}>
@@ -307,10 +321,7 @@ const EditConfigConciliacao: React.FC = () => {
                                         <FormDescription>Defina uma ou mais combinações de colunas entre Base A e Base B</FormDescription>
                                     </div>
                                     <div>
-                                        <Button type="button" onClick={() => {
-                                            const next = chaves.length + 1;
-                                            setChaves([...chaves, { id: `CHAVE_${next}`, label: `Chave ${next}`, colunasContabil: [], colunasFiscal: [] }]);
-                                        }}>Adicionar combinação de chave</Button>
+                                        <Button type="button" onClick={addChave}>Adicionar combinação de chave</Button>
                                     </div>
                                 </div>
 
@@ -322,7 +333,7 @@ const EditConfigConciliacao: React.FC = () => {
                                                     <CardTitle>{c.label}</CardTitle>
                                                     <div className="flex gap-2">
                                                         {chaves.length > 1 && (
-                                                            <Button variant="destructive" size="sm" onClick={() => setChaves(chaves.filter(x => x.id !== c.id))}>Remover</Button>
+                                                            <Button variant="destructive" size="sm" onClick={() => removeChave(c.id)}>Remover</Button>
                                                         )}
                                                     </div>
                                                 </div>
@@ -338,7 +349,7 @@ const EditConfigConciliacao: React.FC = () => {
                                                                 return (
                                                                     <Badge key={v} variant="secondary" className="flex items-center gap-2">
                                                                         <span className="font-mono text-xs">{label}</span>
-                                                                        <button type="button" className="p-1" onClick={() => setChaves(chaves.map(ch => ch.id === c.id ? { ...ch, colunasContabil: (ch.colunasContabil || []).filter(x => x !== v) } : ch))}>
+                                                                        <button type="button" className="p-1" onClick={() => removeColumnFromChave(c.id, v, 'contabil')}>
                                                                             <X className="h-3 w-3" />
                                                                         </button>
                                                                     </Badge>
@@ -346,9 +357,7 @@ const EditConfigConciliacao: React.FC = () => {
                                                             })}
                                                         </div>
                                                         {colsContabeis.length > 0 ? (
-                                                            <Select onValueChange={(val) => {
-                                                                setChaves(chaves.map(ch => ch.id === c.id ? { ...ch, colunasContabil: (ch.colunasContabil || []).includes(val) ? ch.colunasContabil : [...(ch.colunasContabil || []), val] } : ch));
-                                                            }}>
+                                                            <Select onValueChange={(val) => addColumnToChave(c.id, val, 'contabil')}>
                                                                 <SelectTrigger>
                                                                     <SelectValue placeholder="Selecione colunas" />
                                                                 </SelectTrigger>
@@ -372,7 +381,7 @@ const EditConfigConciliacao: React.FC = () => {
                                                                 return (
                                                                     <Badge key={v} variant="secondary" className="flex items-center gap-2">
                                                                         <span className="font-mono text-xs">{label}</span>
-                                                                        <button type="button" className="p-1" onClick={() => setChaves(chaves.map(ch => ch.id === c.id ? { ...ch, colunasFiscal: (ch.colunasFiscal || []).filter(x => x !== v) } : ch))}>
+                                                                        <button type="button" className="p-1" onClick={() => removeColumnFromChave(c.id, v, 'fiscal')}>
                                                                             <X className="h-3 w-3" />
                                                                         </button>
                                                                     </Badge>
@@ -380,9 +389,7 @@ const EditConfigConciliacao: React.FC = () => {
                                                             })}
                                                         </div>
                                                         {colsFiscais.length > 0 ? (
-                                                            <Select onValueChange={(val) => {
-                                                                setChaves(chaves.map(ch => ch.id === c.id ? { ...ch, colunasFiscal: (ch.colunasFiscal || []).includes(val) ? ch.colunasFiscal : [...(ch.colunasFiscal || []), val] } : ch));
-                                                            }}>
+                                                            <Select onValueChange={(val) => addColumnToChave(c.id, val, 'fiscal')}>
                                                                 <SelectTrigger>
                                                                     <SelectValue placeholder="Selecione colunas" />
                                                                 </SelectTrigger>

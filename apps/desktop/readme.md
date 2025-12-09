@@ -136,6 +136,28 @@ cp apps/api/db/dev.sqlite3 /home/<usuario>/.config/Electron/data/db/dev.sqlite3
 
   - Em desenvolvimento, o Electron usa automaticamente `apps/desktop/python-runtime` (não é necessário exportar variáveis). Se preferir usar outro Python, defina `PYTHON_EXECUTABLE` no `.env` da raiz.
 
+  - Novo utilitário (Windows): `scripts/prepare_python_runtime_win.py`
+
+    - Prepara um runtime Python embeddable pronto para empacotar (download, instala pip e as dependências de `scripts/requirements.txt`).
+    - Exemplo (na máquina de build Windows):
+
+    ```powershell
+    # prepara o runtime embeddable e o sincroniza para apps/desktop/python-runtime
+    python scripts/prepare_python_runtime_win.py --version 3.12.3
+
+    # então gere o instalador
+    npm run app:dist
+    ```
+
+    - O script cria `apps/desktop/python-runtime-win` e, quando executado em Windows, também copia para `apps/desktop/python-runtime` para manter a lógica atual de empacotamento.
+
+  **Aviso sobre `PYTHON_EXECUTABLE` em builds empacotados**
+
+  - Quando o aplicativo é empacotado (installer), valores de `PYTHON_EXECUTABLE` absolutos definidos no `.env` do repositório (por exemplo caminhos do seu computador de build) serão ignorados automaticamente pelo Electron. Isso evita que o app tente executar um Python que não existe na máquina do usuário.
+  - Para apontar para o runtime Python embutido, defina `PYTHON_EXECUTABLE` relativo dentro de `resources` (por exemplo `python/bin/python3`) ou apenas execute `npm run python:setup` durante o processo de build para incluir o runtime embutido em `resources/python` (recomendado).
+  - Como alternativa, em desenvolvimento, os usuários podem ativar `ALLOW_SYSTEM_PYTHON=1` e garantir que `pyxlsb` e `openpyxl` estejam instalados no Python do sistema.
+  - Em builds empacotados o app NÃO utilizará o Python do sistema por design; apenas o runtime embutido (quando incluído via `npm run python:setup`) é suportado. Isso evita tentativas de executar caminhos do computador de build que não existem no sistema do usuário.
+
   - Em produção, o conteúdo de `apps/desktop/python-runtime` é empacotado para `resources/python`. Certifique-se de rodar `npm run python:setup` antes de `npm run app:dist` (local ou em CI) para garantir que o instalador leve o runtime atualizado.
 
   ### Empacotamento dos scripts

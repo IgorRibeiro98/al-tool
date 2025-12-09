@@ -1,15 +1,53 @@
 import { z } from 'zod';
 
-// Portuguese (pt-BR) error map for Zod
-z.setErrorMap((issue, ctx) => {
-    const defaultMsg = 'Valor inválido';
+const DEFAULT_MESSAGE = 'Valor inválido';
 
+function invalidTypeMessage(issue: any): { message: string } {
+    const expected = issue?.expected;
+    switch (expected) {
+        case 'string':
+            return { message: 'Deve ser texto' };
+        case 'number':
+            return { message: 'Deve ser um número' };
+        case 'boolean':
+            return { message: 'Deve ser verdadeiro/falso' };
+        default:
+            return { message: `Tipo inválido (esperado: ${expected})` };
+    }
+}
+
+function invalidStringMessage(issue: any): { message: string } {
+    const validation = issue?.validation as string | undefined;
+    if (validation === 'email') return { message: 'Email inválido' };
+    if (validation === 'regex') return { message: 'Formato inválido' };
+    return { message: 'Texto inválido' };
+}
+
+function sizeConstraintMessage(issue: any): { message: string } {
+    const type = issue?.type as string | undefined;
+    const minimum = issue?.minimum;
+    const maximum = issue?.maximum;
+
+    if (issue?.code === z.ZodIssueCode.too_small) {
+        if (type === 'string') return { message: `Deve ter no mínimo ${minimum} caracteres` };
+        if (type === 'number') return { message: `Deve ser no mínimo ${minimum}` };
+        if (type === 'array') return { message: `Deve ter pelo menos ${minimum} itens` };
+    }
+
+    if (issue?.code === z.ZodIssueCode.too_big) {
+        if (type === 'string') return { message: `Deve ter no máximo ${maximum} caracteres` };
+        if (type === 'number') return { message: `Deve ser no máximo ${maximum}` };
+        if (type === 'array') return { message: `Deve ter no máximo ${maximum} itens` };
+    }
+
+    return { message: DEFAULT_MESSAGE };
+}
+
+// Centralized mapping for Zod issues to pt-BR messages
+z.setErrorMap((issue) => {
     switch (issue.code) {
         case z.ZodIssueCode.invalid_type:
-            if (issue.expected === 'string') return { message: 'Deve ser texto' };
-            if (issue.expected === 'number') return { message: 'Deve ser um número' };
-            if (issue.expected === 'boolean') return { message: 'Deve ser verdadeiro/falso' };
-            return { message: `Tipo inválido (esperado: ${issue.expected})` };
+            return invalidTypeMessage(issue);
 
         case z.ZodIssueCode.invalid_literal:
             return { message: 'Valor literal inválido' };
@@ -26,30 +64,18 @@ z.setErrorMap((issue, ctx) => {
         case z.ZodIssueCode.invalid_date:
             return { message: 'Data inválida' };
 
-        case z.ZodIssueCode.invalid_string: {
-            const v = (issue as any).validation;
-            if (v === 'email') return { message: 'Email inválido' };
-            if (v === 'regex') return { message: 'Formato inválido' };
-            return { message: 'Texto inválido' };
-        }
+        case z.ZodIssueCode.invalid_string:
+            return invalidStringMessage(issue);
 
         case z.ZodIssueCode.too_small:
-            if (issue.type === 'string') return { message: `Deve ter no mínimo ${issue.minimum} caracteres` };
-            if (issue.type === 'number') return { message: `Deve ser no mínimo ${issue.minimum}` };
-            if (issue.type === 'array') return { message: `Deve ter pelo menos ${issue.minimum} itens` };
-            return { message: defaultMsg };
-
         case z.ZodIssueCode.too_big:
-            if (issue.type === 'string') return { message: `Deve ter no máximo ${issue.maximum} caracteres` };
-            if (issue.type === 'number') return { message: `Deve ser no máximo ${issue.maximum}` };
-            if (issue.type === 'array') return { message: `Deve ter no máximo ${issue.maximum} itens` };
-            return { message: defaultMsg };
+            return sizeConstraintMessage(issue);
 
         case z.ZodIssueCode.custom:
-            return { message: issue.message ?? 'Valor inválido' };
+            return { message: issue.message ?? DEFAULT_MESSAGE };
 
         default:
-            return { message: issue.message ?? defaultMsg };
+            return { message: issue.message ?? DEFAULT_MESSAGE };
     }
 });
 

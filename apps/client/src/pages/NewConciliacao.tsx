@@ -6,7 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ArrowLeft } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -25,6 +25,18 @@ const NewConciliacao = () => {
     const [mapConfigs, setMapConfigs] = useState<ConfigMapeamento[]>([]);
 
     const [loading, setLoading] = useState(false);
+    const mountedRef = useRef(true);
+
+    useEffect(() => {
+        mountedRef.current = true;
+        return () => { mountedRef.current = false; };
+    }, []);
+
+    const MSG = useMemo(() => ({
+        LOAD_FAIL: 'Falha ao carregar dados iniciais',
+        CREATE_SUCCESS: 'Conciliação criada',
+        CREATE_FAIL: 'Falha ao criar conciliação',
+    }), []);
 
     const schema = z.object({
         nome: z.string().min(1, { message: 'Nome é obrigatório' }),
@@ -91,24 +103,47 @@ const NewConciliacao = () => {
 
     // NOTE: We intentionally allow selecting any mapping config regardless of currently selected bases.
 
-    useEffect(() => {
-        fetchBases({ pageSize: 200 }).then(r => {
-            const payload = Array.isArray(r.data) ? r.data : r.data?.data ?? [];
-            setBases(payload);
-        }).catch(() => setBases([]));
-        fetchConfigsConciliacao().then(r => setConfigs(r.data || [])).catch(() => setConfigs([]));
-        fetchConfigsEstorno().then(r => setEstornos(r.data || [])).catch(() => setEstornos([]));
-        fetchConfigsCancelamento().then(r => setCancelamentos(r.data || [])).catch(() => setCancelamentos([]));
-        fetchConfigsMapeamento().then(r => setMapConfigs(r.data || [])).catch(() => setMapConfigs([]));
-    }, []);
+    const loadInitialData = useCallback(async () => {
+        setLoading(true);
+        try {
+            const [basesRes, conciliacaoRes, estornoRes, cancelRes, mapRes] = await Promise.all([
+                fetchBases({ pageSize: 200 }),
+                fetchConfigsConciliacao(),
+                fetchConfigsEstorno(),
+                fetchConfigsCancelamento(),
+                fetchConfigsMapeamento(),
+            ]);
 
-    const formatBaseLabel = (base?: Base | null) => {
+            const basesPayload = Array.isArray(basesRes.data) ? basesRes.data : basesRes.data?.data ?? [];
+            if (mountedRef.current) setBases(basesPayload);
+            if (mountedRef.current) setConfigs(conciliacaoRes.data || []);
+            if (mountedRef.current) setEstornos(estornoRes.data || []);
+            if (mountedRef.current) setCancelamentos(cancelRes.data || []);
+            if (mountedRef.current) setMapConfigs(mapRes.data || []);
+        } catch (err) {
+            console.error('initial load failed', err);
+            toast.error(MSG.LOAD_FAIL);
+            if (mountedRef.current) {
+                setBases([]);
+                setConfigs([]);
+                setEstornos([]);
+                setCancelamentos([]);
+                setMapConfigs([]);
+            }
+        } finally {
+            if (mountedRef.current) setLoading(false);
+        }
+    }, [MSG]);
+
+    useEffect(() => { void loadInitialData(); }, [loadInitialData]);
+
+    const formatBaseLabel = useCallback((base?: Base | null) => {
         if (!base) return '';
         const nome = base.nome && base.nome.trim().length > 0 ? base.nome.trim() : `Base ${base.id}`;
         return base.periodo ? `${nome} (${base.periodo})` : nome;
-    };
+    }, []);
 
-    const onSubmit = async (data: any) => {
+    const onSubmit = useCallback(async (data: FormValues) => {
         setLoading(true);
         try {
             await createConciliacao({
@@ -120,15 +155,16 @@ const NewConciliacao = () => {
                 baseContabilId: data.baseContabilId ? Number(data.baseContabilId) : null,
                 baseFiscalId: data.baseFiscalId ? Number(data.baseFiscalId) : null,
             });
-            toast.success('Conciliação criada');
+            if (!mountedRef.current) return;
+            toast.success(MSG.CREATE_SUCCESS);
             navigate('/conciliacoes');
         } catch (err: any) {
             console.error('create conciliacao failed', err);
-            toast.error(err?.response?.data?.error || 'Falha ao criar conciliação');
+            toast.error(err?.response?.data?.error || MSG.CREATE_FAIL);
         } finally {
-            setLoading(false);
+            if (mountedRef.current) setLoading(false);
         }
-    };
+    }, [navigate, MSG]);
 
     return (
         <PageSkeletonWrapper loading={loading}>

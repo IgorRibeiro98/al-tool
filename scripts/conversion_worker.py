@@ -1,28 +1,25 @@
-#!/usr/bin/env python3
-"""
-Simple conversion worker that polls the `bases` table for pending conversions
-and runs the JSONL converter. Intended to run inside the `converter` container.
+"""Conversion worker that polls SQLITE for pending 'bases' and runs converter.
 
-Behavior:
-- Polls sqlite DB (path configurable via DB_PATH env, default to apps/api/db/dev.sqlite3)
-- Finds one base with conversion_status = 'PENDING'
-- Atomically sets it to RUNNING and calls the converter script (`scripts/xlsb_to_xlsx.py --jsonl in out`)
-- Updates conversion_status to READY or FAILED and writes arquivo_jsonl_path
-
-This is a small, pragmatic worker for development environments. For production,
-replace with a queue backed worker and proper locking.
+This refactor keeps the original behavior but improves structure, naming,
+error handling and testability. It is still intended as a small development
+worker; production should use a proper queue and worker infrastructure.
 """
+from __future__ import annotations
+
 import os
 import sys
 import time
 import sqlite3
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional, Tuple, List
+
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.environ.get('REPO_ROOT', os.path.abspath(os.path.join(SCRIPT_DIR, '..')))
 
-# Paths aligned to API/Electron runtime
+# Configurable paths / behavior via environment
 DATA_DIR = os.environ.get('DATA_DIR') or os.path.abspath(os.path.join(REPO_ROOT, 'storage'))
 DB_PATH = os.environ.get('DB_PATH') or os.path.join(DATA_DIR, 'db', 'dev.sqlite3')
 POLL_INTERVAL = float(os.environ.get('POLL_INTERVAL', '5'))
@@ -34,6 +31,7 @@ BACKOFF_MAX_SECONDS = float(os.environ.get('WORKER_BACKOFF_MAX_SECONDS', '30'))
 
 CONVERTER_SCRIPT = os.path.join(SCRIPT_DIR, 'xlsb_to_xlsx.py')
 
+# Runtime state
 running = True
 stats = {
     'claimed': 0,
@@ -42,37 +40,48 @@ stats = {
 }
 
 
-def ensure_dir(path):
+def log(msg: str) -> None:
+    print(f"[conversion-worker] {msg}")
+
+
+def ensure_dir(path: str) -> None:
     try:
         os.makedirs(path, exist_ok=True)
     except Exception:
+        # Best-effort; if we cannot create directories later operations will fail explicitly
         pass
 
 
-def handle_signal(signum, frame):
+def handle_signal(signum, frame) -> None:
     global running
     running = False
-    print(f"Received signal {signum}, shutting down gracefully...")
+    log(f"Received signal {signum}, shutting down gracefully...")
 
 
-def now_iso():
+def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(sep=' ', timespec='seconds')
 
 
-def resolve_uploaded_path(arquivo_caminho: str):
-    candidates = []
-    cleaned = arquivo_caminho.lstrip('./') if arquivo_caminho else ''
+def resolve_uploaded_path(arquivo_caminho: Optional[str]) -> Tuple[Optional[str], List[str]]:
+    """Return the first existing candidate path and the list of candidates tried.
 
-    def add(path_candidate):
-        if not path_candidate:
+    The function attempts several likely locations to support different
+    development and container layouts.
+    """
+    candidates: List[str] = []
+    if not arquivo_caminho:
+        return None, candidates
+
+    cleaned = arquivo_caminho.lstrip('./')
+
+    def add(candidate: Optional[str]) -> None:
+        if not candidate:
             return
-        norm = os.path.abspath(path_candidate)
+        norm = os.path.abspath(candidate)
         if norm not in candidates:
             candidates.append(norm)
 
-    if not arquivo_caminho:
-        return None, []
-
+    # Absolute path provided
     if os.path.isabs(arquivo_caminho):
         add(arquivo_caminho)
     else:
@@ -82,14 +91,15 @@ def resolve_uploaded_path(arquivo_caminho: str):
         add(os.path.join(SCRIPT_DIR, cleaned))
         add(os.path.join(REPO_ROOT, arquivo_caminho))
         add(os.path.join(REPO_ROOT, cleaned))
-        add(os.path.join(REPO_ROOT, 'apps/api', arquivo_caminho))
-        add(os.path.join(REPO_ROOT, 'apps/api', cleaned))
+        add(os.path.join(REPO_ROOT, 'apps', 'api', arquivo_caminho))
+        add(os.path.join(REPO_ROOT, 'apps', 'api', cleaned))
 
-    # Legacy container locations
+    # Legacy container paths
     add(os.path.join('/home/app', arquivo_caminho))
-    add(os.path.join('/home/app/apps/api', arquivo_caminho))
-    add(os.path.join('/home/app/apps', arquivo_caminho))
+    add(os.path.join('/home/app', 'apps', 'api', arquivo_caminho))
+    add(os.path.join('/home/app', 'apps', arquivo_caminho))
 
+    # Storage and uploads
     if DATA_DIR:
         add(os.path.join(DATA_DIR, arquivo_caminho))
         add(os.path.join(DATA_DIR, cleaned))
@@ -105,8 +115,11 @@ def resolve_uploaded_path(arquivo_caminho: str):
     return None, candidates
 
 
-def claim_pending(conn):
-    # Find one pending base and atomically set to RUNNING
+def claim_pending(conn: sqlite3.Connection) -> Optional[Tuple[int, Optional[str]]]:
+    """Atomically claim a single PENDING base and mark it RUNNING.
+
+    Returns (base_id, arquivo_caminho) or None when nothing to claim.
+    """
     cur = conn.cursor()
     cur.execute("BEGIN IMMEDIATE")
     try:
@@ -116,7 +129,7 @@ def claim_pending(conn):
             conn.commit()
             return None
         base_id, arquivo_caminho = row
-        # mark as RUNNING if still PENDING
+
         cur.execute(
             "UPDATE bases SET conversion_status = 'RUNNING', conversion_started_at = ? WHERE id = ? AND conversion_status = 'PENDING'",
             (now_iso(), base_id)
@@ -125,18 +138,19 @@ def claim_pending(conn):
             conn.commit()
             return None
         conn.commit()
-        return (base_id, arquivo_caminho)
+        return int(base_id), arquivo_caminho
     except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return None
 
 
-def update_status(conn, base_id, status, jsonl_rel=None, error_msg=None):
+def update_status(conn: sqlite3.Connection, base_id: int, status: str, jsonl_rel: Optional[str] = None, error_msg: Optional[str] = None) -> None:
     cur = conn.cursor()
-    fields = []
-    params = []
-    fields.append('conversion_status = ?')
-    params.append(status)
+    fields = ['conversion_status = ?']
+    params: List[object] = [status]
     if jsonl_rel is not None:
         fields.append('arquivo_jsonl_path = ?')
         params.append(jsonl_rel)
@@ -152,15 +166,17 @@ def update_status(conn, base_id, status, jsonl_rel=None, error_msg=None):
     conn.commit()
 
 
-def run_conversion(abs_input, abs_output):
-    # Use the same interpreter that started the worker, unless explicitly overridden
+def run_conversion(abs_input: str, abs_output: str) -> Tuple[int, str, str]:
+    """Run the converter script and return (rc, stdout, stderr)."""
     python_cmd = os.environ.get('PYTHON_EXECUTABLE') or sys.executable or 'python'
     cmd = [python_cmd, CONVERTER_SCRIPT, '--jsonl', abs_input, abs_output]
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return p.returncode, p.stdout.decode('utf-8', errors='replace'), p.stderr.decode('utf-8', errors='replace')
+    out = p.stdout.decode('utf-8', errors='replace')
+    err = p.stderr.decode('utf-8', errors='replace')
+    return p.returncode, out, err
 
 
-def connect_db():
+def connect_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=BUSY_TIMEOUT_MS / 1000.0)
     try:
         conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
@@ -173,21 +189,22 @@ def connect_db():
     return conn
 
 
-def main_loop():
+def main_loop() -> None:
     ensure_dir(DATA_DIR)
     ensure_dir(os.path.join(DATA_DIR, 'db'))
     ensure_dir(INGESTS_DIR)
     ensure_dir(UPLOAD_DIR_ENV)
-    print(f"Conversion worker starting. DB={DB_PATH} poll={POLL_INTERVAL}s ingests={INGESTS_DIR} journal_mode={JOURNAL_MODE} busy_timeout={BUSY_TIMEOUT_MS}ms")
+    log(f"Conversion worker starting. DB={DB_PATH} poll={POLL_INTERVAL}s ingests={INGESTS_DIR} journal_mode={JOURNAL_MODE} busy_timeout={BUSY_TIMEOUT_MS}ms")
 
     backoff = POLL_INTERVAL
     while running:
+        conn = None
         try:
             conn = connect_db()
             backoff = POLL_INTERVAL
-        except Exception as e:
+        except Exception as exc:
             sleep_for = min(backoff, BACKOFF_MAX_SECONDS)
-            print(f"Cannot open DB ({DB_PATH}): {e}. Retrying in {sleep_for}s")
+            log(f"Cannot open DB ({DB_PATH}): {exc}. Retrying in {sleep_for}s")
             time.sleep(sleep_for)
             backoff = min(backoff * 2, BACKOFF_MAX_SECONDS)
             continue
@@ -195,47 +212,57 @@ def main_loop():
         try:
             claimed = claim_pending(conn)
             if not claimed:
-                conn.close()
+                try:
+                    conn.close()
+                except Exception:
+                    pass
                 time.sleep(POLL_INTERVAL)
                 continue
 
             base_id, arquivo_caminho = claimed
             stats['claimed'] += 1
-            print(f"Claimed base id={base_id} file={arquivo_caminho} (claimed={stats['claimed']})")
+            log(f"Claimed base id={base_id} file={arquivo_caminho} (claimed={stats['claimed']})")
 
             abs_input, candidates = resolve_uploaded_path(arquivo_caminho)
-
             if abs_input is None:
-                print(f"Cannot find uploaded file for base {base_id}; tried: {candidates}")
+                log(f"Cannot find uploaded file for base {base_id}; tried: {candidates}")
                 update_status(conn, base_id, 'FAILED', error_msg='uploaded file not found')
                 stats['failed'] += 1
-                conn.close()
+                try:
+                    conn.close()
+                except Exception:
+                    pass
                 continue
 
             abs_output = os.path.join(INGESTS_DIR, f"{base_id}.jsonl")
             ensure_dir(os.path.dirname(abs_output))
+
             try:
                 rc, out, err = run_conversion(abs_input, abs_output)
                 if rc == 0:
                     update_status(conn, base_id, 'READY', jsonl_rel=abs_output)
                     stats['converted'] += 1
-                    print(f"Converted base {base_id} -> {abs_output} (ok={stats['converted']} fail={stats['failed']})")
+                    log(f"Converted base {base_id} -> {abs_output} (ok={stats['converted']} fail={stats['failed']})")
                 else:
                     errmsg = f"converter exit {rc}: {err or out}"
                     update_status(conn, base_id, 'FAILED', error_msg=errmsg)
                     stats['failed'] += 1
-                    print(f"Conversion failed for base {base_id}: {errmsg} (ok={stats['converted']} fail={stats['failed']})")
-            except Exception as e:
-                errmsg = str(e)
+                    log(f"Conversion failed for base {base_id}: {errmsg} (ok={stats['converted']} fail={stats['failed']})")
+            except Exception as exc:
+                errmsg = str(exc)
                 update_status(conn, base_id, 'FAILED', error_msg=errmsg)
                 stats['failed'] += 1
-                print(f"Conversion exception for base {base_id}: {errmsg} (ok={stats['converted']} fail={stats['failed']})")
+                log(f"Conversion exception for base {base_id}: {errmsg} (ok={stats['converted']} fail={stats['failed']})")
 
-            conn.close()
-        except Exception as e:
-            print('Worker loop error', e)
             try:
                 conn.close()
+            except Exception:
+                pass
+        except Exception as exc:
+            log(f'Worker loop error: {exc}')
+            try:
+                if conn:
+                    conn.close()
             except Exception:
                 pass
             sleep_for = min(backoff, BACKOFF_MAX_SECONDS)

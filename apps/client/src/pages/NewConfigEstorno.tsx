@@ -12,7 +12,7 @@ import { toast } from "sonner";
 import * as z from "zod";
 import { fetchBases, getBaseColumns } from '@/services/baseService';
 import { createConfigEstorno } from '@/services/configsService';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 
 const formSchema = z.object({
     nome: z.string().min(1, "Nome é obrigatório"),
@@ -29,8 +29,14 @@ type FormValues = z.infer<typeof formSchema>;
 const NewConfigEstorno = () => {
     const navigate = useNavigate();
 
-    const [bases, setBases] = useState<Array<{ id: string; nome?: string }>>([]);
-    const [columns, setColumns] = useState<Array<{ excel: string; sqlite: string; index: string }>>([]);
+    type Base = { id: string; nome?: string };
+    type Column = { excel: string; sqlite: string; index: string };
+
+    const [bases, setBases] = useState<Base[]>([]);
+    const [columns, setColumns] = useState<Column[]>([]);
+
+    const mountedRef = useRef(true);
+    useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
     const form = useForm<FormValues>({
         resolver: zodResolver(formSchema),
@@ -45,62 +51,73 @@ const NewConfigEstorno = () => {
         },
     });
 
-    useEffect(() => {
-        let mounted = true;
-        fetchBases().then(r => {
-            if (!mounted) return;
-            setBases(r.data.data || []);
-        }).catch(err => {
-            console.error('failed to fetch bases', err);
-            setBases([]);
-        });
-        return () => { mounted = false; };
-    }, []);
+    const MSG = useMemo(() => ({
+        LOAD_BASES_FAIL: 'Falha ao carregar as bases',
+        LOAD_COLUMNS_FAIL: 'Falha ao carregar colunas da base',
+        CREATE_SUCCESS: 'Configuração de estorno criada com sucesso!',
+        CREATE_FAIL: 'Falha ao criar configuração',
+    }), []);
+
+    const mapColumns = useCallback((rows: any[]): Column[] => (rows || []).map((c: any) => ({ excel: c.excel_name, sqlite: c.sqlite_name, index: String(c.col_index) })), []);
+
+    const loadBases = useCallback(async () => {
+        try {
+            const res = await fetchBases();
+            if (!mountedRef.current) return;
+            setBases(res.data?.data || []);
+        } catch (err) {
+            console.error('fetchBases failed', err);
+            toast.error(MSG.LOAD_BASES_FAIL);
+            if (mountedRef.current) setBases([]);
+        }
+    }, [MSG]);
+
+    useEffect(() => { void loadBases(); }, [loadBases]);
 
     const selectedBaseId = form.watch('baseId');
-    useEffect(() => {
-        let mounted = true;
+    const loadColumns = useCallback(async (baseId?: string) => {
         setColumns([]);
-        if (!selectedBaseId) return;
-        const id = Number(selectedBaseId);
+        if (!baseId) return;
+        const id = Number(baseId);
         if (!id || Number.isNaN(id)) return;
-        getBaseColumns(id).then(r => {
-            if (!mounted) return;
-            const rows = r.data.data || [];
-            const cols = rows.map((c: any) => {
-                return {
-                    excel: c.excel_name,
-                    sqlite: c.sqlite_name,
-                    index: String(c.col_index)
-                }
-            });
-            setColumns(cols);
-        }).catch(err => {
-            console.error('failed to fetch base columns', err);
-            setColumns([]);
-        });
-        return () => { mounted = false; };
-    }, [selectedBaseId]);
-
-    const onSubmit = async (data: FormValues) => {
         try {
-            const payload = {
-                nome: data.nome,
-                coluna_a: data.colunaA,
-                coluna_b: data.colunaB,
-                coluna_soma: data.colunaSoma,
-                limite_zero: data.limiteZero ? 1 : 0,
-                base_id: Number(data.baseId),
-                ativa: !!data.ativa,
-            } as any;
-            await createConfigEstorno(payload);
-            toast.success("Configuração de estorno criada com sucesso!");
-            navigate("/configs/estorno");
-        } catch (err: any) {
-            console.error('create estorno config failed', err);
-            toast.error(err?.response?.data?.error || 'Falha ao criar configuração');
+            const res = await getBaseColumns(id);
+            if (!mountedRef.current) return;
+            const rows = res.data?.data || [];
+            setColumns(mapColumns(rows));
+        } catch (err) {
+            console.error('getBaseColumns failed', err);
+            toast.error(MSG.LOAD_COLUMNS_FAIL);
+            if (mountedRef.current) setColumns([]);
         }
-    };
+    }, [mapColumns, MSG]);
+
+    useEffect(() => { void loadColumns(selectedBaseId); }, [selectedBaseId, loadColumns]);
+
+    const ROUTES = useMemo(() => ({
+        LIST: '/configs/estorno',
+    }), []);
+
+    const onSubmit = useCallback(async (data: FormValues) => {
+        const payload = {
+            nome: data.nome,
+            coluna_a: data.colunaA,
+            coluna_b: data.colunaB,
+            coluna_soma: data.colunaSoma,
+            limite_zero: data.limiteZero ? 1 : 0,
+            base_id: Number(data.baseId),
+            ativa: !!data.ativa,
+        } as any;
+
+        try {
+            await createConfigEstorno(payload);
+            toast.success(MSG.CREATE_SUCCESS);
+            navigate(ROUTES.LIST);
+        } catch (err: any) {
+            console.error('createConfigEstorno failed', err);
+            toast.error(err?.response?.data?.error || MSG.CREATE_FAIL);
+        }
+    }, [MSG, navigate, ROUTES]);
 
     return (
         <div className="space-y-6">
@@ -162,97 +179,48 @@ const NewConfigEstorno = () => {
                                 )}
                             />
 
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                <FormField
-                                    control={form.control}
-                                    name="colunaA"
-                                    render={({ field }) => (
-                                        <FormItem>
-                                            <FormLabel>Coluna A</FormLabel>
-                                            {columns.length > 0 ? (
-                                                <FormControl>
-                                                    <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                                        <SelectTrigger>
-                                                            <SelectValue placeholder="Selecione a coluna A" />
-                                                        </SelectTrigger>
-                                                        <SelectContent>
-                                                            {columns.map((c) => (
-                                                                <SelectItem key={c.index} value={c.sqlite}>{c.excel}</SelectItem>
-                                                            ))}
-                                                        </SelectContent>
-                                                    </Select>
-                                                </FormControl>
-                                            ) : (
-                                                <FormControl>
-                                                    <Input placeholder="Ex: VALOR_A" {...field} />
-                                                </FormControl>
-                                            )}
-                                            <FormDescription>Primeira coluna para soma</FormDescription>
-                                            <FormMessage />
-                                        </FormItem>
-                                    )}
-                                />
+                            {/* Columns: A, B and Soma share the same rendering logic; extract to reduce duplication */}
+                            {(() => {
+                                const ColumnFieldRenderer = ({ name, label, placeholder, description }: { name: 'colunaA' | 'colunaB' | 'colunaSoma'; label: string; placeholder: string; description: string }) => (
+                                    <FormField
+                                        control={form.control}
+                                        name={name}
+                                        render={({ field }) => (
+                                            <FormItem>
+                                                <FormLabel>{label}</FormLabel>
+                                                {columns.length > 0 ? (
+                                                    <FormControl>
+                                                        <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                                            <SelectTrigger>
+                                                                <SelectValue placeholder={`Selecione a ${label}`} />
+                                                            </SelectTrigger>
+                                                            <SelectContent>
+                                                                {columns.map((c) => (
+                                                                    <SelectItem key={c.index} value={c.sqlite}>{c.excel}</SelectItem>
+                                                                ))}
+                                                            </SelectContent>
+                                                        </Select>
+                                                    </FormControl>
+                                                ) : (
+                                                    <FormControl>
+                                                        <Input placeholder={placeholder} {...field} />
+                                                    </FormControl>
+                                                )}
+                                                <FormDescription>{description}</FormDescription>
+                                                <FormMessage />
+                                            </FormItem>
+                                        )}
+                                    />
+                                );
 
-                                <FormField
-                                    control={form.control}
-                                    name="colunaB"
-                                    render={({ field }) => (
-                                        <FormItem>
-                                            <FormLabel>Coluna B</FormLabel>
-                                            {columns.length > 0 ? (
-                                                <FormControl>
-                                                    <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                                        <SelectTrigger>
-                                                            <SelectValue placeholder="Selecione a coluna B" />
-                                                        </SelectTrigger>
-                                                        <SelectContent>
-                                                            {columns.map((c) => (
-                                                                <SelectItem key={c.index} value={c.sqlite}>{c.excel}</SelectItem>
-                                                            ))}
-                                                        </SelectContent>
-                                                    </Select>
-                                                </FormControl>
-                                            ) : (
-                                                <FormControl>
-                                                    <Input placeholder="Ex: VALOR_B" {...field} />
-                                                </FormControl>
-                                            )}
-                                            <FormDescription>Segunda coluna para soma</FormDescription>
-                                            <FormMessage />
-                                        </FormItem>
-                                    )}
-                                />
-
-                                <FormField
-                                    control={form.control}
-                                    name="colunaSoma"
-                                    render={({ field }) => (
-                                        <FormItem>
-                                            <FormLabel>Coluna Soma</FormLabel>
-                                            {columns.length > 0 ? (
-                                                <FormControl>
-                                                    <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                                        <SelectTrigger>
-                                                            <SelectValue placeholder="Selecione a coluna Soma" />
-                                                        </SelectTrigger>
-                                                        <SelectContent>
-                                                            {columns.map((c) => (
-                                                                <SelectItem key={c.excel} value={c.sqlite}>{c.excel}</SelectItem>
-                                                            ))}
-                                                        </SelectContent>
-                                                    </Select>
-                                                </FormControl>
-                                            ) : (
-                                                <FormControl>
-                                                    <Input placeholder="Ex: TOTAL" {...field} />
-                                                </FormControl>
-                                            )}
-                                            <FormDescription>Coluna com resultado da soma</FormDescription>
-                                            <FormMessage />
-                                        </FormItem>
-                                    )}
-                                />
-                            </div>
+                                return (
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        <ColumnFieldRenderer name="colunaA" label="Coluna A" placeholder="Ex: VALOR_A" description="Primeira coluna para soma" />
+                                        <ColumnFieldRenderer name="colunaB" label="Coluna B" placeholder="Ex: VALOR_B" description="Segunda coluna para soma" />
+                                        <ColumnFieldRenderer name="colunaSoma" label="Coluna Soma" placeholder="Ex: TOTAL" description="Coluna com resultado da soma" />
+                                    </div>
+                                );
+                            })()}
 
                             <FormField
                                 control={form.control}
@@ -292,7 +260,7 @@ const NewConfigEstorno = () => {
 
                             <div className="flex gap-4">
                                 <Button type="submit">Criar Configuração</Button>
-                                <Button type="button" variant="outline" onClick={() => navigate("/configs/estorno")}>
+                                <Button type="button" variant="outline" onClick={() => navigate(ROUTES.LIST)}>
                                     Cancelar
                                 </Button>
                             </div>

@@ -133,3 +133,25 @@ npm run desktop:dev
 
 ---
 Qualquer contribuição deve respeitar as regras de negócio descritas acima, manter compatibilidade entre API, frontend e desktop, e preservar o pipeline de conciliação ponta a ponta.
+
+## ✅ Release checklist (empacotamento / instalador)
+
+Siga estes passos antes de criar o instalador para garantir que o runtime Python e a API sejam incluídos corretamente.
+
+- **Preparar runtime Python:** `npm run python:setup` (no build machine). Em Windows use `npm run python:prepare-win` ou `npm run python:prepare-win:force` para recriar o embed.
+- **Validar runtime embutido:** confirme que `apps/desktop/python-runtime` (dev) ou `resources/python` (após build) contém:
+   - **Execução:** `python.exe` (Windows) ou `bin/python3` (Unix)
+   - **Site-packages:** `Lib/site-packages` (Windows embeddable) ou `lib/python3.x/site-packages` (venv)
+- **Executar validação local:** rode o preparador e verifique manualmente ou use o utilitário `scripts/validate_python_runtime.py` (se disponível) antes de empacotar.
+- **Build do frontend + API:** `npm run client:build` && `npm run api:build`.
+- **Recompilar nativos:** `npm run rebuild:native` (rebuilds better-sqlite3 for the target platform).
+- **Gerar instalador:** `npm --workspace=apps/desktop run dist` (ou o comando central `npm run app:dist`).
+- **Testar instalador em VM limpa:** instale o pacote resultante em uma VM Windows/Linux sem Python instalado e rode o app — verifique os logs em `<userData>/logs` e a presença de `resources/python` no diretório do app.
+
+Problemas comuns e soluções rápidas:
+- `No module named pip` ao rodar o embeddable: execute `npm run python:prepare-win:force` no build machine; o script tenta instalar pip ou extrair wheels via host Python.
+- O app tenta executar um Python do caminho do build machine: garanta que `PYTHON_EXECUTABLE` em `.env` não contenha caminhos absolutos fora de `process.resourcesPath` antes do empacotamento.
+
+Assinatura e publicação:
+- Após gerar o instalador, assine o binário conforme sua política (Windows: signtool / signtool sign; Linux: signe pacote ou forneça checksums/artefatos assinados).
+- Atualize o changelog e a versão (`package.json` root) antes de criar o release no repositório/CI.

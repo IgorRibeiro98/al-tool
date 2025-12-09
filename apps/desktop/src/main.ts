@@ -3,28 +3,39 @@ import path from 'path';
 import http from 'http';
 import fs from 'fs';
 import dotenv from 'dotenv';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, execFileSync } from 'child_process';
 import Module from 'module';
 import { createLicensingService } from './main/services/licensingService';
 
-// Load .env from both dev (repo root) and packaged (resources) locations so licensing variables exist in prod
-const rootEnvPath = path.resolve(__dirname, '../../.env');
-const packagedEnvPath = path.join(process.resourcesPath || '', '.env');
-const envCandidates = [packagedEnvPath, rootEnvPath];
-envCandidates.forEach((envPath) => {
-    try {
-        if (envPath && fs.existsSync(envPath)) {
-            dotenv.config({ path: envPath });
-        }
-    } catch (err) {
-        console.warn('[electron] Failed to load env file', envPath, err);
-    }
-});
+// Constants
+const DEFAULT_WINDOW_WIDTH = 1024;
+const DEFAULT_WINDOW_HEIGHT = 768;
+const DEFAULT_HEALTH_RETRIES = 40;
+const DEFAULT_HEALTH_DELAY_MS = 500;
+const HEALTH_TIMEOUT_MS = 2000;
 
-function createWindow(url: string) {
+function loadEnvFiles(): void {
+    // Load .env from both dev (repo root) and packaged (resources) locations so licensing variables exist in prod
+    const rootEnvPath = path.resolve(__dirname, '../../.env');
+    const packagedEnvPath = path.join(process.resourcesPath || '', '.env');
+    const envCandidates = [packagedEnvPath, rootEnvPath];
+    envCandidates.forEach((envPath) => {
+        try {
+            if (envPath && fs.existsSync(envPath)) {
+                dotenv.config({ path: envPath });
+            }
+        } catch (err) {
+            console.warn('[electron] Failed to load env file', envPath, err);
+        }
+    });
+}
+
+loadEnvFiles();
+
+function createWindow(url: string, opts?: { width?: number; height?: number }) {
     const win = new BrowserWindow({
-        width: 1024,
-        height: 768,
+        width: opts?.width ?? DEFAULT_WINDOW_WIDTH,
+        height: opts?.height ?? DEFAULT_WINDOW_HEIGHT,
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
@@ -33,10 +44,10 @@ function createWindow(url: string) {
     win.loadURL(url);
 }
 
-async function waitForHealth(port: number, retries = 40, delayMs = 500): Promise<boolean> {
+async function waitForHealth(port: number, retries = DEFAULT_HEALTH_RETRIES, delayMs = DEFAULT_HEALTH_DELAY_MS): Promise<boolean> {
     function check(): Promise<boolean> {
         return new Promise((resolve) => {
-            const req = http.get({ host: 'localhost', port, path: '/health', timeout: 2000 }, (res) => {
+            const req = http.get({ host: 'localhost', port, path: '/health', timeout: HEALTH_TIMEOUT_MS }, (res) => {
                 const ok = res.statusCode === 200;
                 res.resume();
                 resolve(ok);
@@ -118,27 +129,37 @@ app.whenReady().then(async () => {
         DB_PATH: envForApi.DB_PATH,
     });
 
-    // Ensure required directories exist before migrations/backend start
-    try {
-        fs.mkdirSync(dataDir, { recursive: true });
-        fs.mkdirSync(path.dirname(envForApi.DB_PATH!), { recursive: true });
-        fs.mkdirSync(envForApi.UPLOAD_DIR!, { recursive: true });
-        fs.mkdirSync(envForApi.EXPORT_DIR!, { recursive: true });
-        fs.mkdirSync(envForApi.INGESTS_DIR!, { recursive: true });
-        fs.mkdirSync(logsDir, { recursive: true });
-        // Write boot diagnostics
-        const bootDiag = {
-            when: new Date().toISOString(),
-            selectedPort,
-            userData,
-            dataDir,
-            logsDir,
-            envForApi,
-        };
-        fs.writeFileSync(path.join(logsDir, 'backend-env.json'), JSON.stringify(bootDiag, null, 2));
-    } catch (e) {
-        console.error('[electron] Failed to create runtime directories:', e);
+    function ensureRuntimeDirectories(): void {
+        try {
+            fs.mkdirSync(dataDir, { recursive: true });
+            fs.mkdirSync(path.dirname(envForApi.DB_PATH!), { recursive: true });
+            fs.mkdirSync(envForApi.UPLOAD_DIR!, { recursive: true });
+            fs.mkdirSync(envForApi.EXPORT_DIR!, { recursive: true });
+            fs.mkdirSync(envForApi.INGESTS_DIR!, { recursive: true });
+            fs.mkdirSync(logsDir, { recursive: true });
+        } catch (e) {
+            console.error('[electron] Failed to create runtime directories:', e);
+        }
     }
+
+    function writeBootDiagnostics() {
+        try {
+            const bootDiag = {
+                when: new Date().toISOString(),
+                selectedPort,
+                userData,
+                dataDir,
+                logsDir,
+                envForApi,
+            };
+            fs.writeFileSync(path.join(logsDir, 'backend-env.json'), JSON.stringify(bootDiag, null, 2));
+        } catch (e) {
+            console.error('[electron] Failed to write boot diagnostics:', e);
+        }
+    }
+
+    ensureRuntimeDirectories();
+    writeBootDiagnostics();
     async function startBackendAndMigrations() {
         // Ensure env variables visible to imported modules
         Object.assign(process.env, envForApi);
@@ -183,6 +204,14 @@ app.whenReady().then(async () => {
             hasShownErrorWindow = true;
             showErrorWindow('Falha ao iniciar backend/migrations. Verifique os logs.');
         }
+        return;
+    }
+
+    // Validate embedded Python runtime (only for packaged apps). If invalid,
+    // show a clear error and abort startup so the user gets actionable feedback.
+    const runtimeOk = validateEmbeddedRuntime(isPackaged);
+    if (!runtimeOk) {
+        console.error('[electron] Embedded Python runtime validation failed; aborting startup');
         return;
     }
 
@@ -268,12 +297,8 @@ function startPythonConversionWorker({ isPackaged, envForApi, logsDir }: { isPac
         return;
     }
 
-    const devPythonBase = process.platform === 'win32'
-        ? path.join(repoRoot, 'apps', 'desktop', 'python-runtime')
-        : path.join(repoRoot, 'apps', 'desktop', 'python-runtime');
-    const pythonBaseDir = isPackaged
-        ? path.join(process.resourcesPath, process.platform === 'win32' ? 'python' : 'python')
-        : devPythonBase;
+    const devPythonBase = path.join(repoRoot, 'apps', 'desktop', 'python-runtime');
+    const pythonBaseDir = isPackaged ? platformRuntimeBase() : devPythonBase;
     const pythonExec = resolvePythonExecutable(isPackaged, pythonBaseDir);
     if (!pythonExec) {
         console.error('[electron] Python executable not found; conversion worker will not start');
@@ -338,9 +363,58 @@ function startPythonConversionWorker({ isPackaged, envForApi, logsDir }: { isPac
 
 function resolvePythonExecutable(isPackaged: boolean, pythonBaseDir?: string): string {
     const candidates: string[] = [];
-    const allowSystemPython = !isPackaged || process.env.ALLOW_SYSTEM_PYTHON === '1';
-    if (process.env.PYTHON_EXECUTABLE) {
-        candidates.push(process.env.PYTHON_EXECUTABLE);
+    // In packaged apps we DO NOT allow using the system Python installed
+    // on the user's machine. Only the embedded runtime under
+    // `process.resourcesPath` (if present) or a PYTHON_EXECUTABLE that
+    // resolves inside resources is allowed. This prevents attempts to
+    // execute a Python binary that exists only on the build machine.
+    const allowSystemPython = !isPackaged;
+
+    // Respect PYTHON_EXECUTABLE in development, but when packaged ignore
+    // absolute paths that point to the build machine (they won't exist
+    // on target users). Allow packaged apps to use an embedded runtime
+    // under `process.resourcesPath` only.
+    const envPython = process.env.PYTHON_EXECUTABLE;
+    if (envPython) {
+        try {
+            const isAbsolute = path.isAbsolute(envPython);
+            const resourcesRoot = path.resolve(process.resourcesPath || '');
+            if (isPackaged) {
+                // In packaged apps we only accept PYTHON_EXECUTABLE when it points
+                // into the app resources (i.e. the embedded runtime) or when it
+                // resolves to an existing file. This prevents absolute paths from
+                // the build machine being used on end-user systems.
+                if (isAbsolute) {
+                    const resolved = path.resolve(envPython);
+                    if (resourcesRoot && resolved.startsWith(resourcesRoot) && fs.existsSync(resolved)) {
+                        candidates.push(resolved);
+                    } else {
+                        console.warn('[electron] Ignoring absolute PYTHON_EXECUTABLE from .env in packaged app (outside resources or missing):', envPython);
+                    }
+                } else {
+                    // Relative paths: resolve relative to resourcesPath and accept if exists
+                    const resolvedRel = path.join(resourcesRoot, envPython);
+                    if (fs.existsSync(resolvedRel)) {
+                        candidates.push(resolvedRel);
+                    } else {
+                        console.warn('[electron] Ignoring relative PYTHON_EXECUTABLE from .env in packaged app (not found under resources):', envPython, '->', resolvedRel);
+                    }
+                }
+            } else {
+                // Development: honor whatever the developer set (absolute or bare)
+                candidates.push(envPython);
+            }
+        } catch (err) {
+            // If anything goes wrong parsing paths, don't fall back to a
+            // build-machine absolute PYTHON_EXECUTABLE when running packaged
+            // (it would be unsafe). In development, fall back to the env var
+            // to keep DX smooth.
+            if (!isPackaged) {
+                candidates.push(envPython);
+            } else {
+                console.warn('[electron] Ignoring PYTHON_EXECUTABLE due to path parse error in packaged app', err);
+            }
+        }
     }
 
     if (pythonBaseDir && fs.existsSync(pythonBaseDir)) {
@@ -353,34 +427,21 @@ function resolvePythonExecutable(isPackaged: boolean, pythonBaseDir?: string): s
     }
 
     if (isPackaged) {
-        const binDirWin = '';
-        const binDirNix = 'bin';
-        const baseWin = path.join(process.resourcesPath, 'python');
-        const baseNix = path.join(process.resourcesPath, 'python');
-        const binNamesWin = ['python.exe'];
-        const binNamesNix = ['python3', 'python'];
+        const base = platformRuntimeBase();
+        const binDir = process.platform === 'win32' ? '' : 'bin';
+        const binNames = process.platform === 'win32' ? ['python.exe'] : ['python3', 'python'];
 
-        // Prefer platform-specific embedded runtime
-        if (process.platform === 'win32') {
-            for (const name of binNamesWin) {
-                candidates.push(path.join(baseWin, binDirWin, name));
-                candidates.push(path.join(baseWin, name));
-            }
-        } else {
-            for (const name of binNamesNix) {
-                candidates.push(path.join(baseNix, binDirNix, name));
-                candidates.push(path.join(baseNix, name));
-            }
+        for (const name of binNames) {
+            candidates.push(path.join(base, binDir, name));
+            candidates.push(path.join(base, name));
         }
-
-        // As a fallback (if someone packaged only one runtime), include both bases
-        for (const name of binNamesWin) {
-            candidates.push(path.join(baseWin, binDirWin, name));
-            candidates.push(path.join(baseWin, name));
-        }
-        for (const name of binNamesNix) {
-            candidates.push(path.join(baseNix, binDirNix, name));
-            candidates.push(path.join(baseNix, name));
+        // Fallback: also try generic resources/python if platform-specific dir was used
+        const generic = path.join(process.resourcesPath || '', 'python');
+        if (generic !== base) {
+            for (const name of binNames) {
+                candidates.push(path.join(generic, binDir, name));
+                candidates.push(path.join(generic, name));
+            }
         }
     }
 
@@ -437,4 +498,124 @@ function findEmbeddedSitePackages(pythonBaseDir: string): string | undefined {
         console.warn('[electron] Failed to locate embedded site-packages', err);
     }
     return undefined;
+}
+
+/**
+ * Prefer a platform-specific runtime directory inside `process.resourcesPath`.
+ * Returns a path under resources (e.g. resources/python-win, resources/python-linux)
+ * falling back to resources/python.
+ */
+function platformRuntimeBase(): string {
+    const resourcesRoot = process.resourcesPath || '';
+    if (!resourcesRoot) return path.join('resources', 'python');
+    const platformDir = process.platform === 'win32' ? 'python-win' : 'python-linux';
+    const platformPath = path.join(resourcesRoot, platformDir);
+    if (fs.existsSync(platformPath)) return platformPath;
+    const generic = path.join(resourcesRoot, 'python');
+    return generic;
+}
+
+/**
+ * Validate the bundled Python runtime under `process.resourcesPath/python`.
+ * When the app is packaged we require a relocatable runtime; this function
+ * checks common locations for the Python executable and for site-packages.
+ * If validation fails it will show an error window with actionable steps.
+ */
+function validateEmbeddedRuntime(isPackaged: boolean): boolean {
+    if (!isPackaged) return true;
+
+    const base = platformRuntimeBase();
+    const missing: string[] = [];
+
+    if (!base || !fs.existsSync(base)) {
+        missing.push(`embedded runtime directory not found: ${base}`);
+    } else {
+        // Check for python executable and perform lightweight validation
+        const exeCandidates = process.platform === 'win32'
+            ? [path.join(base, 'python.exe'), path.join(base, 'Scripts', 'python.exe')]
+            : [path.join(base, 'bin', 'python3'), path.join(base, 'bin', 'python')];
+        let foundExe: string | undefined;
+        for (const c of exeCandidates) {
+            try {
+                if (fs.existsSync(c)) { foundExe = c; break; }
+            } catch {}
+        }
+        if (!foundExe) {
+            missing.push(`python executable not found under ${base} (expected ${exeCandidates.join(', ')})`);
+        } else {
+            // On Unix ensure executable bit and run quick version check
+            if (process.platform !== 'win32') {
+                try {
+                    fs.chmodSync(foundExe, 0o755);
+                } catch (e) {
+                    // best-effort; continue
+                    console.warn('[electron] Could not chmod embedded python:', e);
+                }
+            }
+            try {
+                const out = execFileSync(foundExe, ['-c', "import sys, json; print(json.dumps(tuple(sys.version_info[:3])))"], { encoding: 'utf8', timeout: 2000 });
+                // quick sanity: must print something
+                if (!out || !out.trim()) {
+                    missing.push('embedded python failed quick version check');
+                }
+            } catch (e) {
+                console.warn('[electron] Embedded python quick check failed:', e);
+                missing.push('embedded python failed to run quick version check');
+            }
+        }
+
+        // Check for site-packages
+        const siteCandidates: string[] = [];
+        // venv-like unix layout
+        siteCandidates.push(path.join(base, 'lib'));
+        // windows venv layout
+        siteCandidates.push(path.join(base, 'Lib', 'site-packages'));
+        // embeddable suggested location
+        siteCandidates.push(path.join(base, 'Lib'));
+
+        let hasSite = false;
+        // If lib contains python3.x directory -> check its site-packages
+        try {
+            const libDir = path.join(base, 'lib');
+            if (fs.existsSync(libDir)) {
+                const entries = fs.readdirSync(libDir, { withFileTypes: true });
+                for (const e of entries) {
+                    if (e.isDirectory() && e.name.startsWith('python3')) {
+                        const sp = path.join(libDir, e.name, 'site-packages');
+                        if (fs.existsSync(sp)) {
+                            hasSite = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            // ignore and continue
+        }
+
+        if (!hasSite) {
+            for (const cand of siteCandidates) {
+                if (fs.existsSync(cand) && fs.lstatSync(cand).isDirectory()) {
+                    hasSite = true;
+                    break;
+                }
+            }
+        }
+
+        if (!hasSite) {
+            missing.push(`site-packages not found under ${base} (checked common locations)`);
+        }
+    }
+
+    if (missing.length) {
+        const message = `O runtime Python empacotado está inválido:\n\n- ${missing.join('\n- ')}\n\nSoluções sugeridas:\n- Recrie o runtime antes de empacotar: execute \`npm run python:setup\` no build machine.\n- Se estiver em desenvolvimento, defina \`ALLOW_SYSTEM_PYTHON=1\` para permitir o Python do sistema (não recomendado para instaladores).`;
+        console.error('[electron] Embedded runtime validation errors:', missing);
+        if (!hasShownErrorWindow) {
+            hasShownErrorWindow = true;
+            showErrorWindow(message);
+        }
+        return false;
+    }
+
+    return true;
 }

@@ -1,36 +1,81 @@
 export type MappingState = Record<string, string | null>;
 
+const MIN_FILENAME_LENGTH = 1;
+
+function toArray<T>(value?: T[] | null): T[] {
+    return Array.isArray(value) ? value : [];
+}
+
+function getColumnName(col?: BaseColumn | null): string | undefined {
+    const name = col?.sqlite_name;
+    if (!name) return undefined;
+    const trimmed = String(name).trim();
+    return trimmed.length >= MIN_FILENAME_LENGTH ? trimmed : undefined;
+}
+
+function buildExistingMap(
+    existingPairs?: Array<{ coluna_contabil: string; coluna_fiscal: string }>
+): Map<string, string> {
+    const map = new Map<string, string>();
+    for (const pair of toArray(existingPairs)) {
+        if (!pair) continue;
+        const source = pair.coluna_contabil && String(pair.coluna_contabil).trim();
+        const target = pair.coluna_fiscal && String(pair.coluna_fiscal).trim();
+        if (source && target) map.set(source, target);
+    }
+    return map;
+}
+
+function buildNameSet(columns?: BaseColumn[] | null): Set<string> {
+    const set = new Set<string>();
+    for (const col of toArray(columns)) {
+        const name = getColumnName(col);
+        if (name) set.add(name);
+    }
+    return set;
+}
+
 export function buildMappingState(
-    baseAColumns: BaseColumn[],
-    baseBColumns: BaseColumn[],
+    baseAColumns?: BaseColumn[] | null,
+    baseBColumns?: BaseColumn[] | null,
     existingPairs?: Array<{ coluna_contabil: string; coluna_fiscal: string }>
 ): MappingState {
-    const existingMap = new Map<string, string>();
-    (existingPairs || []).forEach((pair) => {
-        if (pair && pair.coluna_contabil && pair.coluna_fiscal) {
-            existingMap.set(pair.coluna_contabil, pair.coluna_fiscal);
-        }
-    });
-
-    const baseBSet = new Set(baseBColumns.map((col) => col.sqlite_name));
     const state: MappingState = {};
 
-    baseAColumns.forEach((col) => {
-        if (!col || !col.sqlite_name) return;
-        if (existingMap.has(col.sqlite_name)) {
-            state[col.sqlite_name] = existingMap.get(col.sqlite_name)!;
-        } else if (baseBSet.has(col.sqlite_name)) {
-            state[col.sqlite_name] = col.sqlite_name;
-        } else {
-            state[col.sqlite_name] = null;
+    const aCols = toArray(baseAColumns);
+    if (aCols.length === 0) return state;
+
+    const existingMap = buildExistingMap(existingPairs);
+    const baseBSet = buildNameSet(baseBColumns);
+
+    for (const col of aCols) {
+        const sourceName = getColumnName(col);
+        if (!sourceName) continue;
+
+        if (existingMap.has(sourceName)) {
+            state[sourceName] = existingMap.get(sourceName)!;
+            continue;
         }
-    });
+
+        if (baseBSet.has(sourceName)) {
+            state[sourceName] = sourceName;
+            continue;
+        }
+
+        state[sourceName] = null;
+    }
 
     return state;
 }
 
-export function serializeMappingState(state: MappingState): Array<{ coluna_contabil: string; coluna_fiscal: string }> {
-    return Object.entries(state)
-        .filter(([, target]) => typeof target === 'string' && target.length > 0)
-        .map(([source, target]) => ({ coluna_contabil: source, coluna_fiscal: target as string }));
+export function serializeMappingState(
+    state: MappingState
+): Array<{ coluna_contabil: string; coluna_fiscal: string }> {
+    const result: Array<{ coluna_contabil: string; coluna_fiscal: string }> = [];
+    for (const [source, target] of Object.entries(state || {})) {
+        if (typeof target === 'string' && target.trim().length >= MIN_FILENAME_LENGTH) {
+            result.push({ coluna_contabil: source, coluna_fiscal: target });
+        }
+    }
+    return result;
 }

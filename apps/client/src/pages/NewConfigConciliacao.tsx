@@ -15,7 +15,7 @@ import { toast } from "sonner";
 import * as z from "zod";
 import { fetchBases, getBaseColumns } from '@/services/baseService';
 import { createConfigConciliacao } from '@/services/configsService';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 
 const formSchema = z.object({
     nome: z.string().min(1, "Nome é obrigatório"),
@@ -37,6 +37,32 @@ const NewConfigConciliacao = () => {
     const [colsFiscais, setColsFiscais] = useState<Array<{ excel?: string; sqlite?: string; index: string }>>([]);
     type ChaveCombination = { id: string; label: string; colunasContabil: string[]; colunasFiscal: string[] };
     const [chaves, setChaves] = useState<ChaveCombination[]>([{ id: 'CHAVE_1', label: 'Chave 1', colunasContabil: [], colunasFiscal: [] }]);
+
+    const mountedRef = useRef(true);
+    useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+
+    const MSG = useMemo(() => ({
+        LOAD_BASES_FAIL: 'Falha ao carregar bases',
+        LOAD_COLS_FAIL: 'Falha ao carregar colunas',
+        SAVE_SUCCESS: 'Configuração de conciliação criada com sucesso!',
+        SAVE_FAIL: 'Falha ao criar configuração',
+    }), []);
+
+    const mapColumns = useCallback((rows: any[]) => (rows || []).map((c: any) => ({ excel: c.excel_name, sqlite: c.sqlite_name, index: String(c.col_index) })), []);
+
+    const loadColumnsForBase = useCallback(async (baseId: string | number | undefined, setter: React.Dispatch<React.SetStateAction<any[]>>) => {
+        const id = baseId ? Number(baseId) : NaN;
+        if (!id || Number.isNaN(id)) return setter([]);
+        try {
+            const res = await getBaseColumns(id);
+            const rows = res.data?.data || res.data || [];
+            if (mountedRef.current) setter(mapColumns(rows));
+        } catch (err) {
+            console.error('failed to load columns', err);
+            toast.error(MSG.LOAD_COLS_FAIL);
+            if (mountedRef.current) setter([]);
+        }
+    }, [mapColumns, MSG]);
 
     // Note: using Select for column autocomplete (like NewConfigEstorno)
 
@@ -63,44 +89,18 @@ const NewConfigConciliacao = () => {
     }, []);
 
     // load columns when base selections change
+    const watchBaseCont = form.watch('baseContabilId');
+    const watchBaseFisc = form.watch('baseFiscalId');
+
     useEffect(() => {
-        const bCont = Number(form.getValues('baseContabilId'));
-        if (bCont && !Number.isNaN(bCont)) {
-            getBaseColumns(bCont).then(r => {
-                const rows = r.data.data || [];
-                const cols = rows.map((c: any) => {
-                    return {
-                        excel: c.excel_name,
-                        sqlite: c.sqlite_name,
-                        index: String(c.col_index),
-                    };
-                });
-                setColsContabeis(cols);
-            }).catch(() => setColsContabeis([]));
-        } else {
-            setColsContabeis([]);
-        }
+        void loadColumnsForBase(watchBaseCont, setColsContabeis);
+    }, [watchBaseCont, loadColumnsForBase]);
 
-        const bFisc = Number(form.getValues('baseFiscalId'));
-        if (bFisc && !Number.isNaN(bFisc)) {
-            getBaseColumns(bFisc).then(r => {
-                const rows = r.data.data || [];
-                const cols = rows.map((c: any) => {
-                    return {
-                        excel: c.excel_name,
-                        sqlite: c.sqlite_name,
-                        index: String(c.col_index),
-                    };
-                });
-                setColsFiscais(cols);
-            }).catch(() => setColsFiscais([]));
-        } else {
-            setColsFiscais([]);
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [form.watch('baseContabilId'), form.watch('baseFiscalId')]);
+    useEffect(() => {
+        void loadColumnsForBase(watchBaseFisc, setColsFiscais);
+    }, [watchBaseFisc, loadColumnsForBase]);
 
-    const onSubmit = async (data: FormValues) => {
+    const onSubmit = useCallback(async (data: FormValues) => {
         try {
             // validate chaves combinations
             if (!chaves || chaves.length === 0) throw new Error('Adicione ao menos uma combinação de chaves');
@@ -127,13 +127,38 @@ const NewConfigConciliacao = () => {
                 limite_diferenca_imaterial: data.diferencaImaterial ? Number(data.diferencaImaterial) : null,
             } as any;
             await createConfigConciliacao(payload);
-            toast.success("Configuração de conciliação criada com sucesso!");
+            toast.success(MSG.SAVE_SUCCESS);
             navigate("/configs/conciliacao");
         } catch (err: any) {
             console.error('create conciliacao failed', err);
-            toast.error(err?.response?.data?.error || 'Falha ao criar configuração');
+            toast.error(err?.response?.data?.error || MSG.SAVE_FAIL);
         }
-    };
+    }, [chaves, navigate, MSG]);
+
+    const nextChaveLabel = useCallback((list: ChaveCombination[]) => `Chave ${list.length + 1}`, []);
+
+    const addChave = useCallback(() => {
+        setChaves(prev => {
+            const id = `CHAVE_${prev.length + 1}`;
+            return [...prev, { id, label: nextChaveLabel(prev), colunasContabil: [], colunasFiscal: [] }];
+        });
+    }, [nextChaveLabel]);
+
+    const removeChave = useCallback((id: string) => setChaves(prev => prev.filter(c => c.id !== id)), []);
+
+    const addColumnToChave = useCallback((chaveId: string, columnValue: string, side: 'contabil' | 'fiscal') => {
+        setChaves(prev => prev.map(ch => {
+            if (ch.id !== chaveId) return ch;
+            const key = side === 'contabil' ? 'colunasContabil' : 'colunasFiscal';
+            const existing = ch[key] || [];
+            if (existing.includes(columnValue)) return ch;
+            return { ...ch, [key]: [...existing, columnValue] } as ChaveCombination;
+        }));
+    }, []);
+
+    const removeColumnFromChave = useCallback((chaveId: string, columnValue: string, side: 'contabil' | 'fiscal') => {
+        setChaves(prev => prev.map(ch => ch.id === chaveId ? { ...ch, [side === 'contabil' ? 'colunasContabil' : 'colunasFiscal']: (ch[side === 'contabil' ? 'colunasContabil' : 'colunasFiscal'] || []).filter(v => v !== columnValue) } as ChaveCombination : ch));
+    }, []);
 
     return (
         <div className="space-y-6">

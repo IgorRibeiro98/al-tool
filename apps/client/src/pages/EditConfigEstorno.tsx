@@ -9,7 +9,7 @@ import { ArrowLeft, Trash2 } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import {
     AlertDialog,
@@ -35,17 +35,31 @@ const formSchema = z.object({
     ativa: z.boolean().default(true),
 });
 
+type ConfigEstorno = any;
+
+type Base = { id: number | string; nome?: string };
+type Column = { excel?: string; sqlite?: string; index?: string };
+
+
 type FormValues = z.infer<typeof formSchema>;
 
 const EditConfigEstorno = () => {
     const { id } = useParams();
     const navigate = useNavigate();
 
-    const [bases, setBases] = useState<Array<{ id: string; nome?: string }>>([]);
-    const [columns, setColumns] = useState<Array<{ excel: string; sqlite: string; index: string }>>([]);
+    const [bases, setBases] = useState<Base[]>([]);
+    const [columns, setColumns] = useState<Column[]>([]);
     const [loading, setLoading] = useState<boolean>(true);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
+
+    const MSG = useMemo(() => ({
+        LOAD_FAIL: 'Falha ao carregar configuração',
+        SAVE_SUCCESS: 'Configuração atualizada',
+        SAVE_FAIL: 'Falha ao atualizar configuração',
+        DELETE_SUCCESS: 'Configuração excluída',
+        DELETE_FAIL: 'Falha ao excluir configuração',
+    }), []);
 
     const form = useForm<FormValues>({
         resolver: zodResolver(formSchema),
@@ -62,12 +76,28 @@ const EditConfigEstorno = () => {
 
     useEffect(() => {
         let mounted = true;
-        fetchBases().then(r => {
-            if (!mounted) return;
-            setBases(r.data.data || []);
-        }).catch(() => setBases([]));
+        fetchBases()
+            .then(r => { if (!mounted) return; setBases((r.data?.data || r.data || []) as Base[]); })
+            .catch(() => setBases([]))
+        ;
         return () => { mounted = false; };
     }, []);
+
+    const mapColumns = useCallback((rows: any[]): Column[] => {
+        return (rows || []).map((c: any) => ({ excel: c.excel_name, sqlite: c.sqlite_name, index: String(c.col_index) }));
+    }, []);
+
+    const loadColumnsForBase = useCallback(async (baseId: string | number | undefined) => {
+        const idNum = baseId ? Number(baseId) : NaN;
+        if (!idNum || Number.isNaN(idNum)) return setColumns([]);
+        try {
+            const res = await getBaseColumns(idNum);
+            const rows = res.data?.data || [];
+            setColumns(mapColumns(rows));
+        } catch {
+            setColumns([]);
+        }
+    }, [mapColumns]);
 
     useEffect(() => {
         let mounted = true;
@@ -87,51 +117,26 @@ const EditConfigEstorno = () => {
                 baseId: cfg.base_id ? String(cfg.base_id) : "",
                 ativa: !!cfg.ativa,
             });
-            if (cfg.base_id) {
-                getBaseColumns(cfg.base_id).then(r => {
-                    const rows = r.data.data || [];
-                    const cols = rows.map((c: any) => {
-                        return {
-                            excel: c.excel_name,
-                            sqlite: c.sqlite_name,
-                            index: String(c.col_index),
-                        }
-                    });
-                    setColumns(cols);
-                }).catch(() => setColumns([]));
-            }
+            if (cfg.base_id) loadColumnsForBase(cfg.base_id);
         }).catch(err => {
             console.error('failed to load config', err);
-            toast.error('Falha ao carregar configuração');
+            toast.error(MSG.LOAD_FAIL);
         }).finally(() => { if (mounted) setLoading(false); });
 
         return () => { mounted = false; };
-    }, [id]);
+    }, [id, form, loadColumnsForBase, MSG]);
 
     // watch base selection to load columns for autocomplete
     useEffect(() => {
-        const subscription = form.watch((value, { name }) => {
+        const subscription = form.watch((_, { name }) => {
             if (name === 'baseId') {
-                const baseId = Number(form.getValues('baseId'));
-                setColumns([]);
-                if (!baseId || Number.isNaN(baseId)) return;
-                getBaseColumns(baseId).then(r => {
-                    const rows = r.data.data || [];
-                    const cols = rows.map((c: any) => {
-                        return {
-                            excel: c.excel_name,
-                            sqlite: c.sqlite_name,
-                            index: String(c.col_index),
-                        }
-                    });
-                    setColumns(cols);
-                }).catch(() => setColumns([]));
+                loadColumnsForBase(form.getValues('baseId'));
             }
         });
         return () => subscription.unsubscribe();
-    }, [form]);
+    }, [form, loadColumnsForBase]);
 
-    const onSubmit = async (data: FormValues) => {
+    const onSubmit = useCallback(async (data: FormValues) => {
         if (!id) return;
         try {
             const payload = {
@@ -144,36 +149,36 @@ const EditConfigEstorno = () => {
                 ativa: !!data.ativa,
             } as any;
             await updateConfigEstorno(Number(id), payload);
-            toast.success('Configuração atualizada');
+            toast.success(MSG.SAVE_SUCCESS);
             navigate('/configs/estorno');
         } catch (err: any) {
             console.error('update failed', err);
-            toast.error(err?.response?.data?.error || 'Falha ao atualizar configuração');
+            toast.error(err?.response?.data?.error || MSG.SAVE_FAIL);
         }
-    };
+    }, [id, navigate, MSG]);
 
-    const confirmDelete = () => {
+    const confirmDelete = useCallback(() => {
         if (!id) return;
         const numId = Number(id);
         if (Number.isNaN(numId)) return;
         setPendingDeleteId(numId);
         setDeleteDialogOpen(true);
-    };
+    }, [id]);
 
-    const handleDelete = async (delId: number | null) => {
+    const handleDelete = useCallback(async (delId: number | null) => {
         if (!delId) return;
         try {
             await deleteConfigEstorno(delId);
-            toast.success('Configuração excluída');
+            toast.success(MSG.DELETE_SUCCESS);
             navigate('/configs/estorno');
         } catch (err: any) {
             console.error('delete failed', err);
-            toast.error(err?.response?.data?.error || 'Falha ao excluir configuração');
+            toast.error(err?.response?.data?.error || MSG.DELETE_FAIL);
         } finally {
             setDeleteDialogOpen(false);
             setPendingDeleteId(null);
         }
-    };
+    }, [MSG, navigate]);
 
     return (
         <PageSkeletonWrapper loading={loading}>

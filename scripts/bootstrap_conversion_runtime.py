@@ -1,58 +1,58 @@
 #!/usr/bin/env python3
-"""Bootstrap the embedded Python runtime used by the Electron conversion worker.
-- Creates/updates a virtualenv at apps/desktop/python-runtime
-- Installs requirements from scripts/requirements.txt
-Run via: python3 scripts/bootstrap_conversion_runtime.py
-"""
+"""Compatibility wrapper for the unix bootstrap script.
 
+Maintains the original CLI entrypoint at `scripts/bootstrap_conversion_runtime.py`
+while delegating execution to `scripts/unix/bootstrap_conversion_runtime.py`.
+
+This wrapper forwards any command-line arguments to the unix script and
+returns the same exit code on failure or success.
+"""
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
+import subprocess
 from pathlib import Path
-import venv
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_DIR = REPO_ROOT / 'apps' / 'desktop' / 'python-runtime'
-REQUIREMENTS = REPO_ROOT / 'scripts' / 'requirements.txt'
+from typing import List
 
 
-def ensure_runtime_dir() -> Path:
-    print(f"[python-bootstrap] Creating virtualenv at {RUNTIME_DIR}")
-    builder = venv.EnvBuilder(with_pip=True, clear=False, upgrade=True)
-    builder.create(RUNTIME_DIR)
-    return RUNTIME_DIR
+def find_unix_bootstrap(repo_root: Path) -> Path:
+    """Return the path to the unix bootstrap script.
+
+    Raises FileNotFoundError if the target does not exist.
+    """
+    target = repo_root / "scripts" / "unix" / "bootstrap_conversion_runtime.py"
+    if not target.exists():
+        raise FileNotFoundError(str(target))
+    return target
 
 
-def python_bin(runtime_dir: Path) -> Path:
-    if sys.platform == 'win32':
-        return runtime_dir / 'Scripts' / 'python.exe'
-    return runtime_dir / 'bin' / 'python3'
+def run_unix_bootstrap(python_exe: str, target: Path, args: List[str]) -> int:
+    """Execute the unix bootstrap script with provided args and return exit code."""
+    cmd = [python_exe, str(target), *args]
+    print(f"[bootstrap-wrapper] Executing: {' '.join(cmd)}")
+    try:
+        completed = subprocess.run(cmd, check=True)
+        return completed.returncode or 0
+    except subprocess.CalledProcessError as cpe:
+        print(f"[bootstrap-wrapper] Child process failed with code {cpe.returncode}", file=sys.stderr)
+        return cpe.returncode or 1
+    except Exception as exc:
+        print(f"[bootstrap-wrapper] Failed to execute target script: {exc}", file=sys.stderr)
+        return 2
 
 
-def run(cmd, **kwargs):
-    print(f"[python-bootstrap] Running: {' '.join(str(c) for c in cmd)}")
-    subprocess.check_call(cmd, **kwargs)
+def main(argv: List[str] | None = None) -> int:
+    argv = list(argv or sys.argv[1:])
+    repo_root = Path(__file__).resolve().parents[1]
+    try:
+        target = find_unix_bootstrap(repo_root)
+    except FileNotFoundError as fnf:
+        print(f"[bootstrap-wrapper] Target bootstrap script not found: {fnf}", file=sys.stderr)
+        return 3
+
+    python_exe = sys.executable
+    return run_unix_bootstrap(python_exe, target, argv)
 
 
-def install_requirements(python_path: Path):
-    run([python_path, '-m', 'pip', 'install', '--upgrade', 'pip'])
-    run([python_path, '-m', 'pip', 'install', '--upgrade', '-r', str(REQUIREMENTS)])
-
-
-def main():
-    if not REQUIREMENTS.exists():
-        print(f"[python-bootstrap] Requirements file not found: {REQUIREMENTS}", file=sys.stderr)
-        sys.exit(1)
-    runtime_path = ensure_runtime_dir()
-    py = python_bin(runtime_path)
-    if not py.exists():
-        print(f"[python-bootstrap] Python binary missing after venv creation: {py}", file=sys.stderr)
-        sys.exit(1)
-    install_requirements(py)
-    print('[python-bootstrap] Runtime ready.')
-
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    raise SystemExit(main())

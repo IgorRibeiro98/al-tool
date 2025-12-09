@@ -1,27 +1,50 @@
-/**
- * Knex configuration for SQLite (development)
- * Uses the same env contract as src/config/paths.ts:
- * - DATA_DIR (root for db/uploads/exports)
- * - DB_PATH (full sqlite filename) overrides default <DATA_DIR>/db/dev.sqlite3
- */
 const fs = require('fs');
 const path = require('path');
 
-const DATA_DIR = process.env.DATA_DIR || path.resolve(process.cwd(), 'storage');
-const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, 'db', 'dev.sqlite3');
+// Defaults and constants
+const DEFAULT_DATA_DIR = path.resolve(process.cwd(), 'storage');
+const DEFAULT_DB_RELATIVE = path.join('db', 'dev.sqlite3');
+const MIGRATIONS_DIR = path.resolve(__dirname, './migrations');
+const SQLITE_CLIENT = 'better-sqlite3';
 
-const dbDir = path.dirname(DB_PATH);
-if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+function resolveDataDir() {
+    return process.env.DATA_DIR || DEFAULT_DATA_DIR;
+}
+
+function resolveDbPath() {
+    const dataDir = resolveDataDir();
+    return process.env.DB_PATH || path.join(dataDir, DEFAULT_DB_RELATIVE);
+}
+
+function ensureDirectoryExists(filePath) {
+    const dir = path.dirname(filePath);
+    try {
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+    } catch (err) {
+        // Surface a clear error to help debugging environment issues
+        console.error(`[knexfile] Failed to ensure directory exists: ${dir}`, err);
+        throw err;
+    }
+}
+
+function buildSqliteConfig(dbPath) {
+    return {
+        client: SQLITE_CLIENT,
+        connection: { filename: dbPath },
+        useNullAsDefault: true,
+        migrations: { directory: MIGRATIONS_DIR },
+    };
+}
+
+const DB_PATH = resolveDbPath();
+ensureDirectoryExists(DB_PATH);
 
 module.exports = {
-    development: {
-        client: 'better-sqlite3',
-        connection: {
-            filename: DB_PATH,
-        },
-        useNullAsDefault: true,
-        migrations: {
-            directory: path.resolve(__dirname, './migrations'),
-        },
-    },
+    development: buildSqliteConfig(DB_PATH),
+    // keep a minimal production config placeholder so tools expecting multiple envs behave
+    production: buildSqliteConfig(DB_PATH),
+    // Allow knex CLI to use NODE_ENV=test when running tests
+    test: buildSqliteConfig(DB_PATH),
 };

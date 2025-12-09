@@ -1,43 +1,86 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { activateLicense } from '@/services/licenseService';
+
+const REDIRECT_DELAY_MS = 800;
 
 const LicenseActivate: React.FC = () => {
     const [licenseKey, setLicenseKey] = useState('');
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+
     const navigate = useNavigate();
     const queryClient = useQueryClient();
 
-    const onSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
+    const mountedRef = useRef(true);
+    const timeoutRef = useRef<number | null>(null);
+
+    useEffect(() => {
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+            if (timeoutRef.current) {
+                clearTimeout(timeoutRef.current);
+            }
+        };
+    }, []);
+
+    const MESSAGES = useMemo(() => ({
+        SUCCESS: 'Licença ativada com sucesso! Redirecionando...',
+        INVALID_KEY: 'Informe a chave de licença válida.',
+    }), []);
+
+    const extractServerMessage = useCallback((err: any): string => {
+        return err?.response?.data?.message || err?.response?.data?.error || err?.response?.data?.detail || err?.message || String(err);
+    }, []);
+
+    const handleActivate = useCallback(async (key: string) => {
         setLoading(true);
         setError(null);
         setMessage(null);
-        try {
-            const res = await activateLicense(licenseKey);
-            // axios responses usually contain `data` with server payload
-            const body = res?.data ?? {};
 
-            setMessage('Licença ativada com sucesso! Redirecionando...');
-            // refresh license status so the router can react without full reload
+        try {
+            await activateLicense(key.trim());
+            if (!mountedRef.current) return;
+            setMessage(MESSAGES.SUCCESS);
+
+            // best-effort refresh of license status cache
             try {
                 await queryClient.invalidateQueries({ queryKey: ['licenseStatus'] });
-            } catch (e) {
-                // ignore invalidation errors
+            } catch (_) {
+                // ignore invalidate errors
             }
-            // small delay so user sees message
-            setTimeout(() => navigate('/'), 800);
+
+            // navigate after a short delay so the user sees confirmation
+            timeoutRef.current = window.setTimeout(() => {
+                if (!mountedRef.current) return;
+                navigate('/');
+            }, REDIRECT_DELAY_MS);
         } catch (err: any) {
-            // axios error handling: prefer server-provided message when available
-            const serverMsg = err?.response?.data?.message || err?.response?.data?.error || err?.response?.data?.detail;
-            setError(serverMsg || err?.message || String(err));
+            if (!mountedRef.current) return;
+            setError(extractServerMessage(err));
         } finally {
+            if (!mountedRef.current) return;
             setLoading(false);
         }
-    };
+    }, [MESSAGES, navigate, queryClient, extractServerMessage]);
+
+    const onSubmit = useCallback((e: React.FormEvent) => {
+        e.preventDefault();
+        const key = licenseKey.trim();
+        if (!key) {
+            setError(MESSAGES.INVALID_KEY);
+            return;
+        }
+        void handleActivate(key);
+    }, [licenseKey, handleActivate, MESSAGES]);
+
+    const onChangeKey = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+        setLicenseKey(e.target.value);
+        setError(null);
+    }, []);
 
     return (
         <div className="p-6 max-w-xl mx-auto">
@@ -47,9 +90,10 @@ const LicenseActivate: React.FC = () => {
                     <span className="text-sm">Chave de licença</span>
                     <input
                         value={licenseKey}
-                        onChange={(e) => setLicenseKey(e.target.value)}
+                        onChange={onChangeKey}
                         placeholder="Digite sua license key"
                         className="mt-1 block w-full rounded border px-3 py-2"
+                        aria-label="Chave de licença"
                         required
                     />
                 </label>
@@ -58,15 +102,17 @@ const LicenseActivate: React.FC = () => {
                     <button
                         type="submit"
                         className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-60"
-                        disabled={loading}
+                        disabled={loading || licenseKey.trim() === ''}
                     >
                         {loading ? 'Ativando...' : 'Ativar'}
                     </button>
                 </div>
             </form>
 
-            {message && <div className="mt-4 text-green-600">{message}</div>}
-            {error && <div className="mt-4 text-red-600">{error}</div>}
+            <div aria-live="polite" className="mt-4">
+                {message && <div className="text-green-600">{message}</div>}
+                {error && <div className="text-red-600">{error}</div>}
+            </div>
         </div>
     );
 };

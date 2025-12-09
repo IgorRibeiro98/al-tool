@@ -9,7 +9,7 @@ import { ArrowLeft, Trash2 } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import {
     AlertDialog,
@@ -25,6 +25,13 @@ import { fetchBases, getBaseColumns } from '@/services/baseService';
 import { getConfigCancelamento, updateConfigCancelamento, deleteConfigCancelamento } from '@/services/configsService';
 import * as z from "zod";
 
+const SCOPE = 'EditConfigCancelamento';
+const MSG_LOAD_FAILED = 'Falha ao carregar configuração';
+const MSG_SAVE_SUCCESS = 'Configuração atualizada';
+const MSG_SAVE_FAILED = 'Falha ao atualizar configuração';
+const MSG_DELETE_SUCCESS = 'Configuração excluída';
+const MSG_DELETE_FAILED = 'Falha ao excluir configuração';
+
 const formSchema = z.object({
     nome: z.string().min(1, "Nome é obrigatório"),
     coluna: z.string().min(1, "Coluna é obrigatória"),
@@ -36,13 +43,30 @@ const formSchema = z.object({
 
 type FormValues = z.infer<typeof formSchema>;
 
-const EditConfigCancelamento = () => {
+type BaseItem = { id: number | string; nome?: string | null };
+type ColumnItem = { excel: string; sqlite: string; index: string };
+
+const toBaseOptions = (bases: any[]): BaseItem[] => bases.map((b) => ({ id: b.id, nome: b.nome }));
+
+const loadColumnsForBase = async (baseId: number) => {
+    try {
+        const res = await getBaseColumns(baseId);
+        const rows: any[] = res.data?.data ?? [];
+        return rows.map((c) => ({ excel: c.excel_name, sqlite: c.sqlite_name, index: String(c.col_index) }));
+    } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(`${SCOPE} - failed to load columns for base ${baseId}`, err);
+        return [] as ColumnItem[];
+    }
+};
+
+const EditConfigCancelamento: React.FC = () => {
     const { id } = useParams();
     const navigate = useNavigate();
 
-    const [bases, setBases] = useState<Array<{ id: string; nome?: string }>>([]);
-    const [columns, setColumns] = useState<Array<{ excel: string; sqlite: string; index: string }>>([]);
-    const [loading, setLoading] = useState<boolean>(true);
+    const [bases, setBases] = useState<BaseItem[]>([]);
+    const [columns, setColumns] = useState<ColumnItem[]>([]);
+    const [loading, setLoading] = useState(true);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
 
@@ -58,25 +82,23 @@ const EditConfigCancelamento = () => {
         },
     });
 
-    useEffect(() => {
-        let mounted = true;
-        fetchBases().then(r => {
-            if (!mounted) return;
-            setBases((r.data.data || []).map((b: any) => ({ id: String(b.id), nome: b.nome })));
-        }).catch(() => setBases([]));
-        return () => { mounted = false; };
+    const loadBases = useCallback(async () => {
+        try {
+            const res = await fetchBases();
+            const data = res.data?.data ?? res.data ?? [];
+            setBases(toBaseOptions(data));
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error(`${SCOPE} - failed to load bases`, err);
+            setBases([]);
+        }
     }, []);
 
-    // load current config
-    useEffect(() => {
-        let mounted = true;
-        if (!id) return;
-        const numId = Number(id);
-        if (Number.isNaN(numId)) return;
+    const loadConfig = useCallback(async (numId: number) => {
         setLoading(true);
-        getConfigCancelamento(numId).then(res => {
-            if (!mounted) return;
-            const cfg: ConfigCancelamento = res.data;
+        try {
+            const res = await getConfigCancelamento(numId);
+            const cfg: any = res.data;
             form.reset({
                 nome: cfg.nome ?? "",
                 coluna: cfg.coluna_indicador ?? "",
@@ -85,41 +107,48 @@ const EditConfigCancelamento = () => {
                 baseId: cfg.base_id ? String(cfg.base_id) : "",
                 ativa: !!cfg.ativa,
             });
-            // if base present, load columns
+
             if (cfg.base_id) {
-                getBaseColumns(cfg.base_id).then(r => {
-                    const rows = r.data.data || [];
-                    const cols = rows.map((c: any) => ({ excel: c.excel_name, sqlite: c.sqlite_name, index: String(c.col_index) }));
-                    setColumns(cols);
-                }).catch(() => setColumns([]));
+                const cols = await loadColumnsForBase(cfg.base_id);
+                setColumns(cols);
             }
-        }).catch(err => {
-            console.error('failed to load config', err);
-            toast.error('Falha ao carregar configuração');
-        }).finally(() => { if (mounted) setLoading(false); });
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error(`${SCOPE} - failed to load config`, err);
+            toast.error(MSG_LOAD_FAILED);
+        } finally {
+            setLoading(false);
+        }
+    }, [form]);
 
-        return () => { mounted = false; };
-    }, [id]);
-
-    // watch base selection to load columns for autocomplete
     useEffect(() => {
-        const subscription = form.watch((value, { name }) => {
-            if (name === 'baseId') {
-                const baseId = Number(form.getValues('baseId'));
-                setColumns([]);
-                if (!baseId || Number.isNaN(baseId)) return;
-                getBaseColumns(baseId).then(r => {
-                    const rows = r.data.data || [];
-                    const cols = rows.map((c: any) => ({ excel: c.excel_name, sqlite: c.sqlite_name, index: String(c.col_index) }));
-                    setColumns(cols);
-                }).catch(() => setColumns([]));
-            }
+        loadBases();
+    }, [loadBases]);
+
+    useEffect(() => {
+        if (!id) return;
+        const numId = Number(id);
+        if (Number.isNaN(numId)) return;
+        loadConfig(numId);
+    }, [id, loadConfig]);
+
+    // load columns when base selection changes
+    useEffect(() => {
+        const subscription = form.watch((_, { name }) => {
+            if (name !== 'baseId') return;
+            const baseIdRaw = form.getValues('baseId');
+            const baseId = Number(baseIdRaw);
+            setColumns([]);
+            if (!baseId || Number.isNaN(baseId)) return;
+            loadColumnsForBase(baseId).then(setColumns);
         });
         return () => subscription.unsubscribe();
     }, [form]);
 
-    const onSubmit = async (data: FormValues) => {
+    const onSubmit = useCallback(async (data: FormValues) => {
         if (!id) return;
+        const numId = Number(id);
+        if (Number.isNaN(numId)) return;
         try {
             const payload = {
                 nome: data.nome,
@@ -129,37 +158,39 @@ const EditConfigCancelamento = () => {
                 base_id: Number(data.baseId),
                 ativa: !!data.ativa,
             } as any;
-            await updateConfigCancelamento(Number(id), payload);
-            toast.success('Configuração atualizada');
+            await updateConfigCancelamento(numId, payload);
+            toast.success(MSG_SAVE_SUCCESS);
             navigate('/configs/cancelamento');
         } catch (err: any) {
-            console.error('update failed', err);
-            toast.error(err?.response?.data?.error || 'Falha ao atualizar configuração');
+            // eslint-disable-next-line no-console
+            console.error(`${SCOPE} - update failed`, err);
+            toast.error(err?.response?.data?.error || MSG_SAVE_FAILED);
         }
-    };
+    }, [id, navigate]);
 
-    const confirmDelete = () => {
+    const confirmDelete = useCallback(() => {
         if (!id) return;
         const numId = Number(id);
         if (Number.isNaN(numId)) return;
         setPendingDeleteId(numId);
         setDeleteDialogOpen(true);
-    };
+    }, [id]);
 
-    const handleDelete = async (delId: number | null) => {
+    const handleDelete = useCallback(async (delId: number | null) => {
         if (!delId) return;
         try {
             await deleteConfigCancelamento(delId);
-            toast.success('Configuração excluída');
+            toast.success(MSG_DELETE_SUCCESS);
             navigate('/configs/cancelamento');
         } catch (err: any) {
-            console.error('delete failed', err);
-            toast.error(err?.response?.data?.error || 'Falha ao excluir configuração');
+            // eslint-disable-next-line no-console
+            console.error(`${SCOPE} - delete failed`, err);
+            toast.error(err?.response?.data?.error || MSG_DELETE_FAILED);
         } finally {
             setDeleteDialogOpen(false);
             setPendingDeleteId(null);
         }
-    };
+    }, [navigate]);
 
     return (
         <PageSkeletonWrapper loading={loading}>
@@ -203,13 +234,13 @@ const EditConfigCancelamento = () => {
                                         <FormItem>
                                             <FormLabel>Base Associada</FormLabel>
                                             <FormControl>
-                                                <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                                <Select onValueChange={field.onChange} value={field.value}>
                                                     <SelectTrigger>
                                                         <SelectValue placeholder="Selecione a base" />
                                                     </SelectTrigger>
                                                     <SelectContent>
                                                         {bases.map((base) => (
-                                                            <SelectItem key={base.id} value={base.id}>
+                                                            <SelectItem key={String(base.id)} value={String(base.id)}>
                                                                 {base.nome}
                                                             </SelectItem>
                                                         ))}
@@ -230,7 +261,7 @@ const EditConfigCancelamento = () => {
                                             <FormLabel>Coluna Indicadora</FormLabel>
                                             {columns.length > 0 ? (
                                                 <FormControl>
-                                                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                                    <Select onValueChange={field.onChange} value={field.value}>
                                                         <SelectTrigger>
                                                             <SelectValue placeholder="Selecione a coluna" />
                                                         </SelectTrigger>
@@ -293,9 +324,7 @@ const EditConfigCancelamento = () => {
                                         <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
                                             <div className="space-y-0.5">
                                                 <FormLabel className="text-base">Configuração Ativa</FormLabel>
-                                                <FormDescription>
-                                                    Ativar esta configuração imediatamente após criação
-                                                </FormDescription>
+                                                <FormDescription>Ativar esta configuração imediatamente após criação</FormDescription>
                                             </div>
                                             <FormControl>
                                                 <Switch checked={field.value} onCheckedChange={field.onChange} />
@@ -317,6 +346,7 @@ const EditConfigCancelamento = () => {
                         </Form>
                     </CardContent>
                 </Card>
+
                 <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
                     <AlertDialogContent>
                         <AlertDialogHeader>

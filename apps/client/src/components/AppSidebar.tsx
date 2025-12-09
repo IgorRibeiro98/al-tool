@@ -1,15 +1,15 @@
+import React, { FC, memo, useMemo } from 'react';
 import {
     LayoutDashboard,
     Database,
-    Settings,
     XCircle,
     RotateCcw,
     CheckSquare,
     PlayCircle,
-    Link2
-} from "lucide-react";
-import { NavLink } from "@/components/NavLink";
-import { useLocation } from "react-router-dom";
+    Link2,
+} from 'lucide-react';
+import NavLink from '@/components/NavLink';
+import { useLocation } from 'react-router-dom';
 
 import {
     Sidebar,
@@ -21,69 +21,83 @@ import {
     SidebarMenuButton,
     SidebarMenuItem,
     useSidebar,
-} from "@/components/ui/sidebar";
+} from '@/components/ui/sidebar';
 
-const mainItems = [
-    { title: "Dashboard", url: "/", icon: LayoutDashboard },
-    { title: "Bases", url: "/bases", icon: Database },
-    { title: "Conciliações", url: "/conciliacoes", icon: PlayCircle },
+type NavItem = {
+    title: string;
+    url: string;
+    icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+};
+
+const MENU_LABEL_MAIN = 'Menu Principal';
+const MENU_LABEL_CONFIGS = 'Configurações';
+
+const MAIN_ITEMS: NavItem[] = [
+    { title: 'Dashboard', url: '/', icon: LayoutDashboard },
+    { title: 'Bases', url: '/bases', icon: Database },
+    { title: 'Conciliações', url: '/conciliacoes', icon: PlayCircle },
 ];
 
-const configItems = [
-    { title: "Cancelamento", url: "/configs/cancelamento", icon: XCircle },
-    { title: "Estorno", url: "/configs/estorno", icon: RotateCcw },
-    { title: "Conciliação", url: "/configs/conciliacao", icon: CheckSquare },
-    { title: "Mapeamento", url: "/configs/mapeamento", icon: Link2 },
+const CONFIG_ITEMS: NavItem[] = [
+    { title: 'Cancelamento', url: '/configs/cancelamento', icon: XCircle },
+    { title: 'Estorno', url: '/configs/estorno', icon: RotateCcw },
+    { title: 'Conciliação', url: '/configs/conciliacao', icon: CheckSquare },
+    { title: 'Mapeamento', url: '/configs/mapeamento', icon: Link2 },
 ];
 
-export function AppSidebar() {
-    const { open } = useSidebar();
+export function isPathActive(currentPath: string, candidate: string): boolean {
+    if (candidate === '/') return currentPath === '/';
+    return currentPath.startsWith(candidate);
+}
+
+const SidebarSection: FC<{ label: string; items: NavItem[]; activePath: string }> = memo(function SidebarSection({ label, items, activePath }) {
+    const rendered = useMemo(
+        () => (
+            <SidebarGroup>
+                <SidebarGroupLabel>{label}</SidebarGroupLabel>
+                <SidebarGroupContent>
+                    <SidebarMenu>
+                        {items.map((item) => {
+                            const Icon = item.icon;
+                            const key = item.url;
+                            const isActive = isPathActive(activePath, item.url);
+                            const shouldEnd = item.url === '/';
+
+                            return (
+                                <SidebarMenuItem key={key}>
+                                    <SidebarMenuButton asChild isActive={isActive}>
+                                        <NavLink to={item.url} end={shouldEnd}>
+                                            <Icon />
+                                            <span>{item.title}</span>
+                                        </NavLink>
+                                    </SidebarMenuButton>
+                                </SidebarMenuItem>
+                            );
+                        })}
+                    </SidebarMenu>
+                </SidebarGroupContent>
+            </SidebarGroup>
+        ),
+        [label, items, activePath]
+    );
+
+    return rendered;
+});
+
+export const AppSidebar: FC = memo(function AppSidebar() {
+    // keep the sidebar open state available for UI components that need it
+    useSidebar();
     const location = useLocation();
-
-    const isActive = (path: string) => {
-        if (path === "/") return location.pathname === "/";
-        return location.pathname.startsWith(path);
-    };
+    const activePath = location.pathname;
 
     return (
-        <Sidebar collapsible="icon">
+        <Sidebar collapsible="icon" aria-label="Application sidebar">
             <SidebarContent>
-                <SidebarGroup>
-                    <SidebarGroupLabel>Menu Principal</SidebarGroupLabel>
-                    <SidebarGroupContent>
-                        <SidebarMenu>
-                            {mainItems.map((item) => (
-                                <SidebarMenuItem key={item.title}>
-                                    <SidebarMenuButton asChild isActive={isActive(item.url)}>
-                                        <NavLink to={item.url} end={item.url === "/"}>
-                                            <item.icon />
-                                            <span>{item.title}</span>
-                                        </NavLink>
-                                    </SidebarMenuButton>
-                                </SidebarMenuItem>
-                            ))}
-                        </SidebarMenu>
-                    </SidebarGroupContent>
-                </SidebarGroup>
-
-                <SidebarGroup>
-                    <SidebarGroupLabel>Configurações</SidebarGroupLabel>
-                    <SidebarGroupContent>
-                        <SidebarMenu>
-                            {configItems.map((item) => (
-                                <SidebarMenuItem key={item.title}>
-                                    <SidebarMenuButton asChild isActive={isActive(item.url)}>
-                                        <NavLink to={item.url}>
-                                            <item.icon />
-                                            <span>{item.title}</span>
-                                        </NavLink>
-                                    </SidebarMenuButton>
-                                </SidebarMenuItem>
-                            ))}
-                        </SidebarMenu>
-                    </SidebarGroupContent>
-                </SidebarGroup>
+                <SidebarSection label={MENU_LABEL_MAIN} items={MAIN_ITEMS} activePath={activePath} />
+                <SidebarSection label={MENU_LABEL_CONFIGS} items={CONFIG_ITEMS} activePath={activePath} />
             </SidebarContent>
         </Sidebar>
     );
-}
+});
+
+export default AppSidebar;

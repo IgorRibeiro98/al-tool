@@ -1,28 +1,42 @@
 import path from 'path';
 import dotenv from 'dotenv';
 
-// Carrega sempre o apps/api/.env independentemente do cwd (dist -> ../.env)
+// Load apps/api/.env to ensure API-specific variables are available regardless of CWD
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
-// Harmoniza variáveis legadas do .env raiz
-// Causa raiz: .env usa APP_DATA_DIR, enquanto a API lê DATA_DIR.
-// Solução: mapear APP_* para nomes esperados quando não definidos.
-if (!process.env.DATA_DIR && process.env.APP_DATA_DIR) {
-    process.env.DATA_DIR = process.env.APP_DATA_DIR;
-}
-if (!process.env.DB_PATH && process.env.DB_PATH) {
-    // DB_PATH já existe no .env raiz; manter
-}
-if (!process.env.UPLOAD_DIR && process.env.UPLOAD_DIR) {
-    // UPLOAD_DIR já existe no .env raiz; manter
-}
-if (!process.env.EXPORT_DIR && process.env.EXPORT_DIR) {
-    // EXPORT_DIR já existe no .env raiz; manter
+// Helper parsers and mappers
+function parseIntEnv(name: string, fallback: number): number {
+    const v = process.env[name];
+    if (!v) return fallback;
+    const n = Number(v);
+    return Number.isNaN(n) ? fallback : n;
 }
 
-// Também harmoniza porta
-if (!process.env.APP_PORT && process.env.PORT) {
-    process.env.APP_PORT = process.env.PORT;
+function firstDefined<T>(...vals: Array<T | undefined | null>): T | undefined {
+    for (const v of vals) if (v !== undefined && v !== null) return v as T;
+    return undefined;
 }
 
-export { };
+// Harmonize legacy variable names and provide safe defaults when possible
+const DEFAULT_DATA_DIR = path.resolve(__dirname, '..', '..', 'storage');
+
+const DATA_DIR = process.env.DATA_DIR || process.env.APP_DATA_DIR || DEFAULT_DATA_DIR;
+const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, 'db', 'dev.sqlite3');
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(DATA_DIR, 'uploads');
+const EXPORT_DIR = process.env.EXPORT_DIR || path.join(DATA_DIR, 'exports');
+
+const APP_PORT = parseIntEnv('APP_PORT', parseIntEnv('PORT', 3000));
+const NODE_ENV = process.env.NODE_ENV || 'development';
+
+export const env = {
+    nodeEnv: NODE_ENV,
+    port: APP_PORT,
+    dataDir: DATA_DIR,
+    dbPath: DB_PATH,
+    uploadDir: UPLOAD_DIR,
+    exportDir: EXPORT_DIR,
+    raw: process.env as NodeJS.ProcessEnv,
+    get: (key: string, fallback?: string) => firstDefined(process.env[key], fallback) as string | undefined
+};
+
+export default env;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { z } from 'zod';
 import { useForm } from 'react-hook-form';
@@ -36,6 +36,23 @@ const NewConfigMapeamento = () => {
     const [loadingColsB, setLoadingColsB] = useState(false);
     const [mappingState, setMappingState] = useState<MappingState>({});
 
+    const mountedRef = useRef(true);
+    useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+
+    const MSG = useMemo(() => ({
+        LOAD_BASES: 'Falha ao carregar bases',
+        LOAD_COLS_A: 'Falha ao carregar colunas contábeis',
+        LOAD_COLS_B: 'Falha ao carregar colunas fiscais',
+        SAVE_FAIL: 'Falha ao criar configuração',
+        SAVE_OK: 'Configuração criada',
+        SELECT_DIFFERENT_BASES: 'Selecione bases diferentes',
+        NO_MAPPINGS: 'Defina ao menos um mapeamento'
+    }), []);
+
+    const ROUTES = useMemo(() => ({ LIST: '/configs/mapeamento' }), []);
+
+    const mapColumns = useCallback((rows: any[]) => (rows || []).map((c: any) => c as BaseColumn), []);
+
     const form = useForm<FormValues>({
         resolver: zodResolver(schema),
         defaultValues: { nome: '', baseContabilId: undefined as any, baseFiscalId: undefined as any },
@@ -44,55 +61,42 @@ const NewConfigMapeamento = () => {
     const watchBaseA = form.watch('baseContabilId');
     const watchBaseB = form.watch('baseFiscalId');
 
-    useEffect(() => {
-        fetchBases()
-            .then((res) => {
-                const list = res.data?.data || res.data || [];
-                setBases(list as Base[]);
-            })
-            .catch(() => {
-                setBases([]);
-                toast.error('Falha ao carregar bases');
-            });
-    }, []);
-
-    useEffect(() => {
-        if (!watchBaseA) {
-            setBaseAColumns([]);
-            setMappingState({});
-            return;
+    const loadBases = useCallback(async () => {
+        try {
+            const res = await fetchBases();
+            if (!mountedRef.current) return;
+            const list = res.data?.data || res.data || [];
+            setBases(list as Base[]);
+        } catch (err) {
+            console.error('loadBases failed', err);
+            toast.error(MSG.LOAD_BASES);
+            if (mountedRef.current) setBases([]);
         }
-        setLoadingColsA(true);
-        getBaseColumns(watchBaseA)
-            .then((res) => {
-                const cols = res.data?.data || res.data || [];
-                setBaseAColumns(cols as BaseColumn[]);
-            })
-            .catch(() => {
-                setBaseAColumns([]);
-                toast.error('Falha ao carregar colunas contábeis');
-            })
-            .finally(() => setLoadingColsA(false));
-    }, [watchBaseA]);
+    }, [MSG]);
 
-    useEffect(() => {
-        if (!watchBaseB) {
-            setBaseBColumns([]);
-            setMappingState({});
-            return;
+    useEffect(() => { void loadBases(); }, [loadBases]);
+
+    const loadColumns = useCallback(async (baseId: number | undefined, setter: (v: BaseColumn[]) => void, setLoading: (v: boolean) => void, errorMsg: string) => {
+        setter([]);
+        if (!baseId) return;
+        setLoading(true);
+        try {
+            const res = await getBaseColumns(baseId);
+            if (!mountedRef.current) return;
+            const rows = res.data?.data || res.data || [];
+            setter(mapColumns(rows));
+        } catch (err) {
+            console.error('loadColumns failed', err);
+            toast.error(errorMsg);
+            if (mountedRef.current) setter([]);
+        } finally {
+            setLoading(false);
         }
-        setLoadingColsB(true);
-        getBaseColumns(watchBaseB)
-            .then((res) => {
-                const cols = res.data?.data || res.data || [];
-                setBaseBColumns(cols as BaseColumn[]);
-            })
-            .catch(() => {
-                setBaseBColumns([]);
-                toast.error('Falha ao carregar colunas fiscais');
-            })
-            .finally(() => setLoadingColsB(false));
-    }, [watchBaseB]);
+    }, [mapColumns]);
+
+    useEffect(() => { void loadColumns(watchBaseA as any, setBaseAColumns, setLoadingColsA, MSG.LOAD_COLS_A); }, [watchBaseA, loadColumns, MSG.LOAD_COLS_A]);
+
+    useEffect(() => { void loadColumns(watchBaseB as any, setBaseBColumns, setLoadingColsB, MSG.LOAD_COLS_B); }, [watchBaseB, loadColumns, MSG.LOAD_COLS_B]);
 
     useEffect(() => {
         if (!watchBaseA || !watchBaseB) {
@@ -106,16 +110,16 @@ const NewConfigMapeamento = () => {
     const contabilBases = useMemo(() => bases.filter((b) => b.tipo === 'CONTABIL'), [bases]);
     const fiscalBases = useMemo(() => bases.filter((b) => b.tipo === 'FISCAL'), [bases]);
 
-    const handleMappingChange = (column: string, target: string | null) => {
+    const handleMappingChange = useCallback((column: string, target: string | null) => {
         setMappingState((prev) => ({ ...prev, [column]: target }));
-    };
+    }, []);
 
-    const onSubmit = async (values: FormValues) => {
+    const onSubmit = useCallback(async (values: FormValues) => {
         const { nome, baseContabilId, baseFiscalId } = values;
         if (!baseContabilId || !baseFiscalId) return;
         const serialized = serializeMappingState(mappingState);
         if (serialized.length === 0) {
-            toast.error('Defina ao menos um mapeamento');
+            toast.error(MSG.NO_MAPPINGS);
             return;
         }
         setLoading(true);
@@ -126,18 +130,49 @@ const NewConfigMapeamento = () => {
                 base_fiscal_id: baseFiscalId,
                 mapeamentos: serialized,
             });
-            toast.success('Configuração criada');
-            navigate('/configs/mapeamento');
+            toast.success(MSG.SAVE_OK);
+            navigate(ROUTES.LIST);
         } catch (err: any) {
             console.error('create mapping config failed', err);
-            toast.error(err?.response?.data?.error || 'Falha ao criar configuração');
+            toast.error(err?.response?.data?.error || MSG.SAVE_FAIL);
         } finally {
-            setLoading(false);
+            if (mountedRef.current) setLoading(false);
         }
-    };
+    }, [mappingState, MSG, navigate, ROUTES]);
 
     const mappingEntries = Object.entries(mappingState);
     const mappingEnabled = baseAColumns.length > 0 && baseBColumns.length > 0;
+
+    const MappingRow = ({ column, target }: { column: string; target: string | null }) => {
+        const colInfo = baseAColumns.find((c) => c.sqlite_name === column);
+        if (!colInfo) return null;
+        return (
+            <div key={column} className="grid gap-2 md:grid-cols-3 items-center">
+                <div>
+                    <p className="text-sm font-medium">{colInfo.excel_name || colInfo.sqlite_name}</p>
+                    <p className="text-xs text-muted-foreground">{colInfo.sqlite_name}</p>
+                </div>
+                <div className="md:col-span-2">
+                    <Select
+                        value={target ? String(target) : 'none'}
+                        onValueChange={(val) => handleMappingChange(column, val === 'none' ? null : val)}
+                    >
+                        <SelectTrigger>
+                            <SelectValue placeholder="Selecione a coluna fiscal" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="none">Sem correspondência</SelectItem>
+                            {baseBColumns.map((col) => (
+                                <SelectItem key={col.sqlite_name} value={col.sqlite_name}>
+                                    {col.excel_name || col.sqlite_name}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                </div>
+            </div>
+        );
+    };
 
     return (
         <PageSkeletonWrapper loading={loading}>
@@ -232,36 +267,9 @@ const NewConfigMapeamento = () => {
                                         <p className="text-sm text-muted-foreground">Não foi possível carregar as colunas selecionadas.</p>
                                     ) : (
                                         <div className="space-y-3">
-                                            {mappingEntries.map(([column, target]) => {
-                                                const colInfo = baseAColumns.find((c) => c.sqlite_name === column);
-                                                if (!colInfo) return null;
-                                                return (
-                                                    <div key={column} className="grid gap-2 md:grid-cols-3 items-center">
-                                                        <div>
-                                                            <p className="text-sm font-medium">{colInfo.excel_name || colInfo.sqlite_name}</p>
-                                                            <p className="text-xs text-muted-foreground">{colInfo.sqlite_name}</p>
-                                                        </div>
-                                                        <div className="md:col-span-2">
-                                                            <Select
-                                                                value={target ? String(target) : 'none'}
-                                                                onValueChange={(val) => handleMappingChange(column, val === 'none' ? null : val)}
-                                                            >
-                                                                <SelectTrigger>
-                                                                    <SelectValue placeholder="Selecione a coluna fiscal" />
-                                                                </SelectTrigger>
-                                                                <SelectContent>
-                                                                    <SelectItem value="none">Sem correspondência</SelectItem>
-                                                                    {baseBColumns.map((col) => (
-                                                                        <SelectItem key={col.sqlite_name} value={col.sqlite_name}>
-                                                                            {col.excel_name || col.sqlite_name}
-                                                                        </SelectItem>
-                                                                    ))}
-                                                                </SelectContent>
-                                                            </Select>
-                                                        </div>
-                                                    </div>
-                                                );
-                                            })}
+                                            {mappingEntries.map(([column, target]) => (
+                                                <MappingRow key={column} column={column} target={target as string | null} />
+                                            ))}
                                         </div>
                                     )}
                                 </div>

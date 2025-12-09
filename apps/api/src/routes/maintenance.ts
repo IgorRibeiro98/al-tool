@@ -7,14 +7,28 @@ import { EXPORT_DIR } from '../config/paths';
 
 const router = Router();
 
-async function emptyDir(dirPath: string): Promise<number> {
+// Constants
+const LOG_PREFIX = '[maintenance]';
+const STORAGE_DIR = path.resolve(process.cwd(), 'storage');
+const UPLOADS_DIR = path.join(STORAGE_DIR, 'uploads');
+const INGESTS_DIR = path.join(STORAGE_DIR, 'ingests');
+const INGESTS_DIR_ABS = path.resolve('/var/www/html/al-tool/al-tool/storage/ingests');
+const DEFAULT_TTL_DAYS = 7;
+
+// Helpers
+async function safeAccess(p: string): Promise<boolean> {
     try {
-        await fs.access(dirPath);
-    } catch (e) {
-        return 0; // nothing to do
+        await fs.access(p);
+        return true;
+    } catch {
+        return false;
     }
+}
+
+async function emptyDir(dirPath: string): Promise<number> {
+    if (!(await safeAccess(dirPath))) return 0;
     const entries = await fs.readdir(dirPath);
-    let count = 0;
+    let deleted = 0;
     for (const name of entries) {
         const abs = path.join(dirPath, name);
         try {
@@ -24,102 +38,112 @@ async function emptyDir(dirPath: string): Promise<number> {
             } else {
                 await fs.unlink(abs);
             }
-            count += 1;
-        } catch (e) {
-            // ignore individual failures
+            deleted += 1;
+        } catch (err) {
+            console.warn(LOG_PREFIX, 'failed to remove', abs, err);
         }
     }
-    return count;
+    return deleted;
 }
 
-// POST /maintenance/cleanup
-// Deletes files in storage/uploads and storage/ingests, drops tables named base_<id>,
-// removes base_columns entries and clears bases.tabela_sqlite. Returns a summary.
-router.post('/cleanup', async (req: Request, res: Response) => {
+async function listTablesLike(pattern: string): Promise<string[]> {
+    const raw = await db.raw(`SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?`, [pattern]);
+    const rows = Array.isArray(raw) ? raw : (raw && raw[0]) ? raw[0] : [];
+    return rows.map((r: any) => (r.name || r.NAME || Object.values(r)[0])).filter(Boolean);
+}
+
+async function dropTables(tables: string[]): Promise<string[]> {
+    const dropped: string[] = [];
+    for (const t of tables) {
+        if (!t) continue;
+        try {
+            const exists = await db.schema.hasTable(t);
+            if (exists) {
+                await db.schema.dropTableIfExists(t);
+                dropped.push(t);
+            }
+        } catch (err) {
+            console.warn(LOG_PREFIX, 'failed to drop table', t, err);
+        }
+    }
+    return dropped;
+}
+
+async function clearBasesMetadataAndDeleteBases(droppedTables: string[]): Promise<number> {
+    let deletedBases = 0;
     try {
-        const uploadsDir = path.resolve(process.cwd(), 'storage', 'uploads');
-        const ingestsDir = path.resolve(process.cwd(), 'storage', 'ingests');
-        const exportsDir = EXPORT_DIR;
-        // Also include absolute path used in some environments
-        const ingestsDirAbs = path.resolve('/var/www/html/al-tool/al-tool/storage/ingests');
-
-        let deletedUploads = 0;
-        let deletedIngests = 0;
-        let droppedTables: string[] = [];
-        let deletedExports = 0;
-        let deletedBases = 0;
-        let droppedResultTables: string[] = [];
-        let deletedJobs = 0;
-
-        deletedUploads = await emptyDir(uploadsDir);
-        // attempt to clear both candidate ingests directories and sum results
-        deletedIngests += await emptyDir(ingestsDir);
-        if (ingestsDirAbs !== ingestsDir) {
-            deletedIngests += await emptyDir(ingestsDirAbs);
-        }
-        deletedExports = await emptyDir(exportsDir);
-
-        // drop tables that start with base_
-        const tbls: any = await db.raw("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'base_%'");
-        const rows = Array.isArray(tbls) ? tbls : (tbls && tbls[0]) ? tbls[0] : [];
-        // different results shape depending on knex/better-sqlite3, normalize
-        let names: string[] = rows.map((r: any) => (r.name || r.NAME || Object.values(r)[0]));
-        // exclude important metadata tables that start with base_ but must not be dropped
-        names = names.filter(n => n && n !== 'base_columns' && n !== 'bases');
-        for (const t of names) {
-            if (!t) continue;
+        const bases = await db('bases').select('id', 'tabela_sqlite');
+        for (const b of bases) {
             try {
-                const exists = await db.schema.hasTable(t);
-                if (exists) {
-                    await db.schema.dropTableIfExists(t);
-                    droppedTables.push(t);
+                // remove column metadata if the backing table was dropped
+                if (b.tabela_sqlite && droppedTables.includes(b.tabela_sqlite)) {
+                    await db('base_columns').where({ base_id: b.id }).del();
                 }
-            } catch (e) {
-                // ignore
+                // defensive: always attempt to remove associated base_columns
+                await db('base_columns').where({ base_id: b.id }).del();
+            } catch (err) {
+                console.warn(LOG_PREFIX, 'failed to clear base_columns for base', b.id, err);
             }
-        }
-
-        // drop conciliation result tables
-        const tblsResult: any = await db.raw("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'conciliacao_result_%'");
-        const rowsResult = Array.isArray(tblsResult) ? tblsResult : (tblsResult && tblsResult[0]) ? tblsResult[0] : [];
-        const resultNames: string[] = rowsResult.map((r: any) => (r.name || r.NAME || Object.values(r)[0]));
-        for (const t of resultNames) {
-            if (!t) continue;
             try {
-                const exists = await db.schema.hasTable(t);
-                if (exists) {
-                    await db.schema.dropTableIfExists(t);
-                    droppedResultTables.push(t);
-                }
-            } catch (_) {}
-        }
-
-        // clear base metadata: remove base_columns for bases where tabela_sqlite was dropped, and set tabela_sqlite = NULL
-        try {
-            const bases = await db('bases').select('id', 'tabela_sqlite');
-            for (const b of bases) {
-                if (b.tabela_sqlite) {
-                    const tn = b.tabela_sqlite;
-                    if (droppedTables.includes(tn)) {
-                        try { await db('base_columns').where({ base_id: b.id }).del(); } catch (e) { }
-                    }
-                }
-                try { await db('base_columns').where({ base_id: b.id }).del(); } catch (e) { }
-                try { await db('bases').where({ id: b.id }).del(); deletedBases += 1; } catch (e) { }
+                await db('bases').where({ id: b.id }).del();
+                deletedBases += 1;
+            } catch (err) {
+                console.warn(LOG_PREFIX, 'failed to delete base', b.id, err);
             }
-        } catch (e) {
-            // ignore
         }
+    } catch (err) {
+        console.warn(LOG_PREFIX, 'failed to list bases', err);
+    }
+    return deletedBases;
+}
 
-        // delete conciliation jobs
-        try {
-            const jobs = await db('jobs_conciliacao').select('id');
-            if (jobs && jobs.length > 0) {
-                try { await db('jobs_conciliacao').del(); deletedJobs = jobs.length; } catch (e) { }
-            }
-        } catch (e) {
-            // ignore
+async function deleteAllJobsConciliacao(): Promise<number> {
+    try {
+        const jobs = await db('jobs_conciliacao').select('id');
+        if (!jobs || jobs.length === 0) return 0;
+        const count = jobs.length;
+        await db('jobs_conciliacao').del();
+        return count;
+    } catch (err) {
+        console.warn(LOG_PREFIX, 'failed to delete jobs_conciliacao', err);
+        return 0;
+    }
+}
+
+async function safeUnlink(p?: string): Promise<boolean> {
+    if (!p) return false;
+    const abs = path.isAbsolute(p) ? p : path.resolve(process.cwd(), p);
+    if (!(await safeAccess(abs))) return false;
+    try {
+        await fs.unlink(abs);
+        return true;
+    } catch (err) {
+        console.warn(LOG_PREFIX, 'failed to unlink', abs, err);
+        return false;
+    }
+}
+
+// Routes
+router.post('/cleanup', async (_req: Request, res: Response) => {
+    try {
+        const deletedUploads = await emptyDir(UPLOADS_DIR);
+        let deletedIngests = await emptyDir(INGESTS_DIR);
+        if (INGESTS_DIR_ABS !== INGESTS_DIR) {
+            deletedIngests += await emptyDir(INGESTS_DIR_ABS);
         }
+        const deletedExports = await emptyDir(EXPORT_DIR);
+
+        // Drop base_* tables but exclude metadata tables
+        const baseTables = await listTablesLike('base_%');
+        const filteredBaseTables = baseTables.filter((n) => n !== 'base_columns' && n !== 'bases');
+        const droppedTables = await dropTables(filteredBaseTables);
+
+        // Drop conciliacao_result_* tables
+        const resultTables = await listTablesLike('conciliacao_result_%');
+        const droppedResultTables = await dropTables(resultTables);
+
+        const deletedBases = await clearBasesMetadataAndDeleteBases(droppedTables);
+        const deletedJobs = await deleteAllJobsConciliacao();
 
         return res.json({
             deletedUploads,
@@ -129,53 +153,37 @@ router.post('/cleanup', async (req: Request, res: Response) => {
             droppedResultTables,
             deletedBases,
             deletedJobs,
-            message: 'cleanup finished'
+            message: 'cleanup finished',
         });
     } catch (err: any) {
-        console.error('Maintenance cleanup error', err);
+        console.error(LOG_PREFIX, 'cleanup error', err);
         return res.status(400).json({ error: 'cleanup failed', details: err && err.message });
     }
 });
 
-export default router;
-
 // POST /maintenance/cleanup/storage
 // Deletes files in storage/uploads, storage/ingests and EXPORT_DIR without touching the database.
-router.post('/cleanup/storage', async (req: Request, res: Response) => {
+router.post('/cleanup/storage', async (_req: Request, res: Response) => {
     try {
-        const uploadsDir = path.resolve(process.cwd(), 'storage', 'uploads');
-        const ingestsDir = path.resolve(process.cwd(), 'storage', 'ingests');
-        const ingestsDirAbs = path.resolve('/var/www/html/al-tool/al-tool/storage/ingests');
-        const exportsDir = EXPORT_DIR;
-
-        let deletedUploads = 0;
-        let deletedIngests = 0;
-        let deletedExports = 0;
-
-        deletedUploads = await emptyDir(uploadsDir);
-        deletedIngests += await emptyDir(ingestsDir);
-        if (ingestsDirAbs !== ingestsDir) {
-            deletedIngests += await emptyDir(ingestsDirAbs);
+        const deletedUploads = await emptyDir(UPLOADS_DIR);
+        let deletedIngests = await emptyDir(INGESTS_DIR);
+        if (INGESTS_DIR_ABS !== INGESTS_DIR) {
+            deletedIngests += await emptyDir(INGESTS_DIR_ABS);
         }
-        deletedExports = await emptyDir(exportsDir);
+        const deletedExports = await emptyDir(EXPORT_DIR);
 
-        return res.json({
-            deletedUploads,
-            deletedIngests,
-            deletedExports,
-            message: 'storage cleanup finished'
-        });
+        return res.json({ deletedUploads, deletedIngests, deletedExports, message: 'storage cleanup finished' });
     } catch (err: any) {
-        console.error('Maintenance storage cleanup error', err);
+        console.error(LOG_PREFIX, 'storage cleanup error', err);
         return res.status(400).json({ error: 'storage cleanup failed', details: err && err.message });
     }
 });
 
 // POST /maintenance/cleanup-results
 // Drops conciliation result tables and deletes export files for jobs older than TTL.
-router.post('/cleanup/results', async (req: Request, res: Response) => {
+router.post('/cleanup/results', async (_req: Request, res: Response) => {
     try {
-        const ttlDays = Number(process.env.CLEANUP_RESULTS_TTL_DAYS || 7);
+        const ttlDays = Number(process.env.CLEANUP_RESULTS_TTL_DAYS || DEFAULT_TTL_DAYS);
         const cutoff = new Date(Date.now() - ttlDays * 24 * 60 * 60 * 1000);
 
         const jobs = await db('jobs_conciliacao')
@@ -187,22 +195,6 @@ router.post('/cleanup/results', async (req: Request, res: Response) => {
         const deletedExports: string[] = [];
         let updatedJobs = 0;
 
-        const safeUnlink = async (p: string) => {
-            if (!p) return false;
-            const abs = path.isAbsolute(p) ? p : path.resolve(process.cwd(), p);
-            try {
-                await fs.access(abs);
-            } catch (_) {
-                return false;
-            }
-            try {
-                await fs.unlink(abs);
-                return true;
-            } catch (_) {
-                return false;
-            }
-        };
-
         for (const job of jobs) {
             const table = `conciliacao_result_${job.id}`;
             try {
@@ -211,7 +203,9 @@ router.post('/cleanup/results', async (req: Request, res: Response) => {
                     await db.schema.dropTableIfExists(table);
                     droppedTables.push(table);
                 }
-            } catch (_) {}
+            } catch (err) {
+                console.warn(LOG_PREFIX, 'failed to drop result table', table, err);
+            }
 
             if (job.arquivo_exportado) {
                 const deleted = await safeUnlink(job.arquivo_exportado);
@@ -221,13 +215,17 @@ router.post('/cleanup/results', async (req: Request, res: Response) => {
             try {
                 await db('jobs_conciliacao').where({ id: job.id }).update({ arquivo_exportado: null });
                 updatedJobs += 1;
-            } catch (_) {}
+            } catch (err) {
+                console.warn(LOG_PREFIX, 'failed to clear arquivo_exportado for job', job.id, err);
+            }
         }
 
         // Delete stray exports older than TTL in EXPORT_DIR
         let deletedStray = 0;
         try {
-            await fs.mkdir(EXPORT_DIR, { recursive: true });
+            if (!(await safeAccess(EXPORT_DIR))) {
+                await fs.mkdir(EXPORT_DIR, { recursive: true });
+            }
             const entries = await fs.readdir(EXPORT_DIR);
             for (const name of entries) {
                 const abs = path.join(EXPORT_DIR, name);
@@ -237,9 +235,13 @@ router.post('/cleanup/results', async (req: Request, res: Response) => {
                         await fs.unlink(abs);
                         deletedStray += 1;
                     }
-                } catch (_) {}
+                } catch (err) {
+                    console.warn(LOG_PREFIX, 'failed to inspect or delete stray export', abs, err);
+                }
             }
-        } catch (_) {}
+        } catch (err) {
+            console.warn(LOG_PREFIX, 'failed to clean exports dir', err);
+        }
 
         return res.json({
             cutoff: cutoff.toISOString(),
@@ -248,10 +250,12 @@ router.post('/cleanup/results', async (req: Request, res: Response) => {
             deletedExports,
             deletedStray,
             updatedJobs,
-            message: 'cleanup results finished'
+            message: 'cleanup results finished',
         });
     } catch (err: any) {
-        console.error('Maintenance cleanup results error', err);
+        console.error(LOG_PREFIX, 'cleanup results error', err);
         return res.status(400).json({ error: 'cleanup results failed', details: err && err.message });
     }
 });
+
+export default router;
