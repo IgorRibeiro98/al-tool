@@ -115,8 +115,10 @@ export class ConciliacaoABStep implements PipelineStep {
         const marksA = new Map<number, MarkRow>();
         const marksB = new Map<number, MarkRow>();
         for (const m of rows) {
-            if (m.base_id === baseAId && !marksA.has(m.row_id)) marksA.set(m.row_id, m);
-            if (m.base_id === baseBId && !marksB.has(m.row_id)) marksB.set(m.row_id, m);
+            const rid = Number(m.row_id);
+            const markCopy = { ...m, row_id: rid } as MarkRow;
+            if (m.base_id === baseAId && !marksA.has(rid)) marksA.set(rid, markCopy);
+            if (m.base_id === baseBId && !marksB.has(rid)) marksB.set(rid, markCopy);
         }
         return { marksA, marksB } as { marksA: Map<number, MarkRow>; marksB: Map<number, MarkRow> };
     }
@@ -257,11 +259,11 @@ export class ConciliacaoABStep implements PipelineStep {
             const groups = new Map<string, { keyId: string; chaveValor: string | null; aIds: Set<number>; bIds: Set<number> }>();
 
             for (const r of rows) {
-                const a_row_id: number | null = r.a_row_id || null;
-                const b_row_id: number | null = r.b_row_id || null;
+                const a_row_id: number | null = r.a_row_id ? Number(r.a_row_id) : null;
+                const b_row_id: number | null = r.b_row_id ? Number(r.b_row_id) : null;
 
-                if (a_row_id && matchedA.has(a_row_id)) continue;
-                if (b_row_id && matchedB.has(b_row_id)) continue;
+                if (a_row_id !== null && matchedA.has(a_row_id)) continue;
+                if (b_row_id !== null && matchedB.has(b_row_id)) continue;
 
                 const aRow = a_row_id ? await this.getRowFromTable(tableA, a_row_id, aRowCache) : null;
                 const bRow = b_row_id ? await this.getRowFromTable(tableB, b_row_id, bRowCache) : null;

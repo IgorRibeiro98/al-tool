@@ -187,7 +187,7 @@ def main() -> int:
     parser.add_argument("--force", action="store_true", help="Recreate runtime even if target exists")
     args = parser.parse_args()
 
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     target_win = repo_root / "apps" / "desktop" / "python-runtime-win"
     standard_target = repo_root / "apps" / "desktop" / "python-runtime"
     requirements = repo_root / "scripts" / "requirements.txt"

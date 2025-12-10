@@ -2,7 +2,7 @@ import { PipelineStep, PipelineContext } from '../index';
 import { Knex } from 'knex';
 
 const GROUP_NF_CANCELADA = 'NF Cancelada';
-const STATUS_NAO_AVALIADO = '04_Não avaliado';
+const STATUS_NAO_AVALIADO = '04_Não Avaliado';
 const INSERT_CHUNK = 500;
 
 type ConfigCancelamentoRow = {
@@ -40,8 +40,13 @@ export class CancelamentoBaseBStep implements PipelineStep {
     }
 
     private async fetchCanceledRowIds(tableName: string, indicatorColumn: string, canceledValue: string | number) {
-        const rows = await this.db.select('id').from(tableName).where(indicatorColumn, canceledValue);
-        return rows.map((r: any) => r.id) as number[];
+        // Normalize value and compare using lower(trim(ifnull(...))) to handle whitespace and case differences.
+        const val = String(canceledValue ?? '').trim().toLowerCase();
+        if (val === '') return [];
+
+        // Use identifier binding (??) to safely inject column name into raw SQL
+        const rows = await this.db.select('id').from(tableName).whereRaw("lower(trim(ifnull(??, ''))) = ?", [indicatorColumn, val]);
+        return rows.map((r: any) => Number(r.id)).filter(Boolean) as number[];
     }
 
     private async fetchExistingMarks(baseId: number, rowIds: number[], grupo = GROUP_NF_CANCELADA) {
@@ -62,13 +67,25 @@ export class CancelamentoBaseBStep implements PipelineStep {
     }
 
     async execute(ctx: PipelineContext): Promise<void> {
-        const cfgId = ctx.configCancelamentoId;
-        if (!cfgId) return;
+        const cfgId = ctx.configCancelamentoId as number | undefined | null;
 
-        const cfg = await this.getConfig(cfgId);
+        // Determine baseId first (from ctx or from cfg fallback)
+        const baseIdFromCtx = ctx.baseFiscalId as number | undefined | null;
+
+        let cfg: ConfigCancelamentoRow | null = null;
+        if (cfgId) {
+            cfg = await this.getConfig(cfgId);
+        }
+
+        // If no explicit configId provided, try to find a config by base_id
+        const baseId = baseIdFromCtx ?? cfg?.base_id;
+        if (!cfg && baseId) {
+            // try to load any config matching this base
+            const maybe = await this.db<ConfigCancelamentoRow>('configs_cancelamento').where({ base_id: baseId }).first();
+            if (maybe) cfg = maybe;
+        }
+
         if (!cfg) return;
-
-        const baseId = ctx.baseFiscalId ?? cfg.base_id;
         if (!baseId) return;
 
         const base = await this.getBase(baseId);
@@ -83,6 +100,10 @@ export class CancelamentoBaseBStep implements PipelineStep {
         const indicatorColumn = cfg.coluna_indicador;
         const canceledValue = cfg.valor_cancelado as string | number | undefined | null;
         if (!indicatorColumn || canceledValue === undefined || canceledValue === null) return;
+
+        // ensure the indicator column exists in the target table to avoid silent no-ops
+        const hasCol = await this.db.schema.hasColumn(tableName, indicatorColumn);
+        if (!hasCol) return;
 
         const canceledRowIds = await this.fetchCanceledRowIds(tableName, indicatorColumn, canceledValue as any);
         if (canceledRowIds.length === 0) return;

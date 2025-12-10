@@ -8,7 +8,7 @@ import { Knex } from 'knex';
  * - Load configs_cancelamento by id from ctx.configCancelamentoId.
  * - Determine base (config.base_id or ctx.baseFiscalId).
  * - Find rows where coluna_indicador == valor_cancelado.
- * - Insert marks into `conciliacao_marks` with status = "04_Não avaliado" and grupo = "NF Cancelada" and chave = NULL.
+ * - Insert marks into `conciliacao_marks` with status = "04_Não Avaliado" and grupo = "NF Cancelada" and chave = NULL.
  * - Idempotent: does not insert duplicate marks for the same row and group.
  */
 export class CancelamentoBaseBStep implements PipelineStep {
@@ -56,7 +56,7 @@ export class CancelamentoBaseBStep implements PipelineStep {
         if (!coluna || valorCancelado === undefined || valorCancelado === null) return;
 
         const grupo = 'NF Cancelada';
-        const status = '04_Não avaliado';
+        const status = '04_Não Avaliado';
 
         const tableIdent = this.wrapIdentifier(tableName);
         const colIdent = this.wrapIdentifier(coluna);
