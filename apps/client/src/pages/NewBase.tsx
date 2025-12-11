@@ -7,7 +7,7 @@ import { ArrowLeft, Plus, Trash2, Upload } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { toast } from "sonner";
-import { createBases } from '@/services/baseService';
+import { createBases, fetchBaseSubtypes, fetchBases as fetchBasesApi } from '@/services/baseService';
 import { useForm, useFieldArray } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -17,6 +17,8 @@ const baseSchema = z.object({
     nome: z.string().min(1, { message: 'Nome é obrigatório' }),
     periodo: z.string().min(1, { message: 'Período é obrigatório' }),
     arquivo: z.instanceof(File, { message: 'Arquivo é obrigatório' }),
+    subtype: z.string().optional(),
+    reference_base_id: z.number().int().positive().optional(),
     header_linha_inicial: z.preprocess((val) => {
         if (typeof val === 'string') {
             const s = val.trim();
@@ -38,6 +40,8 @@ type FormValues = z.infer<typeof schema>;
 const NewBase = () => {
     const navigate = useNavigate();
     const [submitting, setSubmitting] = useState(false);
+    const [subtypesList, setSubtypesList] = useState<Array<{ id?: number; name: string }>>([]);
+    const [referenceBasesMap, setReferenceBasesMap] = useState<Record<string, Array<any>>>({});
     const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
 
     const form = useForm<FormValues>({
@@ -54,7 +58,7 @@ const NewBase = () => {
         },
     });
 
-    const { control, watch } = form;
+    const { control, watch, setValue } = form;
     const { fields, append, remove } = useFieldArray({ name: 'bases', control });
     const baseValues = watch('bases');
 
@@ -102,12 +106,20 @@ const NewBase = () => {
         return c - base + 1;
     }, []);
 
+    const numberToLetter = useCallback((n: number) => {
+        if (!n || n < 1) return 'A';
+        const base = 'A'.charCodeAt(0);
+        return String.fromCharCode(base + n - 1);
+    }, [])
+
     const onSubmit = useCallback(async (values: FormValues) => {
         const fd = new FormData();
         values.bases.forEach((base) => {
             fd.append('tipo', base.tipo);
             fd.append('nome', base.nome);
             fd.append('periodo', base.periodo || '');
+            fd.append('subtype', base.subtype || '');
+            fd.append('reference_base_id', base.reference_base_id ? String(base.reference_base_id) : '');
             fd.append('arquivo', base.arquivo as File);
             fd.append('header_linha_inicial', String(base.header_linha_inicial ?? 1));
             fd.append('header_coluna_inicial', String(letterToNumber(base.header_coluna_inicial_letter || 'A')));
@@ -128,6 +140,42 @@ const NewBase = () => {
             if (mountedRef.current) setSubmitting(false);
         }
     }, [navigate, letterToNumber]);
+
+    // load all subtypes once on mount
+    useEffect(() => {
+        let mounted = true;
+        fetchBaseSubtypes().then(r => {
+            const items = r?.data?.data || [];
+            if (mounted) setSubtypesList(items);
+        }).catch(() => {});
+        return () => { mounted = false; };
+    }, []);
+
+    // helper: load reference bases for a given tipo+subtype pair and cache them
+    const loadReferenceBases = useCallback((tipo?: string, subtype?: string) => {
+        if (!tipo || !subtype) return;
+        const key = `${tipo}|||${subtype}`;
+        if (referenceBasesMap[key]) return; // already loaded
+        fetchBasesApi({ tipo, subtype, pageSize: 200 }).then(r => {
+            const items = r?.data?.data || [];
+            setReferenceBasesMap(prev => ({ ...prev, [key]: items }));
+        }).catch(() => {});
+    }, [referenceBasesMap]);
+
+    // load candidate reference bases for each row when both tipo and subtype are set
+    useEffect(() => {
+        (baseValues || []).forEach((b, index) => {
+            if (b?.tipo && b?.subtype) {
+                const key = `${b.tipo}|||${b.subtype}`;
+                if (!referenceBasesMap[key]) {
+                    fetchBasesApi({ tipo: b.tipo, subtype: b.subtype, pageSize: 200 }).then(r => {
+                        const items = r?.data?.data || [];
+                        setReferenceBasesMap(prev => ({ ...prev, [key]: items }));
+                    }).catch(() => {});
+                }
+            }
+        });
+    }, [baseValues, referenceBasesMap]);
 
     return (
         <div className="space-y-6">
@@ -166,7 +214,16 @@ const NewBase = () => {
                                             <FormItem>
                                                 <FormLabel>Tipo *</FormLabel>
                                                 <FormControl>
-                                                    <Select value={field.value ?? ''} onValueChange={(v) => field.onChange(v || undefined)}>
+                                                    <Select
+                                                        value={field.value ?? ''}
+                                                        onValueChange={(v) => {
+                                                            const newTipo = v || undefined;
+                                                            field.onChange(newTipo);
+                                                            // try to load reference bases if subtype already selected
+                                                            const currentSubtype = baseValues?.[index]?.subtype;
+                                                            if (newTipo && currentSubtype) loadReferenceBases(newTipo, currentSubtype);
+                                                        }}
+                                                    >
                                                         <SelectTrigger>
                                                             <SelectValue placeholder="Selecione o tipo" />
                                                         </SelectTrigger>
@@ -195,6 +252,83 @@ const NewBase = () => {
                                                     />
                                                 </FormControl>
                                                 <FormDescription>Nome identificador da base</FormDescription>
+                                                <FormMessage />
+                                            </FormItem>
+                                        )}
+                                    />
+
+                                    <FormField
+                                        control={control}
+                                        name={`bases.${index}.subtype` as const}
+                                        render={({ field }) => (
+                                            <FormItem>
+                                                <FormLabel>Subtipo (opcional)</FormLabel>
+                                                <FormControl>
+                                                    <Select
+                                                        value={field.value ?? ''}
+                                                        onValueChange={(v) => {
+                                                            const newSubtype = v || undefined;
+                                                            field.onChange(newSubtype);
+                                                            // try to load reference bases if tipo already selected
+                                                            const currentTipo = baseValues?.[index]?.tipo;
+                                                            if (currentTipo && newSubtype) loadReferenceBases(currentTipo, newSubtype);
+                                                        }}
+                                                    >
+                                                        <SelectTrigger>
+                                                            <SelectValue placeholder="Selecione um subtipo (opcional)" />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {(subtypesList || []).map((s: any) => (
+                                                                <SelectItem key={s.id ?? s.name} value={s.name}>{s.name}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                </FormControl>
+                                                <FormDescription>Escolha um subtipo pré-criado para este tipo</FormDescription>
+                                                <FormMessage />
+                                            </FormItem>
+                                        )}
+                                    />
+
+                                    <FormField
+                                        control={control}
+                                        name={`bases.${index}.reference_base_id` as const}
+                                        render={({ field }) => (
+                                            <FormItem>
+                                                <FormLabel>Base de referência (opcional)</FormLabel>
+                                                <FormControl>
+                                                    <Select
+                                                        value={field.value ? String(field.value) : ''}
+                                                        onValueChange={(v) => {
+                                                            const id = v ? Number(v) : undefined;
+                                                            field.onChange(id);
+
+                                                            if (id) {
+                                                                const key = `${baseValues?.[index]?.tipo}|||${baseValues?.[index]?.subtype}`;
+                                                                const candidates = referenceBasesMap[key] || [];
+                                                                const selected = candidates.find((b: any) => String(b.id) === String(id));
+                                                                if (selected) {
+                                                                    if (selected.header_coluna_inicial) {
+                                                                        setValue(`bases.${index}.header_coluna_inicial_letter`, numberToLetter(selected.header_coluna_inicial));
+                                                                    }
+                                                                    if (selected.header_linha_inicial != null) {
+                                                                        setValue(`bases.${index}.header_linha_inicial`, selected.header_linha_inicial);
+                                                                    }
+                                                                }
+                                                            }
+                                                        }}
+                                                    >
+                                                        <SelectTrigger>
+                                                            <SelectValue placeholder="Selecione uma base de referência" />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {(referenceBasesMap[`${baseValues?.[index]?.tipo}|||${baseValues?.[index]?.subtype}`] || []).map((bRef: any) => (
+                                                                <SelectItem key={bRef.id} value={String(bRef.id)}>{bRef.nome}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                </FormControl>
+                                                <FormDescription>Copiar flags monetárias dessa base após ingestão (opcional)</FormDescription>
                                                 <FormMessage />
                                             </FormItem>
                                         )}

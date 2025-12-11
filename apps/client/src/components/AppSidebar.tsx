@@ -5,6 +5,7 @@ import {
     XCircle,
     RotateCcw,
     CheckSquare,
+    Tag,
     PlayCircle,
     Link2,
 } from 'lucide-react';
@@ -43,6 +44,7 @@ const CONFIG_ITEMS: NavItem[] = [
     { title: 'Estorno', url: '/configs/estorno', icon: RotateCcw },
     { title: 'Conciliação', url: '/configs/conciliacao', icon: CheckSquare },
     { title: 'Mapeamento', url: '/configs/mapeamento', icon: Link2 },
+    { title: 'Subtipos', url: '/configs/subtypes', icon: Tag },
 ];
 
 export function isPathActive(currentPath: string, candidate: string): boolean {

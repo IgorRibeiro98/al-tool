@@ -21,6 +21,7 @@ import EditConfigEstorno from "./pages/EditConfigEstorno";
 import NewConfigConciliacao from "./pages/NewConfigConciliacao";
 import EditConfigConciliacao from "./pages/EditConfigConciliacao";
 import ConfigMapeamento from "./pages/ConfigMapeamento";
+import ConfigSubtypes from "./pages/ConfigSubtypes";
 import NewConfigMapeamento from "./pages/NewConfigMapeamento";
 import EditConfigMapeamento from "./pages/EditConfigMapeamento";
 import Conciliacoes from "./pages/Conciliacoes";
@@ -93,6 +94,7 @@ const App = () => (
                             <Route path="configs/conciliacao/new" element={<NewConfigConciliacao />} />
                             <Route path="configs/conciliacao/:id" element={<EditConfigConciliacao />} />
                             <Route path="configs/mapeamento" element={<ConfigMapeamento />} />
+                            <Route path="configs/subtypes" element={<ConfigSubtypes />} />
                             <Route path="configs/mapeamento/new" element={<NewConfigMapeamento />} />
                             <Route path="configs/mapeamento/:id" element={<EditConfigMapeamento />} />
                             <Route path="conciliacoes" element={<Conciliacoes />} />

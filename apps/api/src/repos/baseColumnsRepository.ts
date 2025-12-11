@@ -8,6 +8,7 @@ export type BaseColumn = {
     sqlite_name: string;
     col_index: number;
     created_at?: string;
+    is_monetary?: number | null;
 };
 
 const columnsCache = new Map<number, BaseColumn[]>();
