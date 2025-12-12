@@ -29,9 +29,7 @@ type FormValues = z.infer<typeof formSchema>;
 const NewConfigEstorno = () => {
     const navigate = useNavigate();
 
-    type Base = { id: string; nome?: string };
-    type Column = { excel: string; sqlite: string; index: string };
-
+    // Using centralized `Base` and `Column` types from `src/types/global.d.ts`
     const [bases, setBases] = useState<Base[]>([]);
     const [columns, setColumns] = useState<Column[]>([]);
 

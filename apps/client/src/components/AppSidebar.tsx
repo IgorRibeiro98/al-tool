@@ -6,6 +6,8 @@ import {
     RotateCcw,
     CheckSquare,
     Tag,
+    Key,
+    Cable,
     PlayCircle,
     Link2,
 } from 'lucide-react';
@@ -43,6 +45,8 @@ const CONFIG_ITEMS: NavItem[] = [
     { title: 'Cancelamento', url: '/configs/cancelamento', icon: XCircle },
     { title: 'Estorno', url: '/configs/estorno', icon: RotateCcw },
     { title: 'Conciliação', url: '/configs/conciliacao', icon: CheckSquare },
+    { title: 'Chaves (Bases)', url: '/configs/keys', icon: Key },
+    { title: 'Pares de Chaves', url: '/configs/key-pairs', icon: Cable },
     { title: 'Mapeamento', url: '/configs/mapeamento', icon: Link2 },
     { title: 'Subtipos', url: '/configs/subtypes', icon: Tag },
 ];

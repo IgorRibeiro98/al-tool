@@ -17,10 +17,23 @@ interface BaseSheetMetadata {
     columns: Array<{ sqliteName: string; header: string; sqliteType?: string | null }>;
 }
 
-function extractKeyIdentifiers(cfgRow: any): string[] {
+async function extractKeyIdentifiers(cfgRow: any): Promise<string[]> {
     const chavesContabil = parseChaves(cfgRow?.chaves_contabil);
     const chavesFiscal = parseChaves(cfgRow?.chaves_fiscal);
-    return Array.from(new Set([...Object.keys(chavesContabil || {}), ...Object.keys(chavesFiscal || {})]));
+    let ids = Array.from(new Set([...Object.keys(chavesContabil || {}), ...Object.keys(chavesFiscal || {})]));
+
+    // If legacy inline chaves are not present, try to load linked keys from configs_conciliacao_keys
+    if (!ids || ids.length === 0) {
+        try {
+            const rows = await db('configs_conciliacao_keys').where({ config_conciliacao_id: cfgRow?.id }).orderBy('ordem', 'asc').select('key_identifier');
+            if (rows && rows.length > 0) ids = rows.map((r: any) => String(r.key_identifier));
+        } catch (e) {
+            // ignore and return whatever we have
+            console.warn(`${LOG_PREFIX} could not load linked keys for config ${cfgRow?.id}`, e);
+        }
+    }
+
+    return ids;
 }
 
 function buildKeyHeaders(keyIds: string[]): string[] {
@@ -114,7 +127,7 @@ export async function exportJobResultToXlsx(jobId: number) {
     const cfgRow = await db('configs_conciliacao').where({ id: job.config_conciliacao_id }).first();
     if (!cfgRow) throw new Error('config conciliacao not found for job');
 
-    const keyIdentifiers = extractKeyIdentifiers(cfgRow);
+    const keyIdentifiers = await extractKeyIdentifiers(cfgRow);
     const keyHeaders = buildKeyHeaders(keyIdentifiers);
 
     // stream to an ExcelJS file to avoid loading all rows in memory
@@ -198,7 +211,7 @@ export async function exportJobResultToZip(jobId: number) {
     const baseAId = job.base_contabil_id_override || cfg.base_contabil_id;
     const baseBId = job.base_fiscal_id_override || cfg.base_fiscal_id;
     if (!baseAId || !baseBId) throw new Error('Bases não configuradas para este job');
-    const keyIds = extractKeyIdentifiers(cfg);
+    const keyIds = await extractKeyIdentifiers(cfg);
     const keyHeaders = buildKeyHeaders(keyIds);
 
     const [metaA, metaB] = await Promise.all([

@@ -38,6 +38,37 @@ declare global {
         created_at?: string | null;
     }
 
+    // UI-friendly column shape used across the frontend
+    interface Column {
+        excel?: string | null;
+        sqlite?: string | null;
+        index?: string | null;
+    }
+
+    // Central key definitions and pairs
+    type KeyRow = { id: string; key_identifier: string; mode: 'pair' | 'separate'; keys_pair_id?: number | null; contabil_key_id?: number | null; fiscal_key_id?: number | null; ordem?: number };
+
+    interface KeyDefinition {
+        id: number;
+        key_identifier?: string | null;
+        nome?: string | null;
+        base_tipo?: BaseType | string | null;
+        base_subtype?: string | null;
+        // stored as JSON array or native array depending on backend
+        columns?: string[] | any;
+        created_at?: string | null;
+        updated_at?: string | null;
+    }
+
+    interface KeysPair {
+        id: number;
+        nome?: string | null;
+        contabil_key_id?: number | null;
+        fiscal_key_id?: number | null;
+        created_at?: string | null;
+        updated_at?: string | null;
+    }
+
     interface ConfigCancelamento {
         id: number;
         base_id: number;

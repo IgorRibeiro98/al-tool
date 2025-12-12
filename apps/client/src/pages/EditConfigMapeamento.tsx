@@ -25,10 +25,7 @@ const schema = z.object({
     path: ['baseFiscalId']
 });
 
-// Local types for clarity
-type Base = { id: number | string; nome?: string; tipo?: string };
-// Avoid re-declaring project BaseColumn type to prevent type conflicts
-type ConfigMapeamento = any;
+// Using centralized `Base` and `ConfigMapeamento` types from `src/types/global.d.ts`
 
 type FormValues = z.infer<typeof schema>;
 

@@ -15,7 +15,11 @@ import { toast } from "sonner";
 import * as z from "zod";
 import { fetchBases, getBaseColumns } from '@/services/baseService';
 import { createConfigConciliacao } from '@/services/configsService';
+import { fetchKeys } from '@/services/keysService';
+import { fetchKeysPairs } from '@/services/keysPairsService';
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { useWatch } from 'react-hook-form';
+import type { Base, Column, KeyPair, KeyRow, KeyDefinition } from '@/types/configs';
 
 const formSchema = z.object({
     nome: z.string().min(1, "Nome é obrigatório"),
@@ -33,10 +37,14 @@ const NewConfigConciliacao = () => {
     const navigate = useNavigate();
 
     const [bases, setBases] = useState<Base[]>([]);
-    const [colsContabeis, setColsContabeis] = useState<Array<{ excel?: string; sqlite?: string; index: string }>>([]);
-    const [colsFiscais, setColsFiscais] = useState<Array<{ excel?: string; sqlite?: string; index: string }>>([]);
-    type ChaveCombination = { id: string; label: string; colunasContabil: string[]; colunasFiscal: string[] };
-    const [chaves, setChaves] = useState<ChaveCombination[]>([{ id: 'CHAVE_1', label: 'Chave 1', colunasContabil: [], colunasFiscal: [] }]);
+    const [colsContabeis, setColsContabeis] = useState<Column[]>([]);
+    const [colsFiscais, setColsFiscais] = useState<Column[]>([]);
+    // Using centralized `Base`, `Column` and `KeyRow` types from `src/types/global.d.ts`
+    const [chaves, setChaves] = useState<KeyRow[]>([{ id: 'KEY_1', key_identifier: 'CHAVE_1', mode: 'pair', keys_pair_id: null, contabil_key_id: null, fiscal_key_id: null, ordem: 1 }]);
+    const [keysDefs, setKeysDefs] = useState<KeyDefinition[]>([]);
+    const [keysPairs, setKeysPairs] = useState<KeyPair[]>([]);
+    const baseColsCache = useRef<Map<number, Column[]>>(new Map());
+    const [saving, setSaving] = useState(false);
 
     const mountedRef = useRef(true);
     useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
@@ -48,15 +56,24 @@ const NewConfigConciliacao = () => {
         SAVE_FAIL: 'Falha ao criar configuração',
     }), []);
 
-    const mapColumns = useCallback((rows: any[]) => (rows || []).map((c: any) => ({ excel: c.excel_name, sqlite: c.sqlite_name, index: String(c.col_index) })), []);
+    const mapColumns = useCallback((rows: any[]): Column[] => (rows || []).map((c: any) => ({ excel: c.excel_name, sqlite: c.sqlite_name, index: String(c.col_index) })), []);
 
-    const loadColumnsForBase = useCallback(async (baseId: string | number | undefined, setter: React.Dispatch<React.SetStateAction<any[]>>) => {
+    const loadColumnsForBase = useCallback(async (baseId: string | number | undefined, setter: React.Dispatch<React.SetStateAction<Column[]>>) => {
         const id = baseId ? Number(baseId) : NaN;
         if (!id || Number.isNaN(id)) return setter([]);
+        // return cached if available
+        if (baseColsCache.current.has(id)) {
+            setter(baseColsCache.current.get(id)!);
+            return;
+        }
         try {
             const res = await getBaseColumns(id);
             const rows = res.data?.data || res.data || [];
-            if (mountedRef.current) setter(mapColumns(rows));
+            const mapped = mapColumns(rows);
+            if (mountedRef.current) {
+                baseColsCache.current.set(id, mapped);
+                setter(mapped);
+            }
         } catch (err) {
             console.error('failed to load columns', err);
             toast.error(MSG.LOAD_COLS_FAIL);
@@ -88,9 +105,42 @@ const NewConfigConciliacao = () => {
         return () => { mounted = false; };
     }, []);
 
+    useEffect(() => {
+        let mounted = true;
+        fetchKeys()
+            .then((r: any) => { if (!mounted) return; setKeysDefs(r.data?.data || r.data || []); })
+            .catch(() => { if (!mounted) return; setKeysDefs([]); });
+        fetchKeysPairs()
+            .then((r: any) => { if (!mounted) return; setKeysPairs(r.data?.data || r.data || []); })
+            .catch(() => { if (!mounted) return; setKeysPairs([]); });
+        return () => { mounted = false; };
+    }, []);
+
+    const contabilKeys = useMemo(() => keysDefs.filter(k => (k.base_tipo || '').toUpperCase() === 'CONTABIL'), [keysDefs]);
+    const fiscalKeys = useMemo(() => keysDefs.filter(k => (k.base_tipo || '').toUpperCase() === 'FISCAL'), [keysDefs]);
+
+    const getKeyDefColumns = useCallback((def: any) => {
+        if (!def) return [] as string[];
+        const cols = def.columns;
+        if (!cols) return [];
+        if (typeof cols === 'string') {
+            try { return JSON.parse(cols); } catch { return []; }
+        }
+        return Array.isArray(cols) ? cols : [];
+    }, []);
+
+    const resolvedChaves = useMemo(() => chaves.map((c) => {
+        const pair = keysPairs.find((p) => Number(p.id) === Number(c.keys_pair_id));
+        const contDef = keysDefs.find(k => Number(k.id) === Number(pair?.contabil_key_id ?? c.contabil_key_id));
+        const fiscDef = keysDefs.find(k => Number(k.id) === Number(pair?.fiscal_key_id ?? c.fiscal_key_id));
+        const contCols = getKeyDefColumns(contDef as any);
+        const fiscCols = getKeyDefColumns(fiscDef as any);
+        return { ...c, pair, contDef, fiscDef, contCols, fiscCols };
+    }), [chaves, keysDefs, keysPairs]);
+
     // load columns when base selections change
-    const watchBaseCont = form.watch('baseContabilId');
-    const watchBaseFisc = form.watch('baseFiscalId');
+    const watchBaseCont = useWatch({ control: form.control, name: 'baseContabilId' });
+    const watchBaseFisc = useWatch({ control: form.control, name: 'baseFiscalId' });
 
     useEffect(() => {
         void loadColumnsForBase(watchBaseCont, setColsContabeis);
@@ -100,27 +150,44 @@ const NewConfigConciliacao = () => {
         void loadColumnsForBase(watchBaseFisc, setColsFiscais);
     }, [watchBaseFisc, loadColumnsForBase]);
 
-    const onSubmit = useCallback(async (data: FormValues) => {
-        try {
-            // validate chaves combinations
-            if (!chaves || chaves.length === 0) throw new Error('Adicione ao menos uma combinação de chaves');
-            const hasValid = chaves.some(c => (c.colunasContabil?.length || 0) > 0 && (c.colunasFiscal?.length || 0) > 0);
-            if (!hasValid) throw new Error('Pelo menos uma combinação deve ter colunas contábeis e fiscais');
+    const nextKeyIdentifier = useCallback((list: KeyRow[]) => `CHAVE_${list.length + 1}`, []);
 
-            const chaves_contabil: Record<string, string[]> = {};
-            const chaves_fiscal: Record<string, string[]> = {};
-            chaves.forEach((c, idx) => {
-                const id = c.id || `CHAVE_${idx + 1}`;
-                chaves_contabil[id] = c.colunasContabil || [];
-                chaves_fiscal[id] = c.colunasFiscal || [];
+    const addChave = useCallback(() => {
+        setChaves(prev => {
+            const id = `KEY_${prev.length + 1}`;
+            const identifier = nextKeyIdentifier(prev);
+            return [...prev, { id, key_identifier: identifier, mode: 'pair', keys_pair_id: null, contabil_key_id: null, fiscal_key_id: null, ordem: prev.length + 1 }];
+        });
+    }, [nextKeyIdentifier]);
+
+    const removeChave = useCallback((chaveId: string) => {
+        setChaves(prev => prev.filter(c => c.id !== chaveId));
+    }, []);
+
+    const updateChave = useCallback((chaveId: string, patch: Partial<KeyRow>) => {
+        setChaves(prev => prev.map(c => c.id === chaveId ? { ...c, ...patch } : c));
+    }, []);
+
+    const onSubmit = useCallback(async (data: FormValues) => {
+        setSaving(true);
+        try {
+            if (!chaves || chaves.length === 0) throw new Error('Adicione ao menos uma chave');
+            const keysPayload = chaves.map((c, idx) => {
+                const ordem = c.ordem ?? (idx + 1);
+                const key_identifier = c.key_identifier || `CHAVE_${idx + 1}`;
+                if (c.mode === 'pair') {
+                    if (!c.keys_pair_id) throw new Error(`Chave ${key_identifier}: selecione um par de chaves`);
+                    return { ordem, key_identifier, keys_pair_id: Number(c.keys_pair_id) } as any;
+                }
+                if (!c.contabil_key_id || !c.fiscal_key_id) throw new Error(`Chave ${key_identifier}: selecione ambas as chaves (contábil e fiscal)`);
+                return { ordem, key_identifier, contabil_key_id: Number(c.contabil_key_id), fiscal_key_id: Number(c.fiscal_key_id) } as any;
             });
 
             const payload = {
                 nome: data.nome,
-                base_contabil_id: Number(data.baseContabilId),
-                base_fiscal_id: Number(data.baseFiscalId),
-                chaves_contabil,
-                chaves_fiscal,
+                base_contabil_id: Number(data.baseContabilId) || null,
+                base_fiscal_id: Number(data.baseFiscalId) || null,
+                keys: keysPayload,
                 coluna_conciliacao_contabil: data.colunaConciliacaoContabil,
                 coluna_conciliacao_fiscal: data.colunaConciliacaoFiscal,
                 inverter_sinal_fiscal: !!data.inverterSinal,
@@ -132,33 +199,12 @@ const NewConfigConciliacao = () => {
         } catch (err: any) {
             console.error('create conciliacao failed', err);
             toast.error(err?.response?.data?.error || MSG.SAVE_FAIL);
+        } finally {
+            setSaving(false);
         }
     }, [chaves, navigate, MSG]);
 
-    const nextChaveLabel = useCallback((list: ChaveCombination[]) => `Chave ${list.length + 1}`, []);
-
-    const addChave = useCallback(() => {
-        setChaves(prev => {
-            const id = `CHAVE_${prev.length + 1}`;
-            return [...prev, { id, label: nextChaveLabel(prev), colunasContabil: [], colunasFiscal: [] }];
-        });
-    }, [nextChaveLabel]);
-
-    const removeChave = useCallback((id: string) => setChaves(prev => prev.filter(c => c.id !== id)), []);
-
-    const addColumnToChave = useCallback((chaveId: string, columnValue: string, side: 'contabil' | 'fiscal') => {
-        setChaves(prev => prev.map(ch => {
-            if (ch.id !== chaveId) return ch;
-            const key = side === 'contabil' ? 'colunasContabil' : 'colunasFiscal';
-            const existing = ch[key] || [];
-            if (existing.includes(columnValue)) return ch;
-            return { ...ch, [key]: [...existing, columnValue] } as ChaveCombination;
-        }));
-    }, []);
-
-    const removeColumnFromChave = useCallback((chaveId: string, columnValue: string, side: 'contabil' | 'fiscal') => {
-        setChaves(prev => prev.map(ch => ch.id === chaveId ? { ...ch, [side === 'contabil' ? 'colunasContabil' : 'colunasFiscal']: (ch[side === 'contabil' ? 'colunasContabil' : 'colunasFiscal'] || []).filter(v => v !== columnValue) } as ChaveCombination : ch));
-    }, []);
+    
 
     return (
         <div className="space-y-6">
@@ -249,18 +295,15 @@ const NewConfigConciliacao = () => {
                                 />
                             </div>
 
-                            {/* Combinações de chaves: uma lista de combinações (CHAVE_1, CHAVE_2, ...) */}
+                            {/* Chaves da Conciliação (seleção de chaves centrais ou pares) */}
                             <div>
                                 <div className="mb-2 flex items-center justify-between">
                                     <div>
-                                        <FormLabel className="text-base">Combinações de Chaves</FormLabel>
-                                        <FormDescription>Defina uma ou mais combinações de colunas entre Base A e Base B</FormDescription>
+                                        <FormLabel className="text-base">Chaves da Conciliação</FormLabel>
+                                        <FormDescription>Selecione chaves centrais ou pares de chaves para usar na conciliação</FormDescription>
                                     </div>
                                     <div>
-                                        <Button type="button" onClick={() => {
-                                            const next = chaves.length + 1;
-                                            setChaves([...chaves, { id: `CHAVE_${next}`, label: `Chave ${next}`, colunasContabil: [], colunasFiscal: [] }]);
-                                        }}>Adicionar combinação de chave</Button>
+                                        <Button type="button" onClick={addChave}>Adicionar chave</Button>
                                     </div>
                                 </div>
 
@@ -269,81 +312,100 @@ const NewConfigConciliacao = () => {
                                         <Card key={c.id}>
                                             <CardHeader>
                                                 <div className="flex items-center justify-between w-full">
-                                                    <CardTitle>{c.label}</CardTitle>
+                                                    <CardTitle>{c.key_identifier || `CHAVE_${idx + 1}`}</CardTitle>
                                                     <div className="flex gap-2">
+                                                        <Input value={String(c.ordem ?? (idx + 1))} onChange={(e) => updateChave(c.id, { ordem: Number(e.target.value) })} className="w-20" />
                                                         {chaves.length > 1 && (
-                                                            <Button variant="destructive" size="sm" onClick={() => setChaves(chaves.filter(x => x.id !== c.id))}>Remover</Button>
+                                                            <Button variant="destructive" size="sm" onClick={() => removeChave(c.id)}>Remover</Button>
                                                         )}
                                                     </div>
                                                 </div>
                                             </CardHeader>
                                             <CardContent>
-                                                <div className="grid md:grid-cols-2 gap-4">
+                                                <div className="grid md:grid-cols-3 gap-4">
                                                     <div>
-                                                        <FormLabel>Colunas contábeis (Base A)</FormLabel>
-                                                        <div className="flex flex-wrap gap-2 my-2">
-                                                            {(c.colunasContabil || []).map(v => {
-                                                                const item = colsContabeis.find(x => (x.sqlite || x.excel || x.index) === v);
-                                                                const label = item?.excel || item?.sqlite || v;
-                                                                return (
-                                                                    <Badge key={v} variant="secondary" className="flex items-center gap-2">
-                                                                        <span className="font-mono text-xs">{label}</span>
-                                                                        <button type="button" className="p-1" onClick={() => setChaves(chaves.map(ch => ch.id === c.id ? { ...ch, colunasContabil: (ch.colunasContabil || []).filter(x => x !== v) } : ch))}>
-                                                                            <X className="h-3 w-3" />
-                                                                        </button>
-                                                                    </Badge>
-                                                                );
-                                                            })}
-                                                        </div>
-                                                        {colsContabeis.length > 0 ? (
-                                                            <Select onValueChange={(val) => {
-                                                                setChaves(chaves.map(ch => ch.id === c.id ? { ...ch, colunasContabil: (ch.colunasContabil || []).includes(val) ? ch.colunasContabil : [...(ch.colunasContabil || []), val] } : ch));
-                                                            }}>
-                                                                <SelectTrigger>
-                                                                    <SelectValue placeholder="Selecione colunas" />
-                                                                </SelectTrigger>
-                                                                <SelectContent>
-                                                                    {colsContabeis.map((col) => (
-                                                                        <SelectItem key={col.index} value={col.sqlite || col.excel || col.index}>{col.excel || col.sqlite || col.index}</SelectItem>
-                                                                    ))}
-                                                                </SelectContent>
-                                                            </Select>
-                                                        ) : (
-                                                            <Input placeholder="Escolha a base para carregar colunas" />
-                                                        )}
+                                                        <FormLabel>Identificador</FormLabel>
+                                                        <Input value={c.key_identifier} onChange={(e) => updateChave(c.id, { key_identifier: e.target.value })} />
                                                     </div>
 
                                                     <div>
-                                                        <FormLabel>Colunas fiscais (Base B)</FormLabel>
-                                                        <div className="flex flex-wrap gap-2 my-2">
-                                                            {(c.colunasFiscal || []).map(v => {
-                                                                const item = colsFiscais.find(x => (x.sqlite || x.excel || x.index) === v);
-                                                                const label = item?.excel || item?.sqlite || v;
-                                                                return (
-                                                                    <Badge key={v} variant="secondary" className="flex items-center gap-2">
-                                                                        <span className="font-mono text-xs">{label}</span>
-                                                                        <button type="button" className="p-1" onClick={() => setChaves(chaves.map(ch => ch.id === c.id ? { ...ch, colunasFiscal: (ch.colunasFiscal || []).filter(x => x !== v) } : ch))}>
-                                                                            <X className="h-3 w-3" />
-                                                                        </button>
-                                                                    </Badge>
-                                                                );
-                                                            })}
-                                                        </div>
-                                                        {colsFiscais.length > 0 ? (
-                                                            <Select onValueChange={(val) => {
-                                                                setChaves(chaves.map(ch => ch.id === c.id ? { ...ch, colunasFiscal: (ch.colunasFiscal || []).includes(val) ? ch.colunasFiscal : [...(ch.colunasFiscal || []), val] } : ch));
-                                                            }}>
-                                                                <SelectTrigger>
-                                                                    <SelectValue placeholder="Selecione colunas" />
-                                                                </SelectTrigger>
-                                                                <SelectContent>
-                                                                    {colsFiscais.map((col) => (
-                                                                        <SelectItem key={col.index} value={col.sqlite || col.excel || col.index}>{col.excel || col.sqlite || col.index}</SelectItem>
-                                                                    ))}
-                                                                </SelectContent>
-                                                            </Select>
+                                                        <FormLabel>Modo</FormLabel>
+                                                        <Select onValueChange={(val) => updateChave(c.id, { mode: val as any })} value={c.mode}>
+                                                            <SelectTrigger>
+                                                                <SelectValue />
+                                                            </SelectTrigger>
+                                                            <SelectContent>
+                                                                <SelectItem value="pair">Par de chaves</SelectItem>
+                                                                <SelectItem value="separate">Chaves separadas</SelectItem>
+                                                            </SelectContent>
+                                                        </Select>
+                                                    </div>
+
+                                                    <div>
+                                                        <FormLabel>Seleção</FormLabel>
+                                                        {c.mode === 'pair' ? (
+                                                            <div className="space-y-2">
+                                                                <Select onValueChange={(val) => updateChave(c.id, { keys_pair_id: val ? Number(val) : null })} value={c.keys_pair_id ? String(c.keys_pair_id) : ''}>
+                                                                    <SelectTrigger>
+                                                                        <SelectValue placeholder="Selecione um par de chaves" />
+                                                                    </SelectTrigger>
+                                                                    <SelectContent>
+                                                                        {keysPairs.map((kp: any) => (
+                                                                            <SelectItem key={String(kp.id)} value={String(kp.id)}>{kp.nome || `Par ${kp.id}`}</SelectItem>
+                                                                        ))}
+                                                                    </SelectContent>
+                                                                </Select>
+                                                                {c.keys_pair_id && (() => {
+                                                                    const pair = keysPairs.find((p: any) => Number(p.id) === Number(c.keys_pair_id));
+                                                                    const contDef = keysDefs.find(k => Number(k.id) === Number(pair?.contabil_key_id));
+                                                                    const fiscDef = keysDefs.find(k => Number(k.id) === Number(pair?.fiscal_key_id));
+                                                                    const contCols = getKeyDefColumns(contDef);
+                                                                    const fiscCols = getKeyDefColumns(fiscDef);
+                                                                    return (
+                                                                        <div>
+                                                                            <div className="text-xs text-muted-foreground">Contábil: {contCols.join(', ') || '—'}</div>
+                                                                            <div className="text-xs text-muted-foreground">Fiscal: {fiscCols.join(', ') || '—'}</div>
+                                                                        </div>
+                                                                    );
+                                                                })()}
+                                                            </div>
                                                         ) : (
-                                                            <Input placeholder="Escolha a base para carregar colunas" />
+                                                            <div className="space-y-2">
+                                                                <Select onValueChange={(val) => updateChave(c.id, { contabil_key_id: val ? Number(val) : null })} value={c.contabil_key_id ? String(c.contabil_key_id) : ''}>
+                                                                    <SelectTrigger>
+                                                                        <SelectValue placeholder="Selecione chave contábil" />
+                                                                    </SelectTrigger>
+                                                                    <SelectContent>
+                                                                        {keysDefs.filter(k => (k.base_tipo || '').toUpperCase() === 'CONTABIL').map((k: any) => (
+                                                                            <SelectItem key={String(k.id)} value={String(k.id)}>{k.key_identifier || k.nome || `Key ${k.id}`}</SelectItem>
+                                                                        ))}
+                                                                    </SelectContent>
+                                                                </Select>
+
+                                                                <Select onValueChange={(val) => updateChave(c.id, { fiscal_key_id: val ? Number(val) : null })} value={c.fiscal_key_id ? String(c.fiscal_key_id) : ''}>
+                                                                    <SelectTrigger>
+                                                                        <SelectValue placeholder="Selecione chave fiscal" />
+                                                                    </SelectTrigger>
+                                                                    <SelectContent>
+                                                                        {keysDefs.filter(k => (k.base_tipo || '').toUpperCase() === 'FISCAL').map((k: any) => (
+                                                                            <SelectItem key={String(k.id)} value={String(k.id)}>{k.key_identifier || k.nome || `Key ${k.id}`}</SelectItem>
+                                                                        ))}
+                                                                    </SelectContent>
+                                                                </Select>
+
+                                                                {(() => {
+                                                                    const contDef = keysDefs.find(k => Number(k.id) === Number(c.contabil_key_id));
+                                                                    const fiscDef = keysDefs.find(k => Number(k.id) === Number(c.fiscal_key_id));
+                                                                    const contCols = getKeyDefColumns(contDef);
+                                                                    const fiscCols = getKeyDefColumns(fiscDef);
+                                                                    return (
+                                                                        <div>
+                                                                            <div className="text-xs text-muted-foreground">Contábil: {contCols.join(', ') || '—'}</div>
+                                                                            <div className="text-xs text-muted-foreground">Fiscal: {fiscCols.join(', ') || '—'}</div>
+                                                                        </div>
+                                                                    );
+                                                                })()}
+                                                            </div>
                                                         )}
                                                     </div>
                                                 </div>
