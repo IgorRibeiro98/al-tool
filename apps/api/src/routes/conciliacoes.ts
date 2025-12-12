@@ -175,16 +175,29 @@ router.post('/:id/exportar', async (req: Request, res: Response) => {
 
         try { await jobsRepo.setJobExportProgress(id, 1, 'IN_PROGRESS'); } catch { /* ignore */ }
 
-        (async () => {
-            try {
-                const info = await exportService.exportJobResultToZip(id);
-                console.log('Background export finished for job', id, info.path);
-                try { await jobsRepo.setJobExportProgress(id, 100, 'DONE'); } catch { }
-            } catch (bgErr) {
-                console.error('Background export failed for job', id, bgErr);
-                try { await jobsRepo.setJobExportProgress(id, null, 'FAILED'); } catch { }
+        try {
+            // spawn a detached child process to handle export without blocking API
+            const isProd = process.env.NODE_ENV === 'production';
+            const script = isProd ? path.resolve(__dirname, '../worker/exportRunner.js') : path.resolve(__dirname, '../worker/exportRunner.ts');
+            const forkArgs = [String(id)];
+            const forkOptions: any = isProd
+                ? { stdio: 'ignore', detached: true }
+                : { stdio: 'inherit', execArgv: ['-r', 'ts-node/register'] };
+
+            const child = require('child_process').fork(script, forkArgs, forkOptions);
+            if (isProd) {
+                // detach and let the child run independently
+                child.unref && child.unref();
             }
-        })();
+            child.on && child.on('error', (err: any) => {
+                console.error('Failed to spawn export child process for job', id, err);
+                try { jobsRepo.setJobExportProgress(id, null, 'FAILED'); } catch (_) { }
+            });
+        } catch (spawnErr) {
+            console.error('Failed to start background export process for job', id, spawnErr);
+            try { await jobsRepo.setJobExportProgress(id, null, 'FAILED'); } catch { }
+            return res.status(500).json({ error: 'failed to start export process' });
+        }
 
         return res.status(202).json({ jobId: id, status: 'export_started' });
     } catch (err: any) {

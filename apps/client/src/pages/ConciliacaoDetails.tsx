@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/alert-dialog';
 
 const EXPORT_STATUS_MESSAGES: Record<string, string> = {
+    IN_PROGRESS: 'Exportação em andamento',
     STARTING: 'Preparando exportação',
     EXPORT_BUILDING_A: 'Exportando resultados da Base A',
     EXPORT_BUILT_A: 'Base A concluída',
