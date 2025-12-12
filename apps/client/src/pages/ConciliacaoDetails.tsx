@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
+import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusChip } from "@/components/StatusChip";
 import { ArrowLeft, Download, Trash } from "lucide-react";
@@ -69,6 +70,8 @@ const ConciliacaoDetails = () => {
     const [results, setResults] = useState<ConciliacaoResultRow[]>([]);
     const [keyIds, setKeyIds] = useState<string[]>([]);
     const [statusFilter, setStatusFilter] = useState<string | null | undefined>(undefined);
+    const [searchTerm, setSearchTerm] = useState<string>('');
+    const [selectedSearchColumn, setSelectedSearchColumn] = useState<string>('');
     const [page, setPage] = useState<number>(1);
     const [pageSize] = useState<number>(50);
     const [totalPages, setTotalPages] = useState<number>(1);
@@ -81,10 +84,10 @@ const ConciliacaoDetails = () => {
     const [exportFile, setExportFile] = useState<string | null>(null);
     const pollRef = useRef<number | null>(null);
 
-        const loadResults = async (jobId: number, p = 1) => {
+        const loadResults = async (jobId: number, p = 1, search?: string, searchColumn?: string) => {
             setLoading(true);
             try {
-                const r = await fetchConciliacaoResultado(jobId, p, pageSize, statusFilter);
+            const r = await fetchConciliacaoResultado(jobId, p, pageSize, statusFilter, search ?? (searchTerm || undefined), searchColumn ?? selectedSearchColumn ?? undefined);
                 const b = r.data;
                 const rows = b.data || [];
                 setResults(rows);
@@ -92,6 +95,11 @@ const ConciliacaoDetails = () => {
                     const first = rows[0];
                     const keys = Object.keys(first).filter((k) => /^CHAVE_\d+/.test(k));
                     setKeyIds(keys);
+                    // ensure selectedSearchColumn is valid; if not set, default to first key or 'chave'
+                    setSelectedSearchColumn(prev => {
+                        if (prev && prev.length > 0) return prev;
+                        return keys.length > 0 ? keys[0] : 'chave';
+                    });
                 } else {
                     setKeyIds([]);
                 }
@@ -133,7 +141,7 @@ const ConciliacaoDetails = () => {
             (async () => {
                 await loadJobAndMetrics(jid);
                 if (!mounted) return;
-                await loadResults(jid, 1);
+                await loadResults(jid, 1, searchTerm || undefined);
             })()
                 .catch(() => {})
                 .finally(() => { if (mounted) setLoading(false); });
@@ -198,10 +206,16 @@ const ConciliacaoDetails = () => {
             }
         };
 
-    const handlePageChange = async (newPage: number) => {
-      if (!id) return;
-      await loadResults(Number(id), newPage);
-    };
+        const handlePageChange = async (newPage: number) => {
+            if (!id) return;
+            await loadResults(Number(id), newPage, searchTerm || undefined, selectedSearchColumn || undefined);
+        };
+
+        const handleSearch = async () => {
+            if (!id) return;
+            setPage(1);
+            await loadResults(Number(id), 1, searchTerm || undefined, selectedSearchColumn || undefined);
+        };
 
         const displayAccount = (values: any, rowId?: number) => {
             if (!values) return rowId ? `#${rowId}` : '-';
@@ -370,7 +384,8 @@ const ConciliacaoDetails = () => {
                         <div className="flex items-center justify-between w-full">
                             <CardTitle>Resultados da Conciliação</CardTitle>
                             <div>
-                                <Select
+                                <div className="flex items-center gap-2">
+                                     <Select
                                     onValueChange={(v) => {
                                         if (v === '__ALL__') setStatusFilter(undefined);
                                         else if (v === '__NULL__') setStatusFilter(null);
@@ -391,6 +406,31 @@ const ConciliacaoDetails = () => {
                                         })}
                                     </SelectContent>
                                 </Select>
+                                    <Select
+                                        onValueChange={(v) => setSelectedSearchColumn(v)}
+                                        value={selectedSearchColumn}
+                                    >
+                                        <SelectTrigger className="w-48">
+                                            <SelectValue placeholder="Escolha por qual chave quer buscar" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {keyIds.map(k => (
+                                                <SelectItem key={k} value={k}>{k.replace('_', ' ')}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+
+                                    <Input
+                                        value={searchTerm}
+                                        onChange={(e: any) => setSearchTerm(e.target.value)}
+                                        placeholder="Buscar por texto..."
+                                        className="w-64"
+                                        onKeyDown={(e: any) => { if (e.key === 'Enter') { e.preventDefault(); void handleSearch(); } }}
+                                    />
+                                    <Button size="sm" onClick={() => void handleSearch()}>Buscar</Button>
+
+                                </div>
+                               
                             </div>
                         </div>
                     </CardHeader>

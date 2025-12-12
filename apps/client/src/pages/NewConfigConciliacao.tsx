@@ -325,7 +325,7 @@ const NewConfigConciliacao = () => {
                                                 <div className="grid md:grid-cols-3 gap-4">
                                                     <div>
                                                         <FormLabel>Identificador</FormLabel>
-                                                        <Input value={c.key_identifier} onChange={(e) => updateChave(c.id, { key_identifier: e.target.value })} />
+                                                        <Input disabled value={c.key_identifier} onChange={(e) => updateChave(c.id, { key_identifier: e.target.value })} />
                                                     </div>
 
                                                     <div>
