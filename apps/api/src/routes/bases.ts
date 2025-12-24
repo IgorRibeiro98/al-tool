@@ -279,7 +279,10 @@ router.patch('/:id', async (req: Request, res: Response) => {
         if (typeof periodo !== 'undefined') update.periodo = periodo;
         if (typeof header_linha_inicial !== 'undefined') update.header_linha_inicial = header_linha_inicial ? Number(header_linha_inicial) : null;
         if (typeof header_coluna_inicial !== 'undefined') update.header_coluna_inicial = header_coluna_inicial ? Number(header_coluna_inicial) : null;
-        if (typeof subtype !== 'undefined') update.subtype = subtype;
+        if (typeof subtype !== 'undefined') {
+            if (!subtype || typeof subtype !== 'string') return res.status(400).json({ error: 'subtype inválido ou vazio' });
+            update.subtype = subtype;
+        }
         if (typeof reference_base_id !== 'undefined') update.reference_base_id = reference_base_id ? Number(reference_base_id) : null;
 
         if (!Object.keys(update).length) return res.status(400).json({ error: 'Nenhum campo para atualizar' });
@@ -472,19 +475,22 @@ router.post('/', upload.array('arquivo'), async (req: Request, res: Response) =>
             if (Number.isNaN(header_coluna_inicial) || header_coluna_inicial < 1)
                 return res.status(400).json({ error: `Campo "header_coluna_inicial" inválido para o arquivo ${file.originalname}` });
 
-            const subtypeValue = pickValue(subtypes, index) || null;
+            const subtypeValue = pickValue(subtypes, index);
+            if (!subtypeValue || typeof subtypeValue !== 'string') {
+                return res.status(400).json({ error: `Campo "subtype" é obrigatório para o arquivo ${file.originalname}.` });
+            }
             const referenceValue = pickValue(referenceBaseIds, index);
 
             const [id] = await db('bases').insert({
-                 tipo: tipoValue,
-                 nome: nomeValue,
-                 periodo: periodoValue || null,
-                 arquivo_caminho: savedPath,
-                 tabela_sqlite: null,
-                 header_linha_inicial,
-                 header_coluna_inicial,
-                 subtype: subtypeValue,
-                 reference_base_id: referenceValue ? Number(referenceValue) : null
+                tipo: tipoValue,
+                nome: nomeValue,
+                periodo: periodoValue || null,
+                arquivo_caminho: savedPath,
+                tabela_sqlite: null,
+                header_linha_inicial,
+                header_coluna_inicial,
+                subtype: subtypeValue,
+                reference_base_id: referenceValue ? Number(referenceValue) : null
             });
 
             // marcar conversão como pendente para cada base criada

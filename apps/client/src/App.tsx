@@ -29,6 +29,9 @@ import EditConfigMapeamento from "./pages/EditConfigMapeamento";
 import Conciliacoes from "./pages/Conciliacoes";
 import NewConciliacao from "./pages/NewConciliacao";
 import ConciliacaoDetails from "./pages/ConciliacaoDetails";
+import Atribuicoes from "./pages/Atribuicoes";
+import NewAtribuicao from "./pages/NewAtribuicao";
+import AtribuicaoDetails from "./pages/AtribuicaoDetails";
 import NotFound from "./pages/NotFound";
 import LicenseActivate from "./pages/LicenseActivate";
 import LicenseBlocked from "./pages/LicenseBlocked";
@@ -104,6 +107,9 @@ const App = () => (
                             <Route path="conciliacoes" element={<Conciliacoes />} />
                             <Route path="conciliacoes/new" element={<NewConciliacao />} />
                             <Route path="conciliacoes/:id" element={<ConciliacaoDetails />} />
+                            <Route path="atribuicoes" element={<Atribuicoes />} />
+                            <Route path="atribuicoes/new" element={<NewAtribuicao />} />
+                            <Route path="atribuicoes/:id" element={<AtribuicaoDetails />} />
                             <Route path="license/activate" element={<LicenseActivate />} />
                         </Route>
                         <Route path="license/blocked" element={<LicenseBlocked />} />

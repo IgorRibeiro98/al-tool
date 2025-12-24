@@ -7,6 +7,7 @@ import configsEstornoRouter from './routes/configsEstorno';
 import configsConciliacaoRouter from './routes/configsConciliacao';
 import configsMapeamentoRouter from './routes/configsMapeamento';
 import conciliacoesRouter from './routes/conciliacoes';
+import atribuicoesRouter from './routes/atribuicoes';
 import keysRouter from './routes/keys';
 import keysPairsRouter from './routes/keysPairs';
 import maintenanceRouter from './routes/maintenance';
@@ -52,6 +53,7 @@ function createApiRouter() {
     router.use('/keys', keysRouter);
     router.use('/keys-pairs', keysPairsRouter);
     router.use('/conciliacoes', conciliacoesRouter);
+    router.use('/atribuicoes', atribuicoesRouter);
     router.use('/maintenance', maintenanceRouter);
     router.use('/license', licenseRouter);
     return router;

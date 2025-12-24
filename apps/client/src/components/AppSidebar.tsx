@@ -10,6 +10,7 @@ import {
     Cable,
     PlayCircle,
     Link2,
+    ArrowRightLeft,
 } from 'lucide-react';
 import NavLink from '@/components/NavLink';
 import { useLocation } from 'react-router-dom';
@@ -39,6 +40,7 @@ const MAIN_ITEMS: NavItem[] = [
     { title: 'Dashboard', url: '/', icon: LayoutDashboard },
     { title: 'Bases', url: '/bases', icon: Database },
     { title: 'Conciliações', url: '/conciliacoes', icon: PlayCircle },
+    { title: 'Atribuições', url: '/atribuicoes', icon: ArrowRightLeft },
 ];
 
 const CONFIG_ITEMS: NavItem[] = [
