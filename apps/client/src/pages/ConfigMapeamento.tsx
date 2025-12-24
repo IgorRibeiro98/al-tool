@@ -33,7 +33,7 @@ type ConfigMapeamento = {
     mapeamentos?: MappingPair[] | null;
 };
 
-type Base = { id: number; nome?: string | null };
+// Using centralized `Base` type from `src/types/global.d.ts`
 
 type ColumnsMap = Record<string, string>;
 

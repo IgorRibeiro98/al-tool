@@ -175,16 +175,29 @@ router.post('/:id/exportar', async (req: Request, res: Response) => {
 
         try { await jobsRepo.setJobExportProgress(id, 1, 'IN_PROGRESS'); } catch { /* ignore */ }
 
-        (async () => {
-            try {
-                const info = await exportService.exportJobResultToZip(id);
-                console.log('Background export finished for job', id, info.path);
-                try { await jobsRepo.setJobExportProgress(id, 100, 'DONE'); } catch { }
-            } catch (bgErr) {
-                console.error('Background export failed for job', id, bgErr);
-                try { await jobsRepo.setJobExportProgress(id, null, 'FAILED'); } catch { }
+        try {
+            // spawn a detached child process to handle export without blocking API
+            const isProd = process.env.NODE_ENV === 'production';
+            const script = isProd ? path.resolve(__dirname, '../worker/exportRunner.js') : path.resolve(__dirname, '../worker/exportRunner.ts');
+            const forkArgs = [String(id)];
+            const forkOptions: any = isProd
+                ? { stdio: 'ignore', detached: true }
+                : { stdio: 'inherit', execArgv: ['-r', 'ts-node/register'] };
+
+            const child = require('child_process').fork(script, forkArgs, forkOptions);
+            if (isProd) {
+                // detach and let the child run independently
+                child.unref && child.unref();
             }
-        })();
+            child.on && child.on('error', (err: any) => {
+                console.error('Failed to spawn export child process for job', id, err);
+                try { jobsRepo.setJobExportProgress(id, null, 'FAILED'); } catch (_) { }
+            });
+        } catch (spawnErr) {
+            console.error('Failed to start background export process for job', id, spawnErr);
+            try { await jobsRepo.setJobExportProgress(id, null, 'FAILED'); } catch { }
+            return res.status(500).json({ error: 'failed to start export process' });
+        }
 
         return res.status(202).json({ jobId: id, status: 'export_started' });
     } catch (err: any) {
@@ -296,21 +309,84 @@ router.get('/:id/resultado', async (req: Request, res: Response) => {
 
         const table = resultTableName(id);
         const hasTable = await db.schema.hasTable(table);
-        if (!hasTable) return res.json({ page, pageSize, total: 0, totalPages: 0, data: [] });
+        if (!hasTable) return res.json({ page, pageSize, total: 0, totalPages: 0, data: [], keys: [] });
+
+        // Pre-read table columns to allow searching CHAVE_* columns reliably.
+        let availableCols: string[] = [];
+        try {
+            const rawPragma: any = await db.raw(`PRAGMA table_info("${table}")`);
+            // Normalize the various shapes knex/better-sqlite3 might return
+            let pragmaAny: any;
+            if (Array.isArray(rawPragma)) pragmaAny = rawPragma;
+            else if (rawPragma && Array.isArray(rawPragma[0])) pragmaAny = rawPragma[0];
+            else if (rawPragma && rawPragma.rows) pragmaAny = rawPragma.rows;
+            else pragmaAny = rawPragma;
+            // no debug logs in production; keep behavior silent
+            availableCols = Array.isArray(pragmaAny) ? pragmaAny.map((c: any) => String(c.name)) : [];
+        } catch (e) {
+            console.warn('failed to read table_info for result table', table, e);
+            availableCols = [];
+        }
 
         const statusRaw = typeof req.query.status === 'string' ? String(req.query.status) : undefined;
+        const searchRaw = typeof req.query.search === 'string' ? String(req.query.search).trim() : undefined;
+        const searchColumnRaw = typeof req.query.searchColumn === 'string' ? String(req.query.searchColumn).trim() : undefined;
 
-        let totalRaw: any;
-        if (statusRaw === '__NULL__') totalRaw = await db(table).whereNull('status').count({ count: '*' }).first();
-        else if (statusRaw !== undefined) totalRaw = await db(table).where('status', statusRaw).count({ count: '*' }).first();
-        else totalRaw = await db(table).count({ count: '*' }).first();
+        // Build a count query with same filters to compute total correctly
+        let countQuery: any = db(table);
+        if (statusRaw === '__NULL__') countQuery = countQuery.whereNull('status');
+        else if (statusRaw !== undefined) countQuery = countQuery.where('status', statusRaw);
 
+        // If searchRaw provided, apply narrow search depending on searchColumnRaw
+        if (searchRaw && searchRaw.length > 0) {
+            const term = `%${searchRaw}%`;
+                if (searchColumnRaw && searchColumnRaw.length > 0) {
+                    const matched = availableCols.find((c: string) => c.toLowerCase() === searchColumnRaw.toLowerCase());
+                    if (matched) {
+                        countQuery = countQuery.andWhereRaw('CAST(??.?? AS TEXT) LIKE ?', [table, matched, term]);
+                    } else {
+                        return res.json({ page, pageSize, total: 0, totalPages: 0, data: [], keys: [] });
+                    }
+                } else {
+                // no specific column: search `chave` plus any CHAVE_* columns
+                countQuery = countQuery.andWhere(function (this: any) {
+                    this.orWhereRaw('CAST(??.?? AS TEXT) LIKE ?', [table, 'chave', term]);
+                    for (const col of availableCols.filter((n: string) => /^CHAVE_\d+$/i.test(n))) {
+                        this.orWhereRaw('CAST(??.?? AS TEXT) LIKE ?', [table, col, term]);
+                    }
+                });
+            }
+        }
+
+        const totalRaw: any = await countQuery.count({ count: '*' }).first();
         const total = totalRaw ? Number(totalRaw.count || totalRaw['count(*)'] || 0) : 0;
         const totalPages = Math.ceil(total / pageSize) || 0;
 
-        let rowsQuery = db(table).select('*').orderBy('id', 'asc').limit(pageSize).offset(offset);
+        // build rows query with same filters
+        let rowsQuery: any = db(table).select('*');
         if (statusRaw === '__NULL__') rowsQuery = rowsQuery.whereNull('status');
         else if (statusRaw !== undefined) rowsQuery = rowsQuery.where('status', statusRaw);
+
+        if (searchRaw && searchRaw.length > 0) {
+            const term = `%${searchRaw}%`;
+                if (searchColumnRaw && searchColumnRaw.length > 0) {
+                    const matched = availableCols.find((c: string) => c.toLowerCase() === searchColumnRaw.toLowerCase());
+                    if (matched) {
+                        rowsQuery = rowsQuery.andWhereRaw('CAST(??.?? AS TEXT) LIKE ?', [table, matched, term]);
+                    } else {
+                        return res.json({ page, pageSize, total: 0, totalPages: 0, data: [], keys: [] });
+                    }
+                } else {
+                rowsQuery = rowsQuery.andWhere(function (this: any) {
+                    this.orWhereRaw('CAST(??.?? AS TEXT) LIKE ?', [table, 'chave', term]);
+                    for (const col of availableCols.filter((n: string) => /^CHAVE_\d+$/i.test(n))) {
+                        this.orWhereRaw('CAST(??.?? AS TEXT) LIKE ?', [table, col, term]);
+                    }
+                });
+            }
+        }
+
+        rowsQuery = rowsQuery.orderBy('id', 'asc').limit(pageSize).offset(offset);
         const rows = await rowsQuery;
 
         const keyIds = rows && rows.length > 0 ? Object.keys(rows[0]).filter(k => /^CHAVE_\d+$/.test(k)) : [];

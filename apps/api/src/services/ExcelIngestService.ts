@@ -2,6 +2,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import ExcelJS from 'exceljs';
 import db from '../db/knex';
+import baseColumnsService from './baseColumnsService';
 import { Knex } from 'knex';
 
 // Constants for sensible defaults and magic numbers
@@ -68,6 +69,8 @@ export class ExcelIngestService {
             await this.appendIngestLog('AnalyzeFailed', { tableName, error: e && (e instanceof Error ? (e.stack || e.message) : String(e)) });
         }
     }
+
+    // Automatic monetary detection removed: columns are initialized as non-monetary at ingest time
 
     private async appendIngestLog(prefix: string, info: any) {
         try {
@@ -138,6 +141,23 @@ export class ExcelIngestService {
             } catch (e) {
                 await this.appendIngestLog('ErrorClearingArquivoPaths', { baseId, error: e && (e instanceof Error ? (e.stack || e.message) : String(e)) });
             }
+            // If this base references a model base, attempt to copy monetary flags from the reference
+            try {
+                const refId = base && (base.reference_base_id || base.reference_base_id === 0 ? Number(base.reference_base_id) : null);
+                if (refId && Number.isInteger(refId) && refId > 0) {
+                    try {
+                        // force override=true so monetary flags from the reference base
+                        // overwrite the newly created columns' default value (which is 0)
+                        await baseColumnsService.applyMonetaryFlagsFromReference(refId, baseId, { override: true }).catch(async (err) => {
+                            await this.appendIngestLog('ApplyMonetaryFlagsFailed', { baseId, reference_base_id: refId, error: err && (err instanceof Error ? (err.stack || err.message) : String(err)) });
+                        });
+                    } catch (innerErr) {
+                        await this.appendIngestLog('ApplyMonetaryFlagsException', { baseId, reference_base_id: refId, error: innerErr && (innerErr instanceof Error ? (innerErr.stack || innerErr.message) : String(innerErr)) });
+                    }
+                }
+            } catch (e) {
+                await this.appendIngestLog('ApplyMonetaryFlagsOuterError', { baseId, error: e && (e instanceof Error ? (e.stack || e.message) : String(e)) });
+            }
         } catch (e) {
             await this.appendIngestLog('PostIngestCleanupFailed', { baseId, error: e && (e instanceof Error ? (e.stack || e.message) : String(e)) });
         }
@@ -203,7 +223,7 @@ export class ExcelIngestService {
         });
 
         try {
-            const mappings = columns.map((c, idx) => ({ base_id: baseId, col_index: startColIdx0 + idx + 1, excel_name: c.original == null ? null : String(c.original), sqlite_name: c.name }));
+            const mappings = columns.map((c, idx) => ({ base_id: baseId, col_index: startColIdx0 + idx + 1, excel_name: c.original == null ? null : String(c.original), sqlite_name: c.name, is_monetary: 0 }));
             if (mappings.length > 0) await trx('base_columns').insert(mappings);
         } catch (e) {
             await this.appendIngestLog('ErrorSavingBaseColumns', { baseId, error: e && (e instanceof Error ? (e.stack || e.message) : String(e)) });
@@ -345,8 +365,9 @@ export class ExcelIngestService {
         });
 
         try { const idxHelpers = await import('../db/indexHelpers'); await idxHelpers.ensureIndicesForBaseFromConfigs(baseId); } catch (e: any) { await this.appendIngestLog('IndexEnsureFailed', { baseId, error: e && (e instanceof Error ? (e.stack || e.message) : String(e)) }); }
-
         try { await this.analyzeTable(db, tableName); } catch (_) { }
+
+        // Automatic monetary detection removed; metadata initialization is handled during column persistence
 
         await this.performPostIngestCleanup(baseId, base);
         return { tableName, rowsInserted: inserted };
@@ -469,6 +490,8 @@ export class ExcelIngestService {
 
         try { const idxHelpers = await import('../db/indexHelpers'); await idxHelpers.ensureIndicesForBaseFromConfigs(baseId); } catch (e) { await this.appendIngestLog('IndexEnsureFailed', { baseId, error: e && (e instanceof Error ? (e.stack || e.message) : String(e)) }); }
         try { await this.analyzeTable(db, tableName); } catch (_) { }
+        // Automatic monetary detection removed; metadata initialization is handled during column persistence
+
         await this.performPostIngestCleanup(baseId, base);
 
         return { tableName, rowsInserted: inserted };

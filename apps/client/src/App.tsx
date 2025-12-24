@@ -21,11 +21,17 @@ import EditConfigEstorno from "./pages/EditConfigEstorno";
 import NewConfigConciliacao from "./pages/NewConfigConciliacao";
 import EditConfigConciliacao from "./pages/EditConfigConciliacao";
 import ConfigMapeamento from "./pages/ConfigMapeamento";
+import ConfigSubtypes from "./pages/ConfigSubtypes";
+import ConfigKeys from "./pages/ConfigKeys";
+import KeysPairs from "./pages/KeysPairs";
 import NewConfigMapeamento from "./pages/NewConfigMapeamento";
 import EditConfigMapeamento from "./pages/EditConfigMapeamento";
 import Conciliacoes from "./pages/Conciliacoes";
 import NewConciliacao from "./pages/NewConciliacao";
 import ConciliacaoDetails from "./pages/ConciliacaoDetails";
+import Atribuicoes from "./pages/Atribuicoes";
+import NewAtribuicao from "./pages/NewAtribuicao";
+import AtribuicaoDetails from "./pages/AtribuicaoDetails";
 import NotFound from "./pages/NotFound";
 import LicenseActivate from "./pages/LicenseActivate";
 import LicenseBlocked from "./pages/LicenseBlocked";
@@ -93,11 +99,17 @@ const App = () => (
                             <Route path="configs/conciliacao/new" element={<NewConfigConciliacao />} />
                             <Route path="configs/conciliacao/:id" element={<EditConfigConciliacao />} />
                             <Route path="configs/mapeamento" element={<ConfigMapeamento />} />
+                            <Route path="configs/keys" element={<ConfigKeys />} />
+                            <Route path="configs/key-pairs" element={<KeysPairs />} />
+                            <Route path="configs/subtypes" element={<ConfigSubtypes />} />
                             <Route path="configs/mapeamento/new" element={<NewConfigMapeamento />} />
                             <Route path="configs/mapeamento/:id" element={<EditConfigMapeamento />} />
                             <Route path="conciliacoes" element={<Conciliacoes />} />
                             <Route path="conciliacoes/new" element={<NewConciliacao />} />
                             <Route path="conciliacoes/:id" element={<ConciliacaoDetails />} />
+                            <Route path="atribuicoes" element={<Atribuicoes />} />
+                            <Route path="atribuicoes/new" element={<NewAtribuicao />} />
+                            <Route path="atribuicoes/:id" element={<AtribuicaoDetails />} />
                             <Route path="license/activate" element={<LicenseActivate />} />
                         </Route>
                         <Route path="license/blocked" element={<LicenseBlocked />} />

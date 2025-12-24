@@ -21,11 +21,13 @@ export function getConciliacao(id: number) {
     return api.get(`/conciliacoes/${id}`);
 }
 
-export function fetchConciliacaoResultado(id: number, page: number, pageSize: number, status?: string | null) {
+export function fetchConciliacaoResultado(id: number, page: number, pageSize: number, status?: string | null, search?: string | null, searchColumn?: string | null) {
     const params: any = { page, pageSize };
     // special token for filtering NULL status
     if (status === null) params.status = '__NULL__';
     else if (typeof status === 'string' && status.length > 0) params.status = status;
+    if (typeof search === 'string' && search.trim().length > 0) params.search = search.trim();
+    if (typeof searchColumn === 'string' && searchColumn.trim().length > 0) params.searchColumn = searchColumn.trim();
     return api.get(`/conciliacoes/${id}/resultado`, { params });
 }
 

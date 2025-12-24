@@ -11,6 +11,8 @@ import { Knex } from 'knex';
 */
 
 const RESULT_INSERT_CHUNK = 200;
+const PAGE_SIZE = 1000;
+const MATCHED_NOTIN_THRESHOLD = 5000;
 const EPSILON = 1e-6;
 
 const STATUS_CONCILIADO = '01_Conciliado';
@@ -79,6 +81,97 @@ export class ConciliacaoABStep implements PipelineStep {
         return {};
     }
 
+    // Resolve keys for a given configs_conciliacao id using linking table + central keys
+    private async resolveConfigKeys(configId: number, baseA: BaseRow, baseB: BaseRow) {
+        // load link rows ordered by ordem then id
+        const links = await this.db('configs_conciliacao_keys')
+            .where({ config_conciliacao_id: configId })
+            .orderBy('ordem', 'asc')
+            .orderBy('id', 'asc');
+
+        const keyIdentifiers: string[] = [];
+        const chavesContabil: Record<string, string[]> = {};
+        const chavesFiscal: Record<string, string[]> = {};
+
+        if (!links || links.length === 0) return { keyIdentifiers, chavesContabil, chavesFiscal };
+
+        // collect ids to fetch in bulk
+        const pairIds: number[] = [];
+        const defIds: number[] = [];
+        for (const l of links) {
+            if (l.keys_pair_id) pairIds.push(l.keys_pair_id);
+            if (l.contabil_key_id) defIds.push(l.contabil_key_id);
+            if (l.fiscal_key_id) defIds.push(l.fiscal_key_id);
+        }
+
+        // also include defs referenced by pairs
+        let pairsMap: Record<number, any> = {};
+        if (pairIds.length) {
+            const pairs = await this.db('keys_pairs').whereIn('id', pairIds).select('*');
+            pairsMap = {};
+            for (const p of pairs) {
+                pairsMap[p.id] = p;
+                if (p.contabil_key_id) defIds.push(p.contabil_key_id);
+                if (p.fiscal_key_id) defIds.push(p.fiscal_key_id);
+            }
+        }
+
+        const uniqueDefIds = Array.from(new Set(defIds.filter(Boolean)));
+        const defsMap: Record<number, any> = {};
+        if (uniqueDefIds.length) {
+            const defs = await this.db('keys_definitions').whereIn('id', uniqueDefIds).select('*');
+            for (const d of defs) defsMap[d.id] = d;
+        }
+
+        // helper to parse columns field into string[]
+        const parseCols = (val: any) => {
+            if (!val) return [] as string[];
+            try {
+                return Array.isArray(val) ? val : (typeof val === 'string' ? JSON.parse(val) : []);
+            } catch (_) { return [] as string[]; }
+        };
+
+        // iterate links in order
+        for (const l of links) {
+            const kid = String(l.key_identifier || '').trim();
+            if (!kid) continue;
+            keyIdentifiers.push(kid);
+
+            let contDef: any = null;
+            let fiscDef: any = null;
+
+            if (l.keys_pair_id) {
+                const pair = pairsMap[l.keys_pair_id];
+                if (!pair) throw new Error(`keys_pair ${l.keys_pair_id} not found for config ${configId}`);
+                contDef = pair.contabil_key_id ? defsMap[pair.contabil_key_id] : null;
+                fiscDef = pair.fiscal_key_id ? defsMap[pair.fiscal_key_id] : null;
+            } else {
+                contDef = l.contabil_key_id ? defsMap[l.contabil_key_id] : null;
+                fiscDef = l.fiscal_key_id ? defsMap[l.fiscal_key_id] : null;
+            }
+
+            if (!contDef) throw new Error(`Contabil key not found for key_identifier ${kid}`);
+            if (!fiscDef) throw new Error(`Fiscal key not found for key_identifier ${kid}`);
+
+            // validate base_tipo
+            if ((contDef.base_tipo || '').toUpperCase() !== 'CONTABIL') throw new Error(`Chave ${kid} (contabil) não é do tipo CONTABIL`);
+            if ((fiscDef.base_tipo || '').toUpperCase() !== 'FISCAL') throw new Error(`Chave ${kid} (fiscal) não é do tipo FISCAL`);
+
+            // validate subtype compatibility if present
+            const contSub = contDef.base_subtipo || null;
+            const fiscSub = fiscDef.base_subtipo || null;
+            const baseASub = (baseA as any).subtype || null;
+            const baseBSub = (baseB as any).subtype || null;
+            if (contSub && baseASub && contSub !== baseASub) throw new Error(`Chave ${kid} não é compatível com base contábil (subtipo)`);
+            if (fiscSub && baseBSub && fiscSub !== baseBSub) throw new Error(`Chave ${kid} não é compatível com base fiscal (subtipo)`);
+
+            chavesContabil[kid] = parseCols(contDef.columns || contDef.columns_json || contDef.columns_text);
+            chavesFiscal[kid] = parseCols(fiscDef.columns || fiscDef.columns_json || fiscDef.columns_text);
+        }
+
+        return { keyIdentifiers, chavesContabil, chavesFiscal };
+    }
+
     private buildComposite(row: any, cols?: string[] | undefined | null): string | null {
         if (!row || !cols || cols.length === 0) return null;
         return cols.map(c => String(row[c] ?? '')).join('_');
@@ -96,18 +189,27 @@ export class ConciliacaoABStep implements PipelineStep {
         return row ?? null;
     }
 
+    // Batch fetch rows by ids and populate cache to avoid N queries
+    private async fetchRowsBatch(table: string, ids: number[], cache: Map<number, any>) {
+        const missing = ids.filter(id => !cache.has(id));
+        if (!missing || missing.length === 0) return;
+        const rows = await this.db.select('*').from(table).whereIn('id', missing as number[]);
+        for (const r of rows) {
+            cache.set(Number(r.id), r);
+        }
+    }
+
     private async ensureResultColumns(tableName: string, keys: string[]) {
         if (!keys || keys.length === 0) return;
         const exists = await this.db.schema.hasTable(tableName);
         if (!exists) return;
-        for (const k of keys) {
-            const has = await this.db.schema.hasColumn(tableName, k);
-            if (!has) {
-                await this.db.schema.alterTable(tableName, t => {
-                    t.text(k).nullable();
-                });
-            }
-        }
+        // minimize DDL calls: get existing columns once and alter table adding all missing
+        const info = await this.db(tableName).columnInfo();
+        const missing = keys.filter(k => !(k in info));
+        if (missing.length === 0) return;
+        await this.db.schema.alterTable(tableName, t => {
+            for (const k of missing) t.text(k).nullable();
+        });
     }
 
     private async loadMarksForBases(baseAId: number, baseBId: number) {
@@ -115,8 +217,10 @@ export class ConciliacaoABStep implements PipelineStep {
         const marksA = new Map<number, MarkRow>();
         const marksB = new Map<number, MarkRow>();
         for (const m of rows) {
-            if (m.base_id === baseAId && !marksA.has(m.row_id)) marksA.set(m.row_id, m);
-            if (m.base_id === baseBId && !marksB.has(m.row_id)) marksB.set(m.row_id, m);
+            const rid = Number(m.row_id);
+            const markCopy = { ...m, row_id: rid } as MarkRow;
+            if (m.base_id === baseAId && !marksA.has(rid)) marksA.set(rid, markCopy);
+            if (m.base_id === baseBId && !marksB.has(rid)) marksB.set(rid, markCopy);
         }
         return { marksA, marksB } as { marksA: Map<number, MarkRow>; marksB: Map<number, MarkRow> };
     }
@@ -156,10 +260,25 @@ export class ConciliacaoABStep implements PipelineStep {
         const tableA = baseA.tabela_sqlite as string;
         const tableB = baseB.tabela_sqlite as string;
 
-        const chavesContabil = this.parseChaves(cfg.chaves_contabil);
-        const chavesFiscal = this.parseChaves(cfg.chaves_fiscal);
-
-        const keyIdentifiers = Array.from(new Set([...Object.keys(chavesContabil), ...Object.keys(chavesFiscal)]));
+        // Resolve keys from central linking table; fall back to legacy inline chaves only if no links present
+        let chavesContabil: Record<string, string[]> = {};
+        let chavesFiscal: Record<string, string[]> = {};
+        let keyIdentifiers: string[] = [];
+        try {
+            const resolved = await this.resolveConfigKeys(cfg.id, baseA, baseB);
+            if (resolved && resolved.keyIdentifiers && resolved.keyIdentifiers.length) {
+                chavesContabil = resolved.chavesContabil;
+                chavesFiscal = resolved.chavesFiscal;
+                keyIdentifiers = resolved.keyIdentifiers;
+            } else {
+                chavesContabil = this.parseChaves(cfg.chaves_contabil);
+                chavesFiscal = this.parseChaves(cfg.chaves_fiscal);
+                keyIdentifiers = Array.from(new Set([...Object.keys(chavesContabil), ...Object.keys(chavesFiscal)]));
+            }
+        } catch (err: any) {
+            // If resolution fails, abort the step with an error
+            throw new Error(`Failed to resolve config keys for config ${cfgId}: ${(err && err.message) || err}`);
+        }
 
         const colA = cfg.coluna_conciliacao_contabil ?? undefined;
         const colB = cfg.coluna_conciliacao_fiscal ?? undefined;
@@ -237,11 +356,20 @@ export class ConciliacaoABStep implements PipelineStep {
             matchedB.add(rowId);
         }
 
-        // Helper to insert accumulated results in chunks
+        // Helper to insert accumulated results in chunks inside a transaction
         const flushInserts = async () => {
-            for (let i = 0; i < inserts.length; i += RESULT_INSERT_CHUNK) {
-                const slice = inserts.slice(i, i + RESULT_INSERT_CHUNK);
-                await this.db(resultTable).insert(slice);
+            if (inserts.length === 0) return;
+            const trx = await this.db.transaction();
+            try {
+                for (let i = 0; i < inserts.length; i += RESULT_INSERT_CHUNK) {
+                    const slice = inserts.slice(i, i + RESULT_INSERT_CHUNK);
+                    await trx<ResultEntry>(resultTable).insert(slice);
+                }
+                await trx.commit();
+                inserts.length = 0; // clear
+            } catch (err) {
+                await trx.rollback();
+                throw err;
             }
         };
 
@@ -257,11 +385,11 @@ export class ConciliacaoABStep implements PipelineStep {
             const groups = new Map<string, { keyId: string; chaveValor: string | null; aIds: Set<number>; bIds: Set<number> }>();
 
             for (const r of rows) {
-                const a_row_id: number | null = r.a_row_id || null;
-                const b_row_id: number | null = r.b_row_id || null;
+                const a_row_id: number | null = r.a_row_id ? Number(r.a_row_id) : null;
+                const b_row_id: number | null = r.b_row_id ? Number(r.b_row_id) : null;
 
-                if (a_row_id && matchedA.has(a_row_id)) continue;
-                if (b_row_id && matchedB.has(b_row_id)) continue;
+                if (a_row_id !== null && matchedA.has(a_row_id)) continue;
+                if (b_row_id !== null && matchedB.has(b_row_id)) continue;
 
                 const aRow = a_row_id ? await this.getRowFromTable(tableA, a_row_id, aRowCache) : null;
                 const bRow = b_row_id ? await this.getRowFromTable(tableB, b_row_id, bRowCache) : null;
@@ -394,42 +522,71 @@ export class ConciliacaoABStep implements PipelineStep {
         // Persist intermediate inserts
         await flushInserts();
 
-        // Process unmatched A rows
+        // Process unmatched rows in a paginated way to avoid loading entire tables or huge whereNotIn lists
         const processRemaining = async (table: string, matchedSet: Set<number>, cache: Map<number, any>, col: string | undefined, marksMap: Map<number, MarkRow>, chavesMap: Record<string, string[]>, keyDefault: string | null, isA: boolean) => {
-            const remaining = matchedSet.size > 0 ? await this.db.select('*').from(table).whereNotIn('id', Array.from(matchedSet)) : await this.db.select('*').from(table);
-            for (const row of remaining) {
-                const id = row.id;
-                if (!id) continue;
-                if (!cache.has(id)) cache.set(id, row);
+            let lastId = 0;
+            const joinSide = isA ? 'a_row_id' : 'b_row_id';
+            while (true) {
+                const dbRef = this.db;
+                // Build base query to fetch a page of rows that are not yet present in result for this job
+                const pageQuery = this.db.select(`${table}.*`).from(table)
+                    .leftJoin(resultTable, function () {
+                        this.on(`${table}.id`, '=', `${resultTable}.${joinSide}`)
+                            .andOn(`${resultTable}.job_id`, '=', dbRef.raw('?', [jobId]));
+                    })
+                    .whereNull(`${resultTable}.${joinSide}`)
+                    .andWhere(`${table}.id`, '>', lastId)
+                    .orderBy(`${table}.id`, 'asc')
+                    .limit(PAGE_SIZE);
 
-                const valueA = isA ? (col ? Number(row[col]) || 0 : 0) : 0;
-                const rawB = !isA ? (col ? Number(row[col]) || 0 : 0) : 0;
-                const valueB = !isA && cfg.inverter_sinal_fiscal ? -rawB : rawB;
-                const diff = valueA - valueB;
+                const rows: any[] = await pageQuery;
+                if (!rows || rows.length === 0) break;
 
-                const mark = marksMap.get(id);
+                const ids = rows.map(r => Number(r.id)).filter(Boolean) as number[];
+                await this.fetchRowsBatch(table, ids, cache);
 
-                const entry: ResultEntry = {
-                    job_id: jobId,
-                    chave: mark ? mark.chave ?? mark.grupo ?? null : keyDefault,
-                    status: mark ? mark.status ?? STATUS_NOT_FOUND : STATUS_NOT_FOUND,
-                    grupo: mark ? mark.grupo ?? LABEL_NOT_FOUND : LABEL_NOT_FOUND,
-                    a_row_id: isA ? id : null,
-                    b_row_id: isA ? null : id,
-                    a_values: isA ? JSON.stringify(row) : null,
-                    b_values: !isA ? JSON.stringify(row) : null,
-                    value_a: valueA,
-                    value_b: valueB,
-                    difference: diff,
-                    created_at: this.db.fn.now()
-                };
+                for (const row of rows) {
+                    const id = Number(row.id);
+                    if (!id) continue;
 
-                for (const kid of keyIdentifiers) {
-                    entry[kid] = isA ? this.buildComposite(row, chavesContabil[kid]) : this.buildComposite(row, chavesFiscal[kid]);
+                    const cached = cache.get(id) ?? row;
+
+                    const valueA = isA ? (col ? Number(cached[col] ?? 0) || 0 : 0) : 0;
+                    const rawB = !isA ? (col ? Number(cached[col] ?? 0) || 0 : 0) : 0;
+                    const valueB = !isA && inverter ? -rawB : rawB;
+                    const diff = valueA - valueB;
+
+                    const mark = marksMap.get(id);
+
+                    const entry: ResultEntry = {
+                        job_id: jobId,
+                        chave: mark ? mark.chave ?? mark.grupo ?? null : keyDefault,
+                        status: mark ? mark.status ?? STATUS_NOT_FOUND : STATUS_NOT_FOUND,
+                        grupo: mark ? mark.grupo ?? LABEL_NOT_FOUND : LABEL_NOT_FOUND,
+                        a_row_id: isA ? id : null,
+                        b_row_id: isA ? null : id,
+                        a_values: isA ? JSON.stringify(cached) : null,
+                        b_values: !isA ? JSON.stringify(cached) : null,
+                        value_a: valueA,
+                        value_b: valueB,
+                        difference: diff,
+                        created_at: this.db.fn.now()
+                    };
+
+                    for (const kid of keyIdentifiers) {
+                        entry[kid] = isA ? this.buildComposite(cached, chavesContabil[kid]) : this.buildComposite(cached, chavesFiscal[kid]);
+                    }
+
+                    inserts.push(entry);
+                    // flush periodically to keep memory bounded
+                    if (inserts.length >= RESULT_INSERT_CHUNK) await flushInserts();
                 }
 
-                await this.db(resultTable).insert(entry);
+                lastId = Number(rows[rows.length - 1].id) || lastId;
+                if (rows.length < PAGE_SIZE) break; // last page
             }
+            // flush any remaining
+            if (inserts.length > 0) await flushInserts();
         };
 
         const defaultKey = keyIdentifiers.length ? keyIdentifiers[0] : null;

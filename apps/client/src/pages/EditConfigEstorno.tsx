@@ -35,10 +35,7 @@ const formSchema = z.object({
     ativa: z.boolean().default(true),
 });
 
-type ConfigEstorno = any;
-
-type Base = { id: number | string; nome?: string };
-type Column = { excel?: string; sqlite?: string; index?: string };
+// Using centralized types from `src/types/global.d.ts`: `ConfigEstorno`, `Base`, `Column`
 
 
 type FormValues = z.infer<typeof formSchema>;

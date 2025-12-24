@@ -2,8 +2,9 @@ import { PipelineStep, PipelineContext } from '../index';
 import { Knex } from 'knex';
 
 const GROUP_NF_CANCELADA = 'NF Cancelada';
-const STATUS_NAO_AVALIADO = '04_Não avaliado';
+const STATUS_NAO_AVALIADO = '04_Não Avaliado';
 const INSERT_CHUNK = 500;
+const LOG_PREFIX = '[CancelamentoBaseB]';
 
 type ConfigCancelamentoRow = {
     id: number;
@@ -20,7 +21,7 @@ type BaseRow = {
 export class CancelamentoBaseBStep implements PipelineStep {
     name = 'CancelamentoBaseB';
 
-    constructor(private readonly db: Knex) {}
+    constructor(private readonly db: Knex) { }
 
     private async ensureMarksTableExists(): Promise<void> {
         const exists = await this.db.schema.hasTable('conciliacao_marks');
@@ -39,59 +40,154 @@ export class CancelamentoBaseBStep implements PipelineStep {
         return base ?? null;
     }
 
-    private async fetchCanceledRowIds(tableName: string, indicatorColumn: string, canceledValue: string | number) {
-        const rows = await this.db.select('id').from(tableName).where(indicatorColumn, canceledValue);
-        return rows.map((r: any) => r.id) as number[];
+    private async fetchCanceledRowIds(tableName: string, indicatorColumn: string, canceledValue: string): Promise<number[]> {
+        // Normalize value and compare using lower(trim(ifnull(...))) to handle whitespace and case differences.
+        const val = canceledValue.trim().toLowerCase();
+        if (val === '') return [];
+
+        // Use identifier binding (??) to safely inject column name into raw SQL
+        const rows = await this.db.select('id').from(tableName).whereRaw("lower(trim(ifnull(??, ''))) = ?", [indicatorColumn, val]);
+        return rows.map((r: any) => Number(r.id)).filter(Boolean) as number[];
     }
 
-    private async fetchExistingMarks(baseId: number, rowIds: number[], grupo = GROUP_NF_CANCELADA) {
+    private async fetchExistingMarks(baseId: number, rowIds: number[], grupo = GROUP_NF_CANCELADA): Promise<Set<number>> {
         if (rowIds.length === 0) return new Set<number>();
-        const existing = await this.db('conciliacao_marks').select('row_id').where({ base_id: baseId, grupo }).whereIn('row_id', rowIds);
-        return new Set<number>(existing.map((r: any) => r.row_id));
+
+        // Paginate whereIn for large arrays to avoid SQLite limits
+        const result = new Set<number>();
+        for (let i = 0; i < rowIds.length; i += INSERT_CHUNK) {
+            const chunk = rowIds.slice(i, i + INSERT_CHUNK);
+            const existing = await this.db('conciliacao_marks')
+                .select('row_id')
+                .where({ base_id: baseId, grupo })
+                .whereIn('row_id', chunk);
+            for (const r of existing) result.add(Number(r.row_id));
+        }
+        return result;
     }
 
-    private async insertMarks(baseId: number, rowIds: number[], status = STATUS_NAO_AVALIADO, grupo = GROUP_NF_CANCELADA) {
-        if (rowIds.length === 0) return;
-        const chunks: number[][] = [];
-        for (let i = 0; i < rowIds.length; i += INSERT_CHUNK) chunks.push(rowIds.slice(i, i + INSERT_CHUNK));
+    private async insertMarks(baseId: number, rowIds: number[], status = STATUS_NAO_AVALIADO, grupo = GROUP_NF_CANCELADA): Promise<number> {
+        if (rowIds.length === 0) return 0;
 
-        for (const chunk of chunks) {
-            const inserts = chunk.map(rid => ({ base_id: baseId, row_id: rid, status, grupo, chave: null, created_at: this.db.fn.now() }));
-            await this.db('conciliacao_marks').insert(inserts);
+        const chunks: number[][] = [];
+        for (let i = 0; i < rowIds.length; i += INSERT_CHUNK) {
+            chunks.push(rowIds.slice(i, i + INSERT_CHUNK));
         }
+
+        let insertedCount = 0;
+
+        // Use transaction for atomicity - all or nothing
+        await this.db.transaction(async trx => {
+            for (const chunk of chunks) {
+                const inserts = chunk.map(rid => ({
+                    base_id: baseId,
+                    row_id: rid,
+                    status,
+                    grupo,
+                    chave: null,
+                    created_at: trx.fn.now()
+                }));
+
+                // Idempotent insert - ignore if already exists
+                await trx('conciliacao_marks')
+                    .insert(inserts)
+                    .onConflict(['base_id', 'row_id', 'grupo'])
+                    .ignore();
+
+                insertedCount += chunk.length;
+            }
+        });
+
+        return insertedCount;
     }
 
     async execute(ctx: PipelineContext): Promise<void> {
-        const cfgId = ctx.configCancelamentoId;
-        if (!cfgId) return;
+        const cfgId = ctx.configCancelamentoId as number | undefined | null;
 
-        const cfg = await this.getConfig(cfgId);
-        if (!cfg) return;
+        // Determine baseId first (from ctx or from cfg fallback)
+        const baseIdFromCtx = ctx.baseFiscalId as number | undefined | null;
 
-        const baseId = ctx.baseFiscalId ?? cfg.base_id;
-        if (!baseId) return;
+        let cfg: ConfigCancelamentoRow | null = null;
+        if (cfgId) {
+            cfg = await this.getConfig(cfgId);
+        }
+
+        // If no explicit configId provided, try to find a config by base_id
+        const baseId = baseIdFromCtx ?? cfg?.base_id;
+        if (!cfg && baseId) {
+            // try to load any config matching this base
+            const maybe = await this.db<ConfigCancelamentoRow>('configs_cancelamento').where({ base_id: baseId }).first();
+            if (maybe) cfg = maybe;
+        }
+
+        if (!cfg) {
+            console.log(`${LOG_PREFIX} No config found for cfgId=${cfgId}, baseId=${baseId} - skipping`);
+            return;
+        }
+        if (!baseId) {
+            console.log(`${LOG_PREFIX} No baseId available - skipping`);
+            return;
+        }
 
         const base = await this.getBase(baseId);
-        if (!base || !base.tabela_sqlite) return;
+        if (!base || !base.tabela_sqlite) {
+            console.log(`${LOG_PREFIX} Base ${baseId} not found or has no tabela_sqlite - skipping`);
+            return;
+        }
         const tableName = base.tabela_sqlite;
 
         const tableExists = await this.db.schema.hasTable(tableName);
-        if (!tableExists) return;
+        if (!tableExists) {
+            console.log(`${LOG_PREFIX} Table ${tableName} does not exist - skipping`);
+            return;
+        }
 
         await this.ensureMarksTableExists();
 
         const indicatorColumn = cfg.coluna_indicador;
-        const canceledValue = cfg.valor_cancelado as string | number | undefined | null;
-        if (!indicatorColumn || canceledValue === undefined || canceledValue === null) return;
+        const canceledValue = cfg.valor_cancelado;
 
-        const canceledRowIds = await this.fetchCanceledRowIds(tableName, indicatorColumn, canceledValue as any);
-        if (canceledRowIds.length === 0) return;
+        if (!indicatorColumn) {
+            console.log(`${LOG_PREFIX} No indicator column configured - skipping`);
+            return;
+        }
+        if (canceledValue === undefined || canceledValue === null) {
+            console.log(`${LOG_PREFIX} No canceled value configured - skipping`);
+            return;
+        }
+
+        // Normalize canceled value to string
+        const canceledValueStr = String(canceledValue).trim();
+        if (canceledValueStr === '') {
+            console.log(`${LOG_PREFIX} Empty canceled value - skipping`);
+            return;
+        }
+
+        // Ensure the indicator column exists in the target table to avoid silent no-ops
+        const hasCol = await this.db.schema.hasColumn(tableName, indicatorColumn);
+        if (!hasCol) {
+            console.log(`${LOG_PREFIX} Column ${indicatorColumn} not found in table ${tableName} - skipping`);
+            return;
+        }
+
+        const canceledRowIds = await this.fetchCanceledRowIds(tableName, indicatorColumn, canceledValueStr);
+        if (canceledRowIds.length === 0) {
+            console.log(`${LOG_PREFIX} No rows found with canceled value "${canceledValueStr}" in column ${indicatorColumn}`);
+            return;
+        }
 
         const existing = await this.fetchExistingMarks(baseId, canceledRowIds);
         const missing = canceledRowIds.filter(id => !existing.has(id));
-        if (missing.length === 0) return;
+
+        console.log(`${LOG_PREFIX} Found ${canceledRowIds.length} canceled rows, ${existing.size} already marked, ${missing.length} new marks to insert`);
+
+        if (missing.length === 0) {
+            console.log(`${LOG_PREFIX} All canceled rows already marked - nothing to do`);
+            return;
+        }
 
         await this.insertMarks(baseId, missing);
+        console.log(`${LOG_PREFIX} Inserted ${missing.length} new marks for base ${baseId}`);
     }
 }
 

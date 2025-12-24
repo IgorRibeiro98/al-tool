@@ -9,6 +9,8 @@ import { Knex } from 'knex';
 
 const GROUP_ESTORNO = 'Conciliado_Estorno';
 const STATUS_CONCILIADO = '01_Conciliado';
+const GROUP_DOC_ESTORNADOS = 'Documentos estornados';
+const STATUS_NAO_AVALIADO = '04_Não Avaliado';
 const INSERT_CHUNK = 500;
 
 type ConfigEstorno = {
@@ -103,6 +105,10 @@ export class EstornoBaseAStep implements PipelineStep {
             const listB = mapB.get(key);
             if (!listB) continue;
 
+            // track rows that found a zero-sum partner
+            const pairedA = new Set<number>();
+            const pairedB = new Set<number>();
+
             for (const aRow of listA) {
                 for (const bRow of listB) {
                     if (aRow.id === bRow.id) continue;
@@ -114,11 +120,29 @@ export class EstornoBaseAStep implements PipelineStep {
                         const status = STATUS_CONCILIADO;
                         const chave = `${jobIdPart}${key}_${Date.now()}_${groupCounter++}`;
 
+                        pairedA.add(aRow.id);
+                        pairedB.add(bRow.id);
+
                         // push two entries (A and B) — duplicates will be filtered before insert
                         markEntries.push({ base_id: baseId, row_id: aRow.id, status, grupo, chave, created_at: this.db.fn.now() });
                         markEntries.push({ base_id: baseId, row_id: bRow.id, status, grupo, chave, created_at: this.db.fn.now() });
                     }
                 }
+            }
+
+            // mark unpaired rows as Documentos estornados (to be excluded from conciliation)
+            for (const aRow of listA) {
+                if (pairedA.has(aRow.id)) continue;
+                const status = STATUS_NAO_AVALIADO;
+                const chave = `${jobIdPart}${key}_docest_${Date.now()}_${groupCounter++}`;
+                markEntries.push({ base_id: baseId, row_id: aRow.id, status, grupo: GROUP_DOC_ESTORNADOS, chave, created_at: this.db.fn.now() });
+            }
+
+            for (const bRow of listB) {
+                if (pairedB.has(bRow.id)) continue;
+                const status = STATUS_NAO_AVALIADO;
+                const chave = `${jobIdPart}${key}_docest_${Date.now()}_${groupCounter++}`;
+                markEntries.push({ base_id: baseId, row_id: bRow.id, status, grupo: GROUP_DOC_ESTORNADOS, chave, created_at: this.db.fn.now() });
             }
         }
 
@@ -126,10 +150,11 @@ export class EstornoBaseAStep implements PipelineStep {
 
         // Remove entries that already exist (same base_id, row_id, grupo)
         const rowIds = Array.from(new Set(markEntries.map(e => e.row_id)));
-        const existing = await this.db('conciliacao_marks').where({ base_id: baseId, grupo }).whereIn('row_id', rowIds).select('row_id');
-        const existingSet = new Set(existing.map((r: any) => r.row_id));
+        const groups = Array.from(new Set(markEntries.map(e => e.grupo)));
+        const existingRows = await this.db('conciliacao_marks').where({ base_id: baseId }).whereIn('grupo', groups).whereIn('row_id', rowIds).select('row_id', 'grupo');
+        const existingSet = new Set(existingRows.map((r: any) => `${r.row_id}|${r.grupo}`));
 
-        const toInsert = markEntries.filter(e => !existingSet.has(e.row_id));
+        const toInsert = markEntries.filter(e => !existingSet.has(`${e.row_id}|${e.grupo}`));
         if (toInsert.length === 0) return;
 
         await this.chunkInsertMarks(toInsert);

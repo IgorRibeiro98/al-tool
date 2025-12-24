@@ -14,13 +14,26 @@ type MappingPair = { coluna_contabil: string; coluna_fiscal: string };
 interface BaseSheetMetadata {
     baseId: number;
     tableName: string;
-    columns: Array<{ sqliteName: string; header: string; sqliteType?: string | null }>;
+    columns: Array<{ sqliteName: string; header: string; sqliteType?: string | null; is_monetary?: number | null }>;
 }
 
-function extractKeyIdentifiers(cfgRow: any): string[] {
+async function extractKeyIdentifiers(cfgRow: any): Promise<string[]> {
     const chavesContabil = parseChaves(cfgRow?.chaves_contabil);
     const chavesFiscal = parseChaves(cfgRow?.chaves_fiscal);
-    return Array.from(new Set([...Object.keys(chavesContabil || {}), ...Object.keys(chavesFiscal || {})]));
+    let ids = Array.from(new Set([...Object.keys(chavesContabil || {}), ...Object.keys(chavesFiscal || {})]));
+
+    // If legacy inline chaves are not present, try to load linked keys from configs_conciliacao_keys
+    if (!ids || ids.length === 0) {
+        try {
+            const rows = await db('configs_conciliacao_keys').where({ config_conciliacao_id: cfgRow?.id }).orderBy('ordem', 'asc').select('key_identifier');
+            if (rows && rows.length > 0) ids = rows.map((r: any) => String(r.key_identifier));
+        } catch (e) {
+            // ignore and return whatever we have
+            console.warn(`${LOG_PREFIX} could not load linked keys for config ${cfgRow?.id}`, e);
+        }
+    }
+
+    return ids;
 }
 
 function buildKeyHeaders(keyIds: string[]): string[] {
@@ -40,19 +53,20 @@ const EXTRA_FINAL_HEADERS = ['status', 'chave', 'grupo'];
 // Color definitions for Base A and Base B (ARGB format with full opacity)
 const BASE_A_STYLES = {
     header: 'FF3C78D8',
-    rowColor1: 'FFFFFFFF',
+    rowColor1: 'FFE8F0FE',
     rowColor2: 'FFE8F0FE',
 };
 
 const BASE_B_STYLES = {
     header: 'FF78909C',
-    rowColor1: 'FFEBEFF1',
-    rowColor2: 'FFD9D9D9',
+    rowColor1: 'FFFFFFFF',
+    rowColor2: 'FFFFFFFF',
 };
 
 const LOG_PREFIX = '[conciliacao-export]';
 const ZIP_COMPRESSION_LEVEL = 9;
 const WORKBOOK_OPTIONS = { useStyles: true, useSharedStrings: true } as const;
+const EXPORT_CHUNK_SIZE = 1000; // rows per DB fetch when chunking exports
 
 function createWorkbookWriter(filePath: string) {
     return new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, ...WORKBOOK_OPTIONS });
@@ -67,8 +81,9 @@ function styleHeaderRow(row: ExcelJS.Row, headerColor: string) {
     row.commit();
 }
 
-function applyAlternateRowShading(row: ExcelJS.Row, isEven: boolean, color: string) {
-    if (!isEven) return;
+function applyAlternateRowShading(row: ExcelJS.Row, isEven: boolean, colorOdd?: string | null, colorEven?: string | null) {
+    const color = isEven ? colorEven : colorOdd;
+    if (!color) return;
     const fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: color } } as any;
     row.eachCell((cell) => { cell.fill = fill; });
 }
@@ -114,7 +129,7 @@ export async function exportJobResultToXlsx(jobId: number) {
     const cfgRow = await db('configs_conciliacao').where({ id: job.config_conciliacao_id }).first();
     if (!cfgRow) throw new Error('config conciliacao not found for job');
 
-    const keyIdentifiers = extractKeyIdentifiers(cfgRow);
+    const keyIdentifiers = await extractKeyIdentifiers(cfgRow);
     const keyHeaders = buildKeyHeaders(keyIdentifiers);
 
     // stream to an ExcelJS file to avoid loading all rows in memory
@@ -131,34 +146,48 @@ export async function exportJobResultToXlsx(jobId: number) {
     const headerRow = sheet.addRow(finalHeaders);
     styleHeaderRow(headerRow, BASE_A_STYLES.header);
 
-    // stream rows from DB
-    const query = db.select('*').from(resultTable).orderBy('id', 'asc');
-    const stream: any = await (query as any).stream();
+    // stream rows from DB in chunks to reduce memory / sqlite pressure
     let rowIndex = 2;
-    try {
-        for await (const r of stream) {
-            const rowArr: any[] = [];
-            rowArr.push(r.id);
-            rowArr.push(r.chave ?? null);
-            rowArr.push(r.status ?? null);
-            rowArr.push(r.grupo ?? null);
-            rowArr.push(r.a_row_id ?? null);
-            rowArr.push(r.b_row_id ?? null);
-            rowArr.push(r.value_a ?? null);
-            rowArr.push(r.value_b ?? null);
-            rowArr.push(r.difference ?? null);
-            rowArr.push(typeof r.a_values === 'string' ? r.a_values : JSON.stringify(r.a_values || null));
-            rowArr.push(typeof r.b_values === 'string' ? r.b_values : JSON.stringify(r.b_values || null));
-            rowArr.push(formatIfDateLike(r.created_at ?? null));
-            for (const kid of keyIdentifiers) rowArr.push(r[kid] ?? null);
+    const monetaryFieldNames = ['value_a', 'value_b', 'difference'];
+    const monetaryIndexes: number[] = monetaryFieldNames
+        .map((n) => finalHeaders.indexOf(n))
+        .filter(i => i >= 0)
+        .map(i => i + 1);
 
-            const excelRow = sheet.addRow(rowArr);
-            applyAlternateRowShading(excelRow, (rowIndex % 2) === 0, 'FFF2F2F2');
-            excelRow.commit();
-            rowIndex += 1;
+    try {
+        let lastId = 0;
+        while (true) {
+            const rows: any[] = await db.select(finalHeaders).from(resultTable)
+                .where('id', '>', lastId)
+                .orderBy('id', 'asc')
+                .limit(EXPORT_CHUNK_SIZE);
+            if (!rows || rows.length === 0) break;
+
+            for (const r of rows) {
+                const rowArr: any[] = [];
+                rowArr.push(r.id);
+                rowArr.push(r.chave ?? null);
+                rowArr.push(r.status ?? null);
+                rowArr.push(r.grupo ?? null);
+                rowArr.push(r.a_row_id ?? null);
+                rowArr.push(r.b_row_id ?? null);
+                rowArr.push(r.value_a ?? null);
+                rowArr.push(r.value_b ?? null);
+                rowArr.push(r.difference ?? null);
+                rowArr.push(typeof r.a_values === 'string' ? r.a_values : JSON.stringify(r.a_values || null));
+                rowArr.push(typeof r.b_values === 'string' ? r.b_values : JSON.stringify(r.b_values || null));
+                rowArr.push(formatIfDateLike(r.created_at ?? null));
+                for (const kid of keyIdentifiers) rowArr.push(r[kid] ?? null);
+
+                const excelRow = sheet.addRow(rowArr);
+                applyAlternateRowShading(excelRow, (rowIndex % 2) === 0, null, 'FFF2F2F2');
+                try { applyMonetaryFormattingToRow(excelRow, monetaryIndexes); } catch (e) {}
+                excelRow.commit();
+                lastId = Number(r.id) || lastId;
+                rowIndex += 1;
+            }
         }
     } finally {
-        try { stream.destroy && stream.destroy(); } catch (err) { }
         (sheet as any).commit?.();
         await workbook.commit();
     }
@@ -198,7 +227,7 @@ export async function exportJobResultToZip(jobId: number) {
     const baseAId = job.base_contabil_id_override || cfg.base_contabil_id;
     const baseBId = job.base_fiscal_id_override || cfg.base_fiscal_id;
     if (!baseAId || !baseBId) throw new Error('Bases não configuradas para este job');
-    const keyIds = extractKeyIdentifiers(cfg);
+    const keyIds = await extractKeyIdentifiers(cfg);
     const keyHeaders = buildKeyHeaders(keyIds);
 
     const [metaA, metaB] = await Promise.all([
@@ -300,8 +329,55 @@ async function getBaseSheetMetadata(baseId: number): Promise<BaseSheetMetadata> 
             sqliteName: c.sqlite_name,
             header: c.excel_name == null ? c.sqlite_name : String(c.excel_name),
             sqliteType: typeMap.get(c.sqlite_name) ?? null,
+            is_monetary: typeof c.is_monetary === 'undefined' || c.is_monetary === null ? 0 : Number(c.is_monetary),
         })),
     };
+}
+
+/**
+ * Apply Brazilian-style monetary formatting to specified 1-based column indexes on an ExcelJS Row.
+ * - Attempts to coerce cell values to Number when possible and sets numFmt to '#,##0.00'.
+ */
+function applyMonetaryFormattingToRow(row: ExcelJS.Row, monetaryIndexes: number[]) {
+    if (!monetaryIndexes || monetaryIndexes.length === 0) return;
+    for (const idx of monetaryIndexes) {
+        try {
+            const cell = row.getCell(idx);
+            if (!cell) continue;
+            let raw = cell.value as any;
+
+            // Normalize strings like "12.345,67" or "12345,67" to parse as number
+            if (typeof raw === 'string') {
+                const trimmed = raw.trim();
+                if (trimmed === '' || trimmed.toUpperCase() === 'NULL') {
+                    // keep as null/empty
+                    cell.value = null;
+                    continue;
+                }
+                // Replace thousand separators and unify decimal separator to dot
+                const onlyDigits = trimmed.replace(/\./g, '').replace(/,/g, '.');
+                const n = Number(onlyDigits);
+                if (Number.isFinite(n)) {
+                    cell.value = n;
+                    cell.numFmt = '#,##0.00';
+                    continue;
+                }
+            }
+
+            // If already numeric, apply format
+            if (typeof raw === 'number' && Number.isFinite(raw)) {
+                cell.value = raw;
+                cell.numFmt = '#,##0.00';
+                continue;
+            }
+
+            // If value is Date or other, skip formatting
+        } catch (e) {
+            // tolerate formatting errors and continue
+            // eslint-disable-next-line no-console
+            console.warn(`${LOG_PREFIX} applyMonetaryFormattingToRow failed for idx=${idx}`, e);
+        }
+    }
 }
 
 function isNumericType(sqliteType?: string | null) {
@@ -468,6 +544,12 @@ async function buildSheetFileForBase(params: {
     styleHeaderRow(headerRow, styles.header);
 
     let rowIndex = 2; // starting after header
+    // precompute monetary indexes for this base sheet
+    const baseMonetaryIndexes = meta.columns
+        .map((c, i) => ({ c, i }))
+        .filter(x => Number(x.c.is_monetary) === 1)
+        .map(x => x.i + 1);
+
     try {
         await streamBaseRows({
             meta,
@@ -486,7 +568,8 @@ async function buildSheetFileForBase(params: {
 
                 const excelRow = sheet.addRow(rowArr);
                 const isEven = (rowIndex % 2) === 0;
-                applyAlternateRowShading(excelRow, isEven, styles.rowColor2);
+                applyAlternateRowShading(excelRow, isEven, styles.rowColor1, styles.rowColor2);
+                try { applyMonetaryFormattingToRow(excelRow, baseMonetaryIndexes); } catch (e) { }
                 excelRow.commit();
                 rowIndex += 1;
             }
@@ -522,6 +605,12 @@ async function buildCombinedWorkbook(params: {
     styleHeaderRow(headerRow, BASE_A_STYLES.header);
 
     let rowIndex = 2;
+    // precompute monetary indexes for metaA (applies to both A rows and mapped B rows)
+    const monetaryIndexesA = metaA.columns
+        .map((c, i) => ({ c, i }))
+        .filter(x => Number(x.c.is_monetary) === 1)
+        .map(x => x.i + 1);
+
     try {
         await streamBaseRows({
             meta: metaA,
@@ -539,7 +628,8 @@ async function buildCombinedWorkbook(params: {
                 rowArr.push(row.grupo ?? null);
 
                 const excelRow = sheetResultado.addRow(rowArr);
-                applyAlternateRowShading(excelRow, (rowIndex % 2) === 0, BASE_A_STYLES.rowColor2);
+                applyAlternateRowShading(excelRow, (rowIndex % 2) === 0, BASE_A_STYLES.rowColor1, BASE_A_STYLES.rowColor2);
+                try { applyMonetaryFormattingToRow(excelRow, monetaryIndexesA); } catch (e) {}
                 excelRow.commit();
                 rowIndex += 1;
             }
@@ -568,10 +658,8 @@ async function buildCombinedWorkbook(params: {
 
                 const excelRow = sheetResultado.addRow(rowArr);
                 // apply Base B alternating shading
-                if ((rowIndex % 2) === 0) {
-                    const rowFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BASE_B_STYLES.rowColor2 } } as any;
-                    excelRow.eachCell((cell) => { cell.fill = rowFill; });
-                }
+                applyAlternateRowShading(excelRow, (rowIndex % 2) === 0, BASE_B_STYLES.rowColor1, BASE_B_STYLES.rowColor2);
+                try { applyMonetaryFormattingToRow(excelRow, monetaryIndexesA); } catch (e) {}
                 excelRow.commit();
                 rowIndex += 1;
             }
