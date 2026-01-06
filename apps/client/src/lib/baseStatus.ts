@@ -43,7 +43,7 @@ export function getIngestStatusMeta(base?: Base | null): BaseStatusMeta {
     if (!base) return FALLBACK_INGEST;
 
     // If the SQLite table is present we consider ingestion completed
-    if (base.tabela_sqlite) return { chip: 'success', label: 'Ingestão concluída' };
+    if (base.tabela_sqlite && base.ingest_status === 'DONE') return { chip: 'success', label: 'Ingestão concluída' };
 
     const key = normalizeStatus(base.ingest_status as any);
     if (!key) {

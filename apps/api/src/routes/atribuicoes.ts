@@ -29,7 +29,7 @@ function resultTableName(runId: number) {
 // POST /atribuicoes/runs - Create a new run
 router.post('/runs', async (req: Request, res: Response) => {
     try {
-        const { nome, baseOrigemId, baseDestinoId, modeWrite, selectedColumns, keysPairs } = req.body;
+        const { nome, baseOrigemId, baseDestinoId, modeWrite, selectedColumns, keysPairs, updateOriginalBase } = req.body;
 
         // Validate required fields
         if (!baseOrigemId || !baseDestinoId) {
@@ -109,6 +109,7 @@ router.post('/runs', async (req: Request, res: Response) => {
             base_destino_id: destinoId,
             mode_write: mode as 'OVERWRITE' | 'ONLY_EMPTY',
             selected_columns: columns,
+            update_original_base: updateOriginalBase !== false,  // default true
             keys,
         });
 
@@ -182,6 +183,7 @@ router.get('/runs/:id', async (req: Request, res: Response) => {
         return res.json({
             ...run,
             selected_columns: run.selected_columns_json ? JSON.parse(run.selected_columns_json) : [],
+            update_original_base: run.update_original_base !== 0,  // convert to boolean
             base_origem: baseOrigem || null,
             base_destino: baseDestino || null,
             keys: enrichedKeys,

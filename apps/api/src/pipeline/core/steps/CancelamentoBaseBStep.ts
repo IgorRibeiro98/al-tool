@@ -1,25 +1,25 @@
 import { PipelineStep, PipelineContext } from '../index';
 import { Knex } from 'knex';
 
-const GROUP_NF_CANCELADA = 'NF Cancelada';
-const STATUS_NAO_AVALIADO = '04_Não Avaliado';
+const GROUP_NF_CANCELADA = 'NF Cancelada' as const;
+const STATUS_NAO_AVALIADO = '04_Não Avaliado' as const;
 const INSERT_CHUNK = 500;
 const LOG_PREFIX = '[CancelamentoBaseB]';
 
-type ConfigCancelamentoRow = {
-    id: number;
-    base_id: number;
-    coluna_indicador?: string | null;
-    valor_cancelado?: string | number | null;
-};
+interface ConfigCancelamentoRow {
+    readonly id: number;
+    readonly base_id: number;
+    readonly coluna_indicador?: string | null;
+    readonly valor_cancelado?: string | number | null;
+}
 
-type BaseRow = {
-    id: number;
-    tabela_sqlite?: string | null;
-};
+interface BaseRow {
+    readonly id: number;
+    readonly tabela_sqlite?: string | null;
+}
 
 export class CancelamentoBaseBStep implements PipelineStep {
-    name = 'CancelamentoBaseB';
+    readonly name = 'CancelamentoBaseB';
 
     constructor(private readonly db: Knex) { }
 
@@ -47,7 +47,9 @@ export class CancelamentoBaseBStep implements PipelineStep {
 
         // Use identifier binding (??) to safely inject column name into raw SQL
         const rows = await this.db.select('id').from(tableName).whereRaw("lower(trim(ifnull(??, ''))) = ?", [indicatorColumn, val]);
-        return rows.map((r: any) => Number(r.id)).filter(Boolean) as number[];
+        return rows
+            .map((r: { id?: number | string }) => Number(r.id))
+            .filter((id): id is number => !isNaN(id) && id > 0);
     }
 
     private async fetchExistingMarks(baseId: number, rowIds: number[], grupo = GROUP_NF_CANCELADA): Promise<Set<number>> {

@@ -3,6 +3,8 @@ import * as ingestRepo from '../repos/ingestJobsRepository';
 import ExcelIngestService from '../services/ExcelIngestService';
 
 const LOG_PREFIX = '[ingestRunner]';
+const EXIT_SUCCESS = 0;
+const EXIT_FAILURE = 1;
 const EXIT_INVALID_ARGS = 2;
 const EXIT_JOB_NOT_FOUND = 3;
 
@@ -36,15 +38,16 @@ async function runJob(jobId: number): Promise<number> {
         const result = await ExcelIngestService.ingest(baseId);
         await ingestRepo.updateJobStatus(jobId, 'DONE');
         console.log(`${LOG_PREFIX} Ingest done for job ${jobId}`, result);
-        return 0;
-    } catch (err: any) {
+        return EXIT_SUCCESS;
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
         console.error(`${LOG_PREFIX} Ingest failed for base ${baseId}:`, err);
-        try { await ingestRepo.updateJobStatus(jobId, 'FAILED', String(err?.message || err)); } catch (e) { console.warn(`${LOG_PREFIX} Failed to mark job failed:`, e); }
-        return 1;
+        try { await ingestRepo.updateJobStatus(jobId, 'FAILED', message); } catch (e) { console.warn(`${LOG_PREFIX} Failed to mark job failed:`, e); }
+        return EXIT_FAILURE;
     }
 }
 
-async function main() {
+async function main(): Promise<void> {
     const jobId = parseJobIdFromArgs(process.argv);
     if (jobId == null) {
         console.error(`${LOG_PREFIX} requires a numeric jobId argument`);
@@ -56,7 +59,7 @@ async function main() {
         process.exit(code);
     } catch (err) {
         console.error(`${LOG_PREFIX} unexpected error:`, err);
-        process.exit(1);
+        process.exit(EXIT_FAILURE);
     }
 }
 

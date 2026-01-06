@@ -623,9 +623,10 @@ async function createDerivedColumn(opts: {
     }
 
     // map op to SQL expression template using knex raw placeholders
+    // Use COALESCE to handle NULL values - otherwise ABS(NULL) returns NULL causing infinite loops
     const opMap: Record<string, (col: string) => any> = {
-        'ABS': (col: string) => db.raw('abs(??)', [col]),
-        'INVERTER': (col: string) => db.raw('(-1) * ??', [col])
+        'ABS': (col: string) => db.raw('COALESCE(abs(??), 0)', [col]),
+        'INVERTER': (col: string) => db.raw('COALESCE((-1) * ??, 0)', [col])
     };
 
     const opFn = opMap[String(op).toUpperCase()];
@@ -645,10 +646,23 @@ async function createDerivedColumn(opts: {
 
     // persist metadata in base_columns
     try {
-        const maxIdxRow = await db('base_columns').where({ base_id: baseId }).max('col_index as mx').first();
-        const nextIndex = (maxIdxRow && (maxIdxRow.mx || 0)) + 1;
-        const excelName = `${String(op).toUpperCase()}(${sourceColumn})`;
-        await db('base_columns').insert({ base_id: baseId, col_index: nextIndex, excel_name: excelName, sqlite_name: targetCol });
+        // Check if column already exists in base_columns
+        const existingCol = await db('base_columns')
+            .where({ base_id: baseId, sqlite_name: targetCol })
+            .first();
+
+        if (!existingCol) {
+            const maxIdxRow = await db('base_columns').where({ base_id: baseId }).max('col_index as mx').first();
+            const nextIndex = (maxIdxRow && (maxIdxRow.mx || 0)) + 1;
+            // Use descriptive name: OP(source_column)
+            const excelName = `${String(op).toUpperCase()}`;
+            await db('base_columns').insert({
+                base_id: baseId,
+                col_index: nextIndex,
+                excel_name: excelName,
+                sqlite_name: targetCol
+            });
+        }
     } catch (e) {
         console.error('Failed to save base_columns metadata', e);
     }
@@ -660,6 +674,7 @@ async function createDerivedColumn(opts: {
 }
 
 // POST /bases/:id/columns/derived - generic derived column creator
+// For large bases (>10k rows), this runs in background
 router.post('/:id/columns/derived', async (req: Request, res: Response) => {
     try {
         const parsed = parseIdParam(req);
@@ -678,11 +693,125 @@ router.post('/:id/columns/derived', async (req: Request, res: Response) => {
         const exists = await db.schema.hasTable(tableName);
         if (!exists) return res.status(404).json({ error: `Table ${tableName} not found in DB` });
 
+        // Check base size to determine if we should run in background
+        const BACKGROUND_THRESHOLD = Number(process.env.DERIVED_COLUMN_BACKGROUND_THRESHOLD) || 10000;
+        const countResult = await db(tableName).count('* as cnt').first();
+        const rowCount = Number(countResult?.cnt) || 0;
+
+        if (rowCount > BACKGROUND_THRESHOLD) {
+            // Create background job - will be processed by derivedColumnWorkerLoop
+            const [jobId] = await db('derived_column_jobs').insert({
+                base_id: id,
+                source_column: sourceColumn,
+                target_column: null, // will be set by worker
+                operation: String(op).toUpperCase(),
+                status: 'PENDING',
+                total_rows: rowCount,
+                processed_rows: 0,
+                progress: 0,
+                created_at: db.fn.now(),
+                updated_at: db.fn.now()
+            });
+
+            console.log(`[bases] created derived column job ${jobId} for base ${id} (${rowCount} rows)`);
+
+            return res.status(202).json({
+                success: true,
+                background: true,
+                jobId,
+                rowCount,
+                message: `Base grande (${rowCount} linhas). Processamento iniciado em background.`
+            });
+        }
+
+        // Small base - run synchronously
         const result = await createDerivedColumn({ baseId: id, tableName, sourceColumn, op });
-        return res.status(201).json({ success: true, ...result });
+        return res.status(201).json({ success: true, background: false, ...result });
     } catch (err: any) {
         console.error(err);
         res.status(400).json({ error: err.message || 'Erro ao criar coluna derivada' });
+    }
+});
+
+// GET /bases/:id/columns/derived/jobs - list all derived column jobs for a base
+router.get('/:id/columns/derived/jobs', async (req: Request, res: Response) => {
+    try {
+        const parsed = parseIdParam(req);
+        if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+        const id = parsed.id as number;
+
+        const jobs = await db('derived_column_jobs')
+            .where({ base_id: id })
+            .orderBy('created_at', 'desc');
+
+        return res.json({ jobs });
+    } catch (err: any) {
+        console.error(err);
+        res.status(500).json({ error: err.message || 'Erro ao buscar jobs' });
+    }
+});
+
+// GET /bases/:id/columns/derived/jobs/:jobId - get specific job status
+router.get('/:id/columns/derived/jobs/:jobId', async (req: Request, res: Response) => {
+    try {
+        const parsed = parseIdParam(req);
+        if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+        const baseId = parsed.id as number;
+
+        const jobId = Number(req.params.jobId);
+        if (Number.isNaN(jobId)) return res.status(400).json({ error: 'Invalid jobId' });
+
+        const job = await db('derived_column_jobs')
+            .where({ id: jobId, base_id: baseId })
+            .first();
+
+        if (!job) return res.status(404).json({ error: 'Job not found' });
+
+        return res.json({ job });
+    } catch (err: any) {
+        console.error(err);
+        res.status(500).json({ error: err.message || 'Erro ao buscar job' });
+    }
+});
+
+// POST /bases/:id/columns/derived/jobs/:jobId/retry - retry or recover a stuck/failed job
+router.post('/:id/columns/derived/jobs/:jobId/retry', async (req: Request, res: Response) => {
+    try {
+        const parsed = parseIdParam(req);
+        if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+        const baseId = parsed.id as number;
+
+        const jobId = Number(req.params.jobId);
+        if (Number.isNaN(jobId)) return res.status(400).json({ error: 'Invalid jobId' });
+
+        const job = await db('derived_column_jobs')
+            .where({ id: jobId, base_id: baseId })
+            .first();
+
+        if (!job) return res.status(404).json({ error: 'Job not found' });
+
+        // Don't retry if already DONE
+        if (job.status === 'DONE') {
+            return res.status(400).json({ error: 'Job already completed' });
+        }
+
+        // Reset job to PENDING - the worker loop will pick it up automatically
+        await db('derived_column_jobs').where({ id: jobId }).update({
+            status: 'PENDING',
+            error: null,
+            updated_at: db.fn.now()
+        });
+
+        console.log(`[bases] job ${jobId} reset to PENDING for retry`);
+
+        return res.status(202).json({
+            success: true,
+            message: `Job ${jobId} agendado para retry`,
+            jobId
+        });
+    } catch (err: any) {
+        console.error(err);
+        res.status(500).json({ error: err.message || 'Erro ao fazer retry do job' });
     }
 });
 

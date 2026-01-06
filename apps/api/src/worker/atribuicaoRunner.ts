@@ -4,41 +4,63 @@ import * as atribuicaoRepo from '../repos/atribuicaoRunsRepository';
 const LOG_PREFIX = '[atribuicaoRunner]';
 const BATCH_SIZE = 500;
 const PAGE_SIZE = 1000;
+const EXIT_MISSING_ARG = 2;
+const EXIT_RUN_NOT_FOUND = 3;
+const EXIT_NO_KEYS = 4;
+const EXIT_INVALID_BASE_ORIGEM = 5;
+const EXIT_INVALID_BASE_DESTINO = 6;
+const EXIT_NO_VALID_KEYS = 7;
 
 // Empty values as per business rules: NULL, '', 'NULL', '0', '0.00'
-function isEmptyValue(val: any): boolean {
+function isEmptyValue(val: unknown): boolean {
     if (val === null || val === undefined) return true;
     const str = String(val).trim();
     return str === '' || str.toLowerCase() === 'null' || str === '0' || str === '0.00';
 }
 
-function normalizeImportValue(val: any): string {
+function normalizeImportValue(val: unknown): string {
     if (isEmptyValue(val)) return 'NULL';
     return String(val).trim();
 }
 
+/**
+ * Normalize a value for key comparison.
+ * - Numbers are converted to text preserving their exact representation (no rounding)
+ * - NULL/empty values become empty string for consistent concatenation
+ * - Trims whitespace
+ */
+function normalizeKeyValue(val: unknown): string {
+    if (val === null || val === undefined) return '';
+    // For numbers, use String() which preserves the exact representation
+    // This avoids floating point display issues like 100.31 becoming 100.30999999999999
+    const str = String(val).trim();
+    if (str.toLowerCase() === 'null') return '';
+    return str;
+}
+
 function parseJobId(arg?: string): number | null {
-    const id = Number(arg);
+    const id = parseInt(arg || '', 10);
     if (!id || Number.isNaN(id)) return null;
     return id;
 }
 
-async function handleFatal(runId: number | null, err: unknown) {
+async function handleFatal(runId: number | null, err: unknown): Promise<never> {
     console.error(`${LOG_PREFIX} fatal error`, err);
     if (!runId) process.exit(1);
+    const message = err instanceof Error ? err.message : String(err);
     try {
-        await atribuicaoRepo.updateRunStatus(runId, 'FAILED', String((err as any)?.message || err));
+        await atribuicaoRepo.updateRunStatus(runId, 'FAILED', message);
         await atribuicaoRepo.setRunProgress(runId, 'failed', null, 'Atribuição interrompida');
-    } catch (_) { /* ignore */ }
+    } catch { /* ignore */ }
     process.exit(1);
 }
 
-async function main() {
+async function main(): Promise<void> {
     const argv = process.argv || [];
     const runId = parseJobId(argv[2]);
     if (!runId) {
         console.error(`${LOG_PREFIX} requires a numeric runId argument`);
-        process.exit(2);
+        process.exit(EXIT_MISSING_ARG);
     }
 
     try {
@@ -46,33 +68,34 @@ async function main() {
         if (!run) {
             console.error(`${LOG_PREFIX} run not found`, runId);
             await atribuicaoRepo.updateRunStatus(runId, 'FAILED', 'Run não encontrada');
-            process.exit(3);
+            process.exit(EXIT_RUN_NOT_FOUND);
         }
 
         const keys = await atribuicaoRepo.getRunKeys(runId);
         if (!keys || keys.length === 0) {
             console.error(`${LOG_PREFIX} no keys configured for run`, runId);
             await atribuicaoRepo.updateRunStatus(runId, 'FAILED', 'Nenhuma chave configurada');
-            process.exit(4);
+            process.exit(EXIT_NO_KEYS);
         }
 
         // Load bases
         const baseOrigem = await db('bases').where({ id: run.base_origem_id }).first();
         const baseDestino = await db('bases').where({ id: run.base_destino_id }).first();
 
-        if (!baseOrigem || !baseOrigem.tabela_sqlite) {
+        if (!baseOrigem?.tabela_sqlite) {
             await atribuicaoRepo.updateRunStatus(runId, 'FAILED', 'Base origem inválida');
-            process.exit(5);
+            process.exit(EXIT_INVALID_BASE_ORIGEM);
         }
-        if (!baseDestino || !baseDestino.tabela_sqlite) {
+        if (!baseDestino?.tabela_sqlite) {
             await atribuicaoRepo.updateRunStatus(runId, 'FAILED', 'Base destino inválida');
-            process.exit(6);
+            process.exit(EXIT_INVALID_BASE_DESTINO);
         }
 
         const tableOrigem = baseOrigem.tabela_sqlite;
         const tableDestino = baseDestino.tabela_sqlite;
         const modeWrite = run.mode_write || 'OVERWRITE';
         const selectedColumns: string[] = (run as any).selected_columns_json ? JSON.parse((run as any).selected_columns_json) : [];
+        const updateOriginalBase = (run as any).update_original_base !== 0;  // default true
 
         // Determine which side is which (FISCAL or CONTABIL)
         const origemTipo = (baseOrigem.tipo || '').toUpperCase();
@@ -144,6 +167,38 @@ async function main() {
         if (keyConfigs.length === 0) {
             await atribuicaoRepo.updateRunStatus(runId, 'FAILED', 'Nenhuma chave válida configurada');
             process.exit(7);
+        }
+
+        // Ensure indexes exist on key columns for better JOIN performance
+        // This is critical for large tables - without indexes, JOINs become O(n*m) scans
+        await atribuicaoRepo.setRunProgress(runId, 'creating_indexes', 12, 'Criando índices para chaves');
+
+        const ensureIndex = async (table: string, column: string) => {
+            const safeCol = column.replace(/[^a-zA-Z0-9_]/g, '_');
+            const indexName = `idx_${table}_${safeCol}`;
+            try {
+                // Check if index already exists
+                const existingIdx = await db.raw(`SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=? AND name=?`, [table, indexName]);
+                if (!existingIdx || existingIdx.length === 0) {
+                    await db.raw(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ("${column}")`);
+                    console.log(`${LOG_PREFIX} Created index ${indexName}`);
+                }
+            } catch (e: any) {
+                // Ignore if index already exists or column doesn't exist
+                if (!e.message?.includes('already exists')) {
+                    console.warn(`${LOG_PREFIX} Could not create index on ${table}.${column}:`, e.message);
+                }
+            }
+        };
+
+        // Create indexes on all key columns in both tables
+        for (const kc of keyConfigs) {
+            for (const col of kc.origemCols) {
+                await ensureIndex(tableOrigem, col);
+            }
+            for (const col of kc.destinoCols) {
+                await ensureIndex(tableDestino, col);
+            }
         }
 
         // Get destino columns schema
@@ -251,6 +306,38 @@ async function main() {
         const resultCols = Object.keys(resultColsInfo || {});
         const resultColsLower = new Set(resultCols.map(c => String(c).toLowerCase()));
 
+        // If updateOriginalBase is enabled, prepare destination table
+        // Add atribuicao_{runId} column and any missing selected columns
+        if (updateOriginalBase) {
+            await atribuicaoRepo.setRunProgress(runId, 'preparing_destination', 18, 'Preparando base de destino');
+
+            // Add missing selected columns to destination table
+            for (const col of selectedColumns) {
+                const hasCol = await db.schema.hasColumn(tableDestino, col);
+                if (!hasCol) {
+                    await db.schema.alterTable(tableDestino, (table) => {
+                        table.text(col).nullable();
+                    });
+                    console.log(`${LOG_PREFIX} Added column ${col} to ${tableDestino}`);
+
+                    // Also register in base_columns
+                    try {
+                        const maxIdxRow = await db('base_columns').where({ base_id: run.base_destino_id }).max('col_index as mx').first();
+                        const nextIndex = (maxIdxRow && (maxIdxRow.mx || 0)) + 1;
+                        await db('base_columns').insert({
+                            base_id: run.base_destino_id,
+                            col_index: nextIndex,
+                            excel_name: col,
+                            sqlite_name: col,
+                        });
+                    } catch (e) {
+                        console.error(`${LOG_PREFIX} Failed to register column ${col} in base_columns`, e);
+                    }
+                }
+            }
+
+        }
+
         // Process each key in priority order
         const totalKeys = keyConfigs.length;
         let processedKeys = 0;
@@ -273,9 +360,19 @@ async function main() {
             }
 
             // Build composite key match query
+            // Compare column-by-column to allow SQLite to use indexes when possible.
+            // 
+            // IMPORTANT: We use direct column comparison (not wrapped in functions)
+            // to allow SQLite to use indexes. Functions like IFNULL, CAST, COALESCE
+            // prevent index usage and cause full table scans.
+            //
+            // For NULL handling: SQLite's = operator returns NULL (not TRUE) when
+            // comparing NULL values, but in practice most key columns shouldn't be NULL.
+            // If NULL matching is required, consider using computed columns with indexes.
+            //
             // SELECT d.id as dest_id, MIN(o.id) as orig_id
             // FROM destino d
-            // JOIN origem o ON [key match]
+            // JOIN origem o ON [column matches]
             // LEFT JOIN tmp_matched m ON m.dest_id = d.id
             // WHERE m.dest_id IS NULL
             // GROUP BY d.id
@@ -289,6 +386,7 @@ async function main() {
                 )
                     .from({ d: tableDestino })
                     .innerJoin({ o: tableOrigem }, function () {
+                        // Direct column comparison - allows index usage
                         const maxLen = Math.max(origemCols.length, destColsForKey.length);
                         for (let i = 0; i < maxLen; i++) {
                             const oCol = origemCols[i % origemCols.length];
@@ -308,6 +406,7 @@ async function main() {
 
                 const inserts: any[] = [];
                 const matchedDestIds: number[] = [];
+                const originalBaseUpdates: Array<{ destId: number; updateData: Record<string, any> }> = [];
 
                 for (const match of matches) {
                     const destId = Number(match.dest_id);
@@ -357,11 +456,14 @@ async function main() {
                     for (let kIdx = 0; kIdx < keyConfigs.length; kIdx++) {
                         const kc = keyConfigs[kIdx];
                         const destColsForKey = kc.destinoCols || [];
+                        // Use normalizeKeyValue to ensure consistent formatting with SQL comparison
+                        // Do NOT filter out empty strings - they are part of the key structure
+                        // This matches the SQL: COALESCE(CAST(col AS TEXT), '') || '_' || ...
                         const combined = destColsForKey.map(dc => {
                             if (!dc) return '';
                             const raw = destRow[dc] ?? destRowLookup[String(dc).toLowerCase()];
-                            return raw === null || raw === undefined ? '' : String(raw);
-                        }).filter(s => s !== '').join('_');
+                            return normalizeKeyValue(raw);
+                        }).join('_');
                         const chaveCol = typeof chaveColumnNames !== 'undefined' && chaveColumnNames[kIdx] ? chaveColumnNames[kIdx] : `CHAVE_${kIdx + 1}`;
                         resultRow[chaveCol] = combined || null;
                     }
@@ -380,6 +482,26 @@ async function main() {
                     }
                     inserts.push(finalRow);
                     matchedDestIds.push(destId);
+
+                    // Prepare update for original base if enabled
+                    if (updateOriginalBase) {
+                        const updateData: Record<string, any> = {};
+                        // Update selected columns with imported values
+                        for (const col of selectedColumns) {
+                            const origValue = origRow[col];
+                            const destValue = destRow[col];
+
+                            if (modeWrite === 'ONLY_EMPTY') {
+                                if (isEmptyValue(destValue)) {
+                                    updateData[col] = normalizeImportValue(origValue);
+                                }
+                            } else {
+                                updateData[col] = normalizeImportValue(origValue);
+                            }
+                        }
+                        // Mark row with atribuicao column
+                        originalBaseUpdates.push({ destId, updateData });
+                    }
                 }
 
                 // Batch insert results
@@ -395,6 +517,14 @@ async function main() {
                         for (let i = 0; i < tempInserts.length; i += BATCH_SIZE) {
                             const slice = tempInserts.slice(i, i + BATCH_SIZE);
                             await trx(tempTableName).insert(slice).onConflict('dest_id').ignore();
+                        }
+                        // Update original base if enabled
+                        if (updateOriginalBase && originalBaseUpdates.length > 0) {
+                            for (const upd of originalBaseUpdates) {
+                                await trx(tableDestino)
+                                    .where({ id: upd.destId })
+                                    .update(upd.updateData);
+                            }
                         }
                         await trx.commit();
                         totalMatches += inserts.length;

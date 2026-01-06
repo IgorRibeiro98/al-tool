@@ -42,6 +42,7 @@ const NewAtribuicao: FC = () => {
     const [baseOrigemId, setBaseOrigemId] = useState<number | null>(null);
     const [baseDestinoId, setBaseDestinoId] = useState<number | null>(null);
     const [modeWrite, setModeWrite] = useState<'OVERWRITE' | 'ONLY_EMPTY'>('OVERWRITE');
+    const [updateOriginalBase, setUpdateOriginalBase] = useState(true);  // default true
     const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
     const [selectedKeys, setSelectedKeys] = useState<Array<{ keysPairId: number; keyIdentifier: string }>>([]);
 
@@ -157,6 +158,7 @@ const NewAtribuicao: FC = () => {
                 baseOrigemId,
                 baseDestinoId,
                 modeWrite,
+                updateOriginalBase,
                 selectedColumns,
                 keysPairs: selectedKeys.map((k, i) => ({
                     keysPairId: k.keysPairId,
@@ -290,7 +292,7 @@ const NewAtribuicao: FC = () => {
                             <CardTitle>Modo de Escrita</CardTitle>
                             <CardDescription>Define como os valores importados serão escritos no destino</CardDescription>
                         </CardHeader>
-                        <CardContent>
+                        <CardContent className="space-y-4">
                             <div className="flex items-center justify-between">
                                 <div>
                                     <p className="font-medium">Somente se vazio</p>
@@ -303,6 +305,20 @@ const NewAtribuicao: FC = () => {
                                 <Switch
                                     checked={modeWrite === 'ONLY_EMPTY'}
                                     onCheckedChange={(checked) => setModeWrite(checked ? 'ONLY_EMPTY' : 'OVERWRITE')}
+                                />
+                            </div>
+                            <div className="flex items-center justify-between pt-2 border-t">
+                                <div>
+                                    <p className="font-medium">Alterar base de destino original</p>
+                                    <p className="text-sm text-muted-foreground">
+                                        {updateOriginalBase
+                                            ? 'As colunas selecionadas serão adicionadas/atualizadas diretamente na base de destino'
+                                            : 'Apenas a tabela de resultado será criada, a base original não será modificada'}
+                                    </p>
+                                </div>
+                                <Switch
+                                    checked={updateOriginalBase}
+                                    onCheckedChange={setUpdateOriginalBase}
                                 />
                             </div>
                         </CardContent>

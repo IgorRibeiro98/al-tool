@@ -3,20 +3,27 @@ import type { Knex } from 'knex';
 
 export type IngestJobStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED';
 
-export type IngestJobRow = {
-    id: number;
+export interface IngestJobRow {
+    readonly id: number;
     status: IngestJobStatus;
     erro?: string | null;
+    base_id?: number;
     created_at?: string;
     updated_at?: string;
-    [key: string]: any;
-};
+    [key: string]: unknown;
+}
 
-function validateId(id: number) {
+interface RepoOptions {
+    readonly knex?: Knex;
+}
+
+const LOG_PREFIX = '[ingestJobsRepository]';
+
+function validateId(id: number): void {
     if (!Number.isInteger(id) || id <= 0) throw new TypeError('id must be a positive integer');
 }
 
-async function ensureTable(knexInstance?: Knex) {
+async function ensureTable(knexInstance?: Knex): Promise<void> {
     const k = knexInstance ?? db;
     const exists = await k.schema.hasTable('ingest_jobs');
     if (!exists) {
@@ -27,7 +34,7 @@ async function ensureTable(knexInstance?: Knex) {
 /**
  * Create an ingest job. Returns the created row.
  */
-export async function createJob(payload: Record<string, any>, options?: { knex?: Knex }) {
+export async function createJob(payload: Record<string, unknown>, options?: RepoOptions): Promise<IngestJobRow | null> {
     const knex = options?.knex ?? db;
     await ensureTable(knex);
     try {
@@ -38,8 +45,8 @@ export async function createJob(payload: Record<string, any>, options?: { knex?:
         const created = (await knex('ingest_jobs').where({ id }).first()) as IngestJobRow | undefined;
         return created ?? null;
     } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error('createJob failed:', (err as Error).message ?? err);
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`${LOG_PREFIX} createJob failed:`, message);
         throw err;
     }
 }
@@ -47,24 +54,24 @@ export async function createJob(payload: Record<string, any>, options?: { knex?:
 /**
  * Update job status and optional error message, returning the updated row.
  */
-export async function updateJobStatus(id: number, status: IngestJobStatus, errorMessage?: string, options?: { knex?: Knex }) {
+export async function updateJobStatus(id: number, status: IngestJobStatus, errorMessage?: string, options?: RepoOptions): Promise<IngestJobRow | null> {
     validateId(id);
     const knex = options?.knex ?? db;
     await ensureTable(knex);
-    const update: Record<string, any> = { status, updated_at: knex.fn.now() };
+    const update: Record<string, unknown> = { status, updated_at: knex.fn.now() };
     if (errorMessage) update.erro = errorMessage;
     try {
         await knex('ingest_jobs').where({ id }).update(update);
         const row = (await knex('ingest_jobs').where({ id }).first()) as IngestJobRow | undefined;
         return row ?? null;
     } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(`updateJobStatus failed (id=${id}):`, (err as Error).message ?? err);
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`${LOG_PREFIX} updateJobStatus failed (id=${id}):`, message);
         throw err;
     }
 }
 
-export async function getJobById(id: number, options?: { knex?: Knex }) {
+export async function getJobById(id: number, options?: RepoOptions): Promise<IngestJobRow | null> {
     validateId(id);
     const knex = options?.knex ?? db;
     await ensureTable(knex);
@@ -72,8 +79,8 @@ export async function getJobById(id: number, options?: { knex?: Knex }) {
         const row = (await knex('ingest_jobs').where({ id }).first()) as IngestJobRow | undefined;
         return row ?? null;
     } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(`getJobById failed (id=${id}):`, (err as Error).message ?? err);
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`${LOG_PREFIX} getJobById failed (id=${id}):`, message);
         throw err;
     }
 }

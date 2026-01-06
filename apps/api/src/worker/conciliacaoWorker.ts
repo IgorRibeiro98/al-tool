@@ -3,10 +3,20 @@ import * as jobsRepo from '../repos/jobsRepository';
 import path from 'path';
 import { fork, ChildProcess } from 'child_process';
 
-const DEFAULT_INTERVAL_SECONDS = Number(process.env.WORKER_POLL_SECONDS || 5);
+const DEFAULT_INTERVAL_SECONDS = parseInt(process.env.WORKER_POLL_SECONDS || '5', 10);
+const MIN_POLL_INTERVAL_MS = 1000;
 const LOG_PREFIX = '[conciliacaoWorker]';
 
-type JobRow = { id: number; status?: string; created_at?: string };
+interface JobRow {
+    readonly id: number;
+    readonly status?: string;
+    readonly created_at?: string;
+}
+
+interface RunnerScript {
+    readonly script: string;
+    readonly useTsNode: boolean;
+}
 
 async function fetchOldestPendingJob(): Promise<JobRow | null> {
     const job = await db<JobRow>('jobs_conciliacao').where({ status: 'PENDING' }).orderBy('created_at', 'asc').first();
@@ -18,7 +28,7 @@ async function claimJob(jobId: number): Promise<boolean> {
     return Boolean(claimed);
 }
 
-function runnerScriptPath(): { script: string; useTsNode: boolean } {
+function runnerScriptPath(): RunnerScript {
     const isProd = process.env.NODE_ENV === 'production';
     if (isProd) return { script: path.resolve(__dirname, 'jobRunner.js'), useTsNode: false };
     return { script: path.resolve(__dirname, 'jobRunner.ts'), useTsNode: true };
@@ -26,18 +36,20 @@ function runnerScriptPath(): { script: string; useTsNode: boolean } {
 
 function spawnJobRunner(jobId: number): ChildProcess {
     const { script, useTsNode } = runnerScriptPath();
-    if (useTsNode) {
-        return fork(script, [String(jobId)], { stdio: 'inherit', execArgv: ['-r', 'ts-node/register'] });
-    }
-    return fork(script, [String(jobId)], { stdio: 'inherit' });
+    const execArgv = useTsNode ? ['-r', 'ts-node/register'] : [];
+    return fork(script, [String(jobId)], { stdio: 'inherit', execArgv });
 }
 
-function safeSetPipelineStage(jobId: number, stage: string, order: number | null, message: string) {
-    return jobsRepo.setJobPipelineStage(jobId, stage, order, message).catch((err) => console.warn(`${LOG_PREFIX} Failed to set pipeline stage for job ${jobId}`, err));
+function safeSetPipelineStage(jobId: number, stage: string, order: number | null, message: string): Promise<void> {
+    return jobsRepo.setJobPipelineStage(jobId, stage, order, message)
+        .then(() => { /* success */ })
+        .catch((err) => console.warn(`${LOG_PREFIX} Failed to set pipeline stage for job ${jobId}`, err));
 }
 
-function safeUpdateJobStatus(jobId: number, status: jobsRepo.JobStatus, message?: string) {
-    return jobsRepo.updateJobStatus(jobId, status, message || '').catch((err) => console.warn(`${LOG_PREFIX} Failed to update status for job ${jobId}`, err));
+function safeUpdateJobStatus(jobId: number, status: jobsRepo.JobStatus, message?: string): Promise<void> {
+    return jobsRepo.updateJobStatus(jobId, status, message || '')
+        .then(() => { /* success */ })
+        .catch((err) => console.warn(`${LOG_PREFIX} Failed to update status for job ${jobId}`, err));
 }
 
 export function startConciliacaoWorker(intervalSeconds = DEFAULT_INTERVAL_SECONDS) {
@@ -84,7 +96,7 @@ export function startConciliacaoWorker(intervalSeconds = DEFAULT_INTERVAL_SECOND
         }
     };
 
-    const timer = setInterval(() => void tick(), Math.max(1000, intervalSeconds * 1000));
+    const timer = setInterval(() => void tick(), Math.max(MIN_POLL_INTERVAL_MS, intervalSeconds * 1000));
     void tick();
     return () => clearInterval(timer);
 }

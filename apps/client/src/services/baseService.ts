@@ -28,6 +28,14 @@ export function createDerivedColumn(id: number, sourceColumn: string, op: string
     return api.post(`/bases/${id}/columns/derived`, { sourceColumn, op });
 }
 
+export function getDerivedColumnJobs(baseId: number) {
+    return api.get(`/bases/${baseId}/columns/derived/jobs`);
+}
+
+export function getDerivedColumnJobStatus(baseId: number, jobId: number) {
+    return api.get(`/bases/${baseId}/columns/derived/jobs/${jobId}`);
+}
+
 export function setBaseColumnMonetary(baseId: number, columnId: number, isMonetary: boolean | number) {
     return api.patch(`/bases/${baseId}/columns/${columnId}`, { is_monetary: Number(isMonetary) === 1 || isMonetary === true ? 1 : 0 });
 }
@@ -71,6 +79,8 @@ export default {
     getBase,
     getBaseColumns,
     createDerivedColumn,
+    getDerivedColumnJobs,
+    getDerivedColumnJobStatus,
     setBaseColumnMonetary,
     reuseMonetaryFlags,
     fetchBaseSubtypes,

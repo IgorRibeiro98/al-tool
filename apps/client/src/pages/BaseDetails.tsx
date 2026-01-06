@@ -10,6 +10,7 @@ import {
     getBaseColumns,
     deleteBase,
     createDerivedColumn,
+    getDerivedColumnJobStatus,
     reuseMonetaryFlags,
     fetchBases,
     updateBase,
@@ -237,6 +238,36 @@ const BaseDetails = () => {
         }
     };
 
+    const pollDerivedColumnJob = useCallback(async (baseId: number, jobId: number, op: string) => {
+        const pollInterval = 2000;
+        let lastProgress = 0;
+        const poll = async () => {
+            try {
+                const resp = await getDerivedColumnJobStatus(baseId, jobId);
+                const job = resp.data.job;
+                if (job.status === 'DONE') {
+                    toast.success(`Coluna ${op} criada com sucesso (${job.processed_rows} linhas)`);
+                    await loadBaseData({ includePreview: true });
+                    return;
+                }
+                if (job.status === 'FAILED') {
+                    toast.error(`Falha ao criar coluna ${op}: ${job.error || 'Erro desconhecido'}`);
+                    return;
+                }
+                // Still running - show progress if changed
+                if (job.progress > lastProgress) {
+                    lastProgress = job.progress;
+                    toast.info(`${op}: ${job.progress}% concluído (${job.processed_rows}/${job.total_rows})`);
+                }
+                setTimeout(poll, pollInterval);
+            } catch (e) {
+                console.error('Error polling derived column job', e);
+                setTimeout(poll, pollInterval * 2);
+            }
+        };
+        poll();
+    }, [loadBaseData]);
+
     const handleCreateAbsColumn = useCallback(async () => {
         if (!id) return toast.error('Base inválida');
         if (!absSourceColumn) return toast.error('Selecione a coluna de origem para ABS');
@@ -244,15 +275,21 @@ const BaseDetails = () => {
         try {
             setLoading(true);
             const resp = await createDerivedColumn(numId, absSourceColumn as string, 'ABS');
-            toast.success(`Coluna ${resp.data.column} criada (${resp.data.rowsUpdated} linhas atualizadas)`);
-            await loadBaseData({ includePreview: true });
+            if (resp.data.background) {
+                // Background job started - poll for completion
+                toast.info(resp.data.message || 'Processamento iniciado em background');
+                pollDerivedColumnJob(numId, resp.data.jobId, 'ABS');
+            } else {
+                toast.success(`Coluna ${resp.data.column} criada (${resp.data.rowsUpdated} linhas atualizadas)`);
+                await loadBaseData({ includePreview: true });
+            }
         } catch (e: any) {
             console.error('create ABS failed', e);
             toast.error(e?.message || 'Falha ao criar coluna ABS');
         } finally {
             setLoading(false);
         }
-    }, [id, absSourceColumn, loadBaseData]);
+    }, [id, absSourceColumn, loadBaseData, pollDerivedColumnJob]);
 
     const handleCreateInverterColumn = useCallback(async () => {
         if (!id) return toast.error('Base inválida');
@@ -261,15 +298,21 @@ const BaseDetails = () => {
         try {
             setLoading(true);
             const resp = await createDerivedColumn(numId, inverterSourceColumn as string, 'INVERTER');
-            toast.success(`Coluna ${resp.data.column} criada (${resp.data.rowsUpdated} linhas atualizadas)`);
-            await loadBaseData({ includePreview: true });
+            if (resp.data.background) {
+                // Background job started - poll for completion
+                toast.info(resp.data.message || 'Processamento iniciado em background');
+                pollDerivedColumnJob(numId, resp.data.jobId, 'INVERTER');
+            } else {
+                toast.success(`Coluna ${resp.data.column} criada (${resp.data.rowsUpdated} linhas atualizadas)`);
+                await loadBaseData({ includePreview: true });
+            }
         } catch (e: any) {
             console.error('create INVERTER failed', e);
             toast.error(e?.message || 'Falha ao criar coluna INVERTER');
         } finally {
             setLoading(false);
         }
-    }, [id, inverterSourceColumn, loadBaseData]);
+    }, [id, inverterSourceColumn, loadBaseData, pollDerivedColumnJob]);
 
     return (
         <PageSkeletonWrapper loading={loading}>
@@ -285,7 +328,7 @@ const BaseDetails = () => {
                         </div>
                     </CardHeader>
                     <CardContent>
-                          <div className="grid gap-4 md:grid-cols-4 mb-4">
+                        <div className="grid gap-4 md:grid-cols-4 mb-4">
                             <div className="rounded-lg border p-3 flex flex-col gap-2 bg-muted/20">
                                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Tipo</p>
                                 <p className="font-medium text-base">{base?.tipo ?? '-'}</p>
@@ -354,7 +397,7 @@ const BaseDetails = () => {
                             </div>
                         </div>
 
-                      
+
                     </CardContent>
                 </Card>
 

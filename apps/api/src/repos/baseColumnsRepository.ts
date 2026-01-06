@@ -1,19 +1,25 @@
 import db from '../db/knex';
 import type { Knex } from 'knex';
 
-export type BaseColumn = {
-    id: number;
-    base_id: number;
-    excel_name: string;
-    sqlite_name: string;
-    col_index: number;
-    created_at?: string;
-    is_monetary?: number | null;
-};
+export interface BaseColumn {
+    readonly id: number;
+    readonly base_id: number;
+    readonly excel_name: string;
+    readonly sqlite_name: string;
+    readonly col_index: number;
+    readonly created_at?: string;
+    readonly is_monetary?: number | null;
+}
 
+interface RepoOptions {
+    readonly useCache?: boolean;
+    readonly knex?: Knex;
+}
+
+const LOG_PREFIX = '[baseColumnsRepository]';
 const columnsCache = new Map<number, BaseColumn[]>();
 
-function validateBaseId(baseId: number) {
+function validateBaseId(baseId: number): void {
     if (!Number.isInteger(baseId) || baseId <= 0) throw new TypeError('baseId must be a positive integer');
 }
 
@@ -21,7 +27,7 @@ function validateBaseId(baseId: number) {
  * Get ordered columns metadata for a given base.
  * Uses a simple in-memory cache to avoid duplicate DB queries in the same process.
  */
-export async function getColumnsForBase(baseId: number, options?: { useCache?: boolean; knex?: Knex }) {
+export async function getColumnsForBase(baseId: number, options?: RepoOptions): Promise<BaseColumn[]> {
     validateBaseId(baseId);
     const useCache = options?.useCache ?? true;
     if (useCache && columnsCache.has(baseId)) return columnsCache.get(baseId)!;
@@ -32,9 +38,8 @@ export async function getColumnsForBase(baseId: number, options?: { useCache?: b
         if (useCache) columnsCache.set(baseId, rows);
         return rows;
     } catch (err) {
-        // Minimal standardized logging; caller can decide how to handle
-        // eslint-disable-next-line no-console
-        console.error(`getColumnsForBase failed (baseId=${baseId}):`, (err as Error).message ?? err);
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`${LOG_PREFIX} getColumnsForBase failed (baseId=${baseId}):`, message);
         throw err;
     }
 }
@@ -43,7 +48,7 @@ export async function getColumnsForBase(baseId: number, options?: { useCache?: b
  * Resolve sqlite column name for a given excel column name in a base.
  * Returns null when no mapping exists.
  */
-export async function getSqliteNameForBaseColumn(baseId: number, excelName: string, options?: { knex?: Knex }) {
+export async function getSqliteNameForBaseColumn(baseId: number, excelName: string, options?: { knex?: Knex }): Promise<string | null> {
     validateBaseId(baseId);
     if (typeof excelName !== 'string' || excelName.trim() === '') return null;
 
@@ -52,14 +57,17 @@ export async function getSqliteNameForBaseColumn(baseId: number, excelName: stri
         const row = (await knex('base_columns').where({ base_id: baseId, excel_name: excelName }).first()) as BaseColumn | undefined;
         return row ? row.sqlite_name : null;
     } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(`getSqliteNameForBaseColumn failed (baseId=${baseId}, excelName=${excelName}):`, (err as Error).message ?? err);
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`${LOG_PREFIX} getSqliteNameForBaseColumn failed (baseId=${baseId}, excelName=${excelName}):`, message);
         throw err;
     }
 }
 
-export function clearColumnsCache(baseId?: number) {
-    if (baseId === undefined) return columnsCache.clear();
+export function clearColumnsCache(baseId?: number): void {
+    if (baseId === undefined) {
+        columnsCache.clear();
+        return;
+    }
     validateBaseId(baseId);
     columnsCache.delete(baseId);
 }

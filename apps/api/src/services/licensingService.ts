@@ -1,18 +1,34 @@
 import db from '../db/knex';
 
-type LicensingStatusNotActivated = { status: 'not_activated' };
-type LicensingStatusExpired = { status: 'expired'; expiresAt: Date | null };
-type LicensingStatusBlockedOffline = { status: 'blocked_offline'; expiresAt: Date | null };
-type LicensingStatusActive = { status: string; expiresAt: Date | null };
+interface LicensingStatusNotActivated {
+    readonly status: 'not_activated';
+}
+
+interface LicensingStatusExpired {
+    readonly status: 'expired';
+    readonly expiresAt: Date | null;
+}
+
+interface LicensingStatusBlockedOffline {
+    readonly status: 'blocked_offline';
+    readonly expiresAt: Date | null;
+}
+
+interface LicensingStatusActive {
+    readonly status: string;
+    readonly expiresAt: Date | null;
+}
 
 export type LicensingStatus = LicensingStatusNotActivated | LicensingStatusExpired | LicensingStatusBlockedOffline | LicensingStatusActive;
 
-type LicenseRow = {
-    id?: number;
-    status?: string | null;
-    expires_at?: string | Date | null;
-    last_success_online_validation_at?: string | Date | null;
-};
+interface LicenseRow {
+    readonly id?: number;
+    readonly status?: string | null;
+    readonly expires_at?: string | Date | null;
+    readonly last_success_online_validation_at?: string | Date | null;
+}
+
+const LOG_PREFIX = '[LicensingService]';
 
 class LicensingService {
     private static readonly OFFLINE_GRACE_DAYS = 37; // days allowed after last successful online validation
@@ -20,7 +36,7 @@ class LicensingService {
 
     private parseDate(value: unknown): Date | null {
         if (value == null) return null;
-        const d = new Date(value as any);
+        const d = new Date(value as string | number | Date);
         return Number.isNaN(d.getTime()) ? null : d;
     }
 
@@ -50,9 +66,7 @@ class LicensingService {
             const effectiveStatus = typeof row.status === 'string' && row.status ? row.status : 'active';
             return { status: effectiveStatus, expiresAt: expiresAt || null };
         } catch (err) {
-            // Standardized error logging
-            // eslint-disable-next-line no-console
-            console.error('[LicensingService] getStatus error:', err);
+            console.error(`${LOG_PREFIX} getStatus error:`, err);
             return { status: 'not_activated' };
         }
     }

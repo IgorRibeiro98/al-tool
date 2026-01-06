@@ -23,9 +23,10 @@ REPO_ROOT = os.environ.get('REPO_ROOT', os.path.abspath(os.path.join(SCRIPT_DIR,
 DATA_DIR = os.environ.get('DATA_DIR') or os.path.abspath(os.path.join(REPO_ROOT, 'storage'))
 DB_PATH = os.environ.get('DB_PATH') or os.path.join(DATA_DIR, 'db', 'dev.sqlite3')
 POLL_INTERVAL = float(os.environ.get('POLL_INTERVAL', '5'))
+FAST_POLL_INTERVAL = float(os.environ.get('FAST_POLL_INTERVAL', '0.5'))  # Quick poll when there's work
 INGESTS_DIR = os.environ.get('INGESTS_DIR') or os.path.join(DATA_DIR, 'ingests')
 UPLOAD_DIR_ENV = os.environ.get('UPLOAD_DIR') or os.path.join(DATA_DIR, 'uploads')
-BUSY_TIMEOUT_MS = int(os.environ.get('SQLITE_BUSY_TIMEOUT') or os.environ.get('BUSY_TIMEOUT') or 8000)
+BUSY_TIMEOUT_MS = int(os.environ.get('SQLITE_BUSY_TIMEOUT') or os.environ.get('BUSY_TIMEOUT') or 30000)
 JOURNAL_MODE = os.environ.get('SQLITE_JOURNAL_MODE') or os.environ.get('JOURNAL_MODE') or 'WAL'
 BACKOFF_MAX_SECONDS = float(os.environ.get('WORKER_BACKOFF_MAX_SECONDS', '30'))
 
@@ -115,39 +116,52 @@ def resolve_uploaded_path(arquivo_caminho: Optional[str]) -> Tuple[Optional[str]
     return None, candidates
 
 
-def claim_pending(conn: sqlite3.Connection) -> Optional[Tuple[int, Optional[str]]]:
+def claim_pending(conn: sqlite3.Connection, max_retries: int = 3) -> Optional[Tuple[int, Optional[str]]]:
     """Atomically claim a single PENDING base and mark it RUNNING.
 
     Returns (base_id, arquivo_caminho) or None when nothing to claim.
+    Uses retry with exponential backoff for database lock contention.
     """
     cur = conn.cursor()
-    cur.execute("BEGIN IMMEDIATE")
-    try:
-        cur.execute("SELECT id, arquivo_caminho FROM bases WHERE conversion_status = 'PENDING' ORDER BY id LIMIT 1")
-        row = cur.fetchone()
-        if not row:
-            conn.commit()
-            return None
-        base_id, arquivo_caminho = row
-
-        cur.execute(
-            "UPDATE bases SET conversion_status = 'RUNNING', conversion_started_at = ? WHERE id = ? AND conversion_status = 'PENDING'",
-            (now_iso(), base_id)
-        )
-        if cur.rowcount == 0:
-            conn.commit()
-            return None
-        conn.commit()
-        return int(base_id), arquivo_caminho
-    except Exception:
+    retry_delay = 0.5
+    
+    for attempt in range(max_retries):
         try:
-            conn.rollback()
-        except Exception:
-            pass
-        return None
+            cur.execute("BEGIN IMMEDIATE")
+            try:
+                cur.execute("SELECT id, arquivo_caminho FROM bases WHERE conversion_status = 'PENDING' ORDER BY id LIMIT 1")
+                row = cur.fetchone()
+                if not row:
+                    conn.commit()
+                    return None
+                base_id, arquivo_caminho = row
+
+                cur.execute(
+                    "UPDATE bases SET conversion_status = 'RUNNING', conversion_started_at = ? WHERE id = ? AND conversion_status = 'PENDING'",
+                    (now_iso(), base_id)
+                )
+                if cur.rowcount == 0:
+                    conn.commit()
+                    return None
+                conn.commit()
+                return int(base_id), arquivo_caminho
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+        except sqlite3.OperationalError as e:
+            if 'locked' in str(e).lower() and attempt < max_retries - 1:
+                log(f"Database locked on claim attempt {attempt + 1}/{max_retries}, retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 5.0)
+                continue
+            raise
+    return None
 
 
-def update_status(conn: sqlite3.Connection, base_id: int, status: str, jsonl_rel: Optional[str] = None, error_msg: Optional[str] = None) -> None:
+def update_status(conn: sqlite3.Connection, base_id: int, status: str, jsonl_rel: Optional[str] = None, error_msg: Optional[str] = None, max_retries: int = 3) -> None:
     cur = conn.cursor()
     fields = ['conversion_status = ?']
     params: List[object] = [status]
@@ -162,8 +176,20 @@ def update_status(conn: sqlite3.Connection, base_id: int, status: str, jsonl_rel
 
     params.append(base_id)
     sql = f"UPDATE bases SET {', '.join(fields)} WHERE id = ?"
-    cur.execute(sql, params)
-    conn.commit()
+    
+    retry_delay = 0.5
+    for attempt in range(max_retries):
+        try:
+            cur.execute(sql, params)
+            conn.commit()
+            return
+        except sqlite3.OperationalError as e:
+            if 'locked' in str(e).lower() and attempt < max_retries - 1:
+                log(f"Database locked on update_status attempt {attempt + 1}/{max_retries}, retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 5.0)
+                continue
+            raise
 
 
 def run_conversion(abs_input: str, abs_output: str) -> Tuple[int, str, str]:
@@ -189,14 +215,27 @@ def connect_db() -> sqlite3.Connection:
     return conn
 
 
+def count_pending(conn: sqlite3.Connection) -> int:
+    """Count how many bases are pending conversion."""
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM bases WHERE conversion_status = 'PENDING'")
+        row = cur.fetchone()
+        return row[0] if row else 0
+    except Exception:
+        return 0
+
+
 def main_loop() -> None:
     ensure_dir(DATA_DIR)
     ensure_dir(os.path.join(DATA_DIR, 'db'))
     ensure_dir(INGESTS_DIR)
     ensure_dir(UPLOAD_DIR_ENV)
-    log(f"Conversion worker starting. DB={DB_PATH} poll={POLL_INTERVAL}s ingests={INGESTS_DIR} journal_mode={JOURNAL_MODE} busy_timeout={BUSY_TIMEOUT_MS}ms")
+    log(f"Conversion worker starting. DB={DB_PATH} poll={POLL_INTERVAL}s fast_poll={FAST_POLL_INTERVAL}s ingests={INGESTS_DIR} journal_mode={JOURNAL_MODE} busy_timeout={BUSY_TIMEOUT_MS}ms")
 
     backoff = POLL_INTERVAL
+    use_fast_poll = False  # When there's more work pending, poll faster
+    
     while running:
         conn = None
         try:
@@ -212,6 +251,7 @@ def main_loop() -> None:
         try:
             claimed = claim_pending(conn)
             if not claimed:
+                use_fast_poll = False
                 try:
                     conn.close()
                 except Exception:
@@ -221,7 +261,12 @@ def main_loop() -> None:
 
             base_id, arquivo_caminho = claimed
             stats['claimed'] += 1
-            log(f"Claimed base id={base_id} file={arquivo_caminho} (claimed={stats['claimed']})")
+            
+            # Check if there are more pending jobs for faster polling
+            pending_count = count_pending(conn)
+            use_fast_poll = pending_count > 0
+            
+            log(f"Claimed base id={base_id} file={arquivo_caminho} (claimed={stats['claimed']}, pending={pending_count})")
 
             abs_input, candidates = resolve_uploaded_path(arquivo_caminho)
             if abs_input is None:
@@ -232,6 +277,8 @@ def main_loop() -> None:
                     conn.close()
                 except Exception:
                     pass
+                # Use fast poll if there are more pending
+                time.sleep(FAST_POLL_INTERVAL if use_fast_poll else POLL_INTERVAL)
                 continue
 
             abs_output = os.path.join(INGESTS_DIR, f"{base_id}.jsonl")
@@ -258,6 +305,12 @@ def main_loop() -> None:
                 conn.close()
             except Exception:
                 pass
+            
+            # Use fast poll if there are more pending jobs
+            if use_fast_poll:
+                time.sleep(FAST_POLL_INTERVAL)
+            # Otherwise continue immediately to check for more work
+            
         except Exception as exc:
             log(f'Worker loop error: {exc}')
             try:

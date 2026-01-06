@@ -11,6 +11,7 @@ exports.up = async function (knex) {
     t.integer('base_destino_id').unsigned().notNullable();
     t.string('mode_write').notNullable().defaultTo('OVERWRITE'); // OVERWRITE | ONLY_EMPTY
     t.text('selected_columns').nullable(); // JSON array of column names
+    t.text('selected_columns_json').nullable();
     t.string('status').notNullable().defaultTo('PENDING'); // PENDING | RUNNING | DONE | FAILED
     t.string('pipeline_stage').nullable();
     t.integer('pipeline_progress').nullable();

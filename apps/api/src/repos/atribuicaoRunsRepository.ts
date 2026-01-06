@@ -4,13 +4,14 @@ import type { Knex } from 'knex';
 export type AtribuicaoRunStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED';
 export type ModeWrite = 'OVERWRITE' | 'ONLY_EMPTY';
 
-export type AtribuicaoRunRow = {
-    id: number;
+export interface AtribuicaoRunRow {
+    readonly id: number;
     nome?: string | null;
-    base_origem_id: number;
-    base_destino_id: number;
+    readonly base_origem_id: number;
+    readonly base_destino_id: number;
     mode_write: ModeWrite;
     selected_columns_json?: string | null;  // JSON array of column names
+    update_original_base?: number | null;  // 1 = true (default), 0 = false
     status: AtribuicaoRunStatus;
     pipeline_stage?: string | null;
     pipeline_progress?: number | null;
@@ -18,18 +19,23 @@ export type AtribuicaoRunRow = {
     result_table_name?: string | null;
     created_at?: string;
     updated_at?: string;
-};
+}
 
-export type AtribuicaoRunKeyRow = {
-    id: number;
-    atribuicao_run_id: number;
-    keys_pair_id: number;
-    key_identifier: string;
-    ordem: number;
+export interface AtribuicaoRunKeyRow {
+    readonly id: number;
+    readonly atribuicao_run_id: number;
+    readonly keys_pair_id: number;
+    readonly key_identifier: string;
+    readonly ordem: number;
     created_at?: string;
     updated_at?: string;
-};
+}
 
+interface RepoOptions {
+    readonly knex?: Knex;
+}
+
+const LOG_PREFIX = '[atribuicaoRunsRepository]';
 const TABLE_RUNS = 'atribuicao_runs';
 const TABLE_KEYS = 'atribuicao_run_keys';
 
@@ -44,6 +50,7 @@ export async function createRun(
         base_destino_id: number;
         mode_write: ModeWrite;
         selected_columns: string[];
+        update_original_base?: boolean;
         keys: Array<{ keys_pair_id: number; key_identifier: string; ordem: number }>;
     },
     options?: { knex?: Knex }
@@ -56,6 +63,7 @@ export async function createRun(
         base_destino_id: payload.base_destino_id,
         mode_write: payload.mode_write,
         selected_columns_json: JSON.stringify(payload.selected_columns || []),
+        update_original_base: payload.update_original_base !== false ? 1 : 0,  // default true
         status: 'PENDING' as AtribuicaoRunStatus,
         created_at: knex.fn.now(),
         updated_at: knex.fn.now(),
@@ -125,11 +133,11 @@ export async function updateRunStatus(
     id: number,
     status: AtribuicaoRunStatus,
     error?: string,
-    options?: { knex?: Knex }
+    options?: RepoOptions
 ): Promise<AtribuicaoRunRow | null> {
     validateId(id);
     const knex = options?.knex ?? db;
-    const update: Record<string, any> = { status, updated_at: knex.fn.now() };
+    const update: Record<string, unknown> = { status, updated_at: knex.fn.now() };
     if (error !== undefined) update.erro = error;
     await knex(TABLE_RUNS).where({ id }).update(update);
     return getRunById(id, options);
@@ -140,11 +148,11 @@ export async function setRunProgress(
     stage: string | null,
     progress?: number | null,
     _label?: string | null,  // Not used - table doesn't have this column
-    options?: { knex?: Knex }
+    options?: RepoOptions
 ): Promise<AtribuicaoRunRow | null> {
     validateId(id);
     const knex = options?.knex ?? db;
-    const update: Record<string, any> = { updated_at: knex.fn.now() };
+    const update: Record<string, unknown> = { updated_at: knex.fn.now() };
     if (stage !== undefined) update.pipeline_stage = stage;
     if (progress !== undefined) update.pipeline_progress = progress;
     // Note: pipeline_stage_label column doesn't exist in table

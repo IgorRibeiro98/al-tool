@@ -5,6 +5,7 @@ export interface PipelineContext {
     configConciliacaoId: number;
     configEstornoId?: number;
     configCancelamentoId?: number;
+    reportStage?: (info: { stepName: string; stepIndex: number; totalSteps: number }) => Promise<void>;
 }
 
 export interface PipelineStep {
@@ -21,6 +22,30 @@ function isPipelineStep(value: unknown): value is PipelineStep {
         typeof (value as any).name === 'string' &&
         typeof (value as any).execute === 'function'
     );
+}
+
+// Helper to trigger garbage collection (works only if node is run with --expose-gc)
+function tryGarbageCollect(): void {
+    if (typeof global !== 'undefined' && typeof (global as any).gc === 'function') {
+        try {
+            (global as any).gc();
+        } catch (_) {
+            // ignore errors
+        }
+    }
+}
+
+// Helper to get current memory usage in MB for logging
+function getMemoryUsageMB(): { heapUsed: number; heapTotal: number; rss: number } {
+    if (typeof process !== 'undefined' && typeof process.memoryUsage === 'function') {
+        const mem = process.memoryUsage();
+        return {
+            heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
+            heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+            rss: Math.round(mem.rss / 1024 / 1024),
+        };
+    }
+    return { heapUsed: 0, heapTotal: 0, rss: 0 };
 }
 
 export class ConciliacaoPipeline {
@@ -45,8 +70,29 @@ export class ConciliacaoPipeline {
     }
 
     async run(ctx: PipelineContext): Promise<void> {
-        for (let i = 0; i < this.steps.length; i++) {
+        const totalSteps = this.steps.length;
+
+        for (let i = 0; i < totalSteps; i++) {
             const step = this.steps[i];
+
+            // Report stage before starting step
+            if (ctx.reportStage) {
+                try {
+                    await ctx.reportStage({ stepName: step.name, stepIndex: i, totalSteps });
+                } catch (err) {
+                    this.logger.warn('[ConciliacaoPipeline] reportStage failed', { step: step.name }, err);
+                }
+            }
+
+            // Log memory before step
+            const memBefore = getMemoryUsageMB();
+            this.logger.info('[ConciliacaoPipeline] starting step', {
+                index: i,
+                step: step.name,
+                jobId: ctx?.jobId,
+                memoryMB: memBefore
+            });
+
             try {
                 await step.execute(ctx);
             } catch (err) {
@@ -54,6 +100,19 @@ export class ConciliacaoPipeline {
                 this.logger.error('[ConciliacaoPipeline] step failed', { index: i, step: step.name, jobId: ctx?.jobId }, err);
                 throw err;
             }
+
+            // Log memory after step and trigger GC hint
+            const memAfter = getMemoryUsageMB();
+            this.logger.info('[ConciliacaoPipeline] completed step', {
+                index: i,
+                step: step.name,
+                jobId: ctx?.jobId,
+                memoryMB: memAfter,
+                memoryDeltaMB: memAfter.heapUsed - memBefore.heapUsed
+            });
+
+            // Give V8 a hint to garbage collect between steps
+            tryGarbageCollect();
         }
     }
 

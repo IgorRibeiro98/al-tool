@@ -5,31 +5,50 @@ import { Knex } from 'knex';
     Estorno step for Base A (contábil).
     Finds pairs (A,B) within the same table where column_sum(A) + column_sum(B) ~= 0
     and inserts conciliacao_marks with group 'Conciliado_Estorno'.
+    
+    OPTIMIZED: Uses streaming/pagination to avoid loading entire table into memory.
 */
 
-const GROUP_ESTORNO = 'Conciliado_Estorno';
-const STATUS_CONCILIADO = '01_Conciliado';
-const GROUP_DOC_ESTORNADOS = 'Documentos estornados';
-const STATUS_NAO_AVALIADO = '04_Não Avaliado';
+const LOG_PREFIX = '[EstornoBaseA]';
+const GROUP_ESTORNO = 'Conciliado_Estorno' as const;
+const STATUS_CONCILIADO = '01_Conciliado' as const;
+const GROUP_DOC_ESTORNADOS = 'Documentos estornados' as const;
+const STATUS_NAO_AVALIADO = '04_Não Avaliado' as const;
 const INSERT_CHUNK = 500;
+const PAGE_SIZE = 5000;
 
-type ConfigEstorno = {
-    id: number;
-    base_id: number;
-    coluna_a?: string | null;
-    coluna_b?: string | null;
-    coluna_soma?: string | null;
-    limite_zero?: number | null;
-};
+interface ConfigEstorno {
+    readonly id: number;
+    readonly base_id: number;
+    readonly coluna_a?: string | null;
+    readonly coluna_b?: string | null;
+    readonly coluna_soma?: string | null;
+    readonly limite_zero?: number | null;
+}
 
-type BaseRow = { id: number; tabela_sqlite?: string | null };
+interface BaseRow {
+    readonly id: number;
+    readonly tabela_sqlite?: string | null;
+}
 
-type SourceRow = { id: number; [key: string]: any };
+interface IndexEntry {
+    readonly id: number;
+    readonly soma: number;
+}
+
+interface MarkEntry {
+    readonly base_id: number;
+    readonly row_id: number;
+    readonly status: string;
+    readonly grupo: string;
+    readonly chave: string;
+    readonly created_at: ReturnType<Knex['fn']['now']>;
+}
 
 export class EstornoBaseAStep implements PipelineStep {
-    name = 'EstornoBaseA';
+    readonly name = 'EstornoBaseA';
 
-    constructor(private readonly db: Knex) {}
+    constructor(private readonly db: Knex) { }
 
     private async ensureMarksTableExists(): Promise<void> {
         const exists = await this.db.schema.hasTable('conciliacao_marks');
@@ -38,34 +57,65 @@ export class EstornoBaseAStep implements PipelineStep {
         }
     }
 
-    private toStringKey(value: any): string {
-        return value === null || value === undefined ? '' : String(value);
+    private toStringKey(value: unknown): string {
+        if (value === null || value === undefined) return '';
+        return String(value);
     }
 
-    private async chunkInsertMarks(entries: Array<Record<string, any>>) {
-        if (!entries.length) return;
-        for (let i = 0; i < entries.length; i += INSERT_CHUNK) {
-            const slice = entries.slice(i, i + INSERT_CHUNK);
-            await this.db('conciliacao_marks').insert(slice);
+    private async chunkInsertMarks(entries: MarkEntry[]): Promise<void> {
+        if (entries.length === 0) return;
+
+        // Deduplicate entries within the batch (same base_id, row_id, grupo)
+        const seen = new Set<string>();
+        const uniqueEntries: MarkEntry[] = [];
+        for (const entry of entries) {
+            const key = `${entry.base_id}|${entry.row_id}|${entry.grupo}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                uniqueEntries.push(entry);
+            }
+        }
+
+        for (let i = 0; i < uniqueEntries.length; i += INSERT_CHUNK) {
+            const slice = uniqueEntries.slice(i, i + INSERT_CHUNK);
+            await this.db('conciliacao_marks')
+                .insert(slice)
+                .onConflict(['base_id', 'row_id', 'grupo'])
+                .ignore();
         }
     }
 
     async execute(ctx: PipelineContext): Promise<void> {
         const cfgId = ctx.configEstornoId;
-        if (!cfgId) return;
+        if (!cfgId) {
+            console.log(`${LOG_PREFIX} No configEstornoId in context, skipping`);
+            return;
+        }
 
         const cfg = await this.db<ConfigEstorno>('configs_estorno').where({ id: cfgId }).first();
-        if (!cfg) return;
+        if (!cfg) {
+            console.log(`${LOG_PREFIX} Config ${cfgId} not found, skipping`);
+            return;
+        }
 
         const baseId = ctx.baseContabilId ?? cfg.base_id;
-        if (!baseId) return;
+        if (!baseId) {
+            console.log(`${LOG_PREFIX} No baseId available, skipping`);
+            return;
+        }
 
         const base = await this.db<BaseRow>('bases').where({ id: baseId }).first();
-        if (!base || !base.tabela_sqlite) return;
+        if (!base?.tabela_sqlite) {
+            console.log(`${LOG_PREFIX} Base ${baseId} not found or has no tabela_sqlite, skipping`);
+            return;
+        }
         const tableName = base.tabela_sqlite;
 
         const tableExists = await this.db.schema.hasTable(tableName);
-        if (!tableExists) return;
+        if (!tableExists) {
+            console.log(`${LOG_PREFIX} Table ${tableName} does not exist, skipping`);
+            return;
+        }
 
         await this.ensureMarksTableExists();
 
@@ -74,30 +124,58 @@ export class EstornoBaseAStep implements PipelineStep {
         const colunaSoma = cfg.coluna_soma ?? undefined;
         const limiteZero = Number(cfg.limite_zero ?? 0);
 
-        if (!colunaA || !colunaB || !colunaSoma) return;
-
-        const rows: SourceRow[] = await this.db.select('id', colunaA, colunaB, colunaSoma).from(tableName);
-
-        const mapA = new Map<string, SourceRow[]>();
-        const mapB = new Map<string, SourceRow[]>();
-
-        for (const r of rows) {
-            const keyA = this.toStringKey(r[colunaA]);
-            const keyB = this.toStringKey(r[colunaB]);
-            if (keyA) {
-                const arr = mapA.get(keyA) ?? [];
-                arr.push(r);
-                mapA.set(keyA, arr);
-            }
-            if (keyB) {
-                const arr = mapB.get(keyB) ?? [];
-                arr.push(r);
-                mapB.set(keyB, arr);
-            }
+        if (!colunaA || !colunaB || !colunaSoma) {
+            console.log(`${LOG_PREFIX} Missing required columns config, skipping`);
+            return;
         }
 
-        const markEntries: Array<Record<string, any>> = [];
-        const grupo = GROUP_ESTORNO;
+        // OPTIMIZATION: Build indexes in memory using pagination
+        // Store only minimal data: {id, soma} per key
+        const mapA = new Map<string, IndexEntry[]>();
+        const mapB = new Map<string, IndexEntry[]>();
+
+        // Read all rows in pages, building indexes with minimal data
+        let lastId = 0;
+        while (true) {
+            const rows = await this.db
+                .select('id', colunaA, colunaB, colunaSoma)
+                .from(tableName)
+                .where('id', '>', lastId)
+                .orderBy('id', 'asc')
+                .limit(PAGE_SIZE);
+
+            if (!rows || rows.length === 0) break;
+
+            for (const r of rows) {
+                const id = Number(r.id);
+                const keyA = this.toStringKey(r[colunaA]);
+                const keyB = this.toStringKey(r[colunaB]);
+                const soma = Number(r[colunaSoma]) || 0;
+
+                if (keyA) {
+                    let arr = mapA.get(keyA);
+                    if (!arr) {
+                        arr = [];
+                        mapA.set(keyA, arr);
+                    }
+                    arr.push({ id, soma });
+                }
+                if (keyB) {
+                    let arr = mapB.get(keyB);
+                    if (!arr) {
+                        arr = [];
+                        mapB.set(keyB, arr);
+                    }
+                    arr.push({ id, soma });
+                }
+            }
+
+            lastId = Number(rows[rows.length - 1].id);
+            if (rows.length < PAGE_SIZE) break;
+        }
+
+        // Process matches
+        const markEntries: MarkEntry[] = [];
         let groupCounter = 0;
         const jobIdPart = ctx.jobId ? `${ctx.jobId}_` : '';
 
@@ -105,59 +183,91 @@ export class EstornoBaseAStep implements PipelineStep {
             const listB = mapB.get(key);
             if (!listB) continue;
 
-            // track rows that found a zero-sum partner
-            const pairedA = new Set<number>();
-            const pairedB = new Set<number>();
+            // Track rows that found a zero-sum partner within this key
+            const pairedInKeyA = new Set<number>();
+            const pairedInKeyB = new Set<number>();
 
-            for (const aRow of listA) {
-                for (const bRow of listB) {
-                    if (aRow.id === bRow.id) continue;
+            // Match rows where sum ~= 0
+            for (const aItem of listA) {
+                if (pairedInKeyA.has(aItem.id)) continue;
 
-                    const valA = Number(aRow[colunaSoma]) || 0;
-                    const valB = Number(bRow[colunaSoma]) || 0;
-                    const sum = valA + valB;
+                for (const bItem of listB) {
+                    if (aItem.id === bItem.id) continue;
+                    if (pairedInKeyB.has(bItem.id)) continue;
+
+                    const sum = aItem.soma + bItem.soma;
                     if (Math.abs(sum) <= limiteZero) {
-                        const status = STATUS_CONCILIADO;
                         const chave = `${jobIdPart}${key}_${Date.now()}_${groupCounter++}`;
 
-                        pairedA.add(aRow.id);
-                        pairedB.add(bRow.id);
+                        pairedInKeyA.add(aItem.id);
+                        pairedInKeyB.add(bItem.id);
 
-                        // push two entries (A and B) — duplicates will be filtered before insert
-                        markEntries.push({ base_id: baseId, row_id: aRow.id, status, grupo, chave, created_at: this.db.fn.now() });
-                        markEntries.push({ base_id: baseId, row_id: bRow.id, status, grupo, chave, created_at: this.db.fn.now() });
+                        markEntries.push({
+                            base_id: baseId,
+                            row_id: aItem.id,
+                            status: STATUS_CONCILIADO,
+                            grupo: GROUP_ESTORNO,
+                            chave,
+                            created_at: this.db.fn.now()
+                        });
+                        markEntries.push({
+                            base_id: baseId,
+                            row_id: bItem.id,
+                            status: STATUS_CONCILIADO,
+                            grupo: GROUP_ESTORNO,
+                            chave,
+                            created_at: this.db.fn.now()
+                        });
+
+                        // Flush periodically to keep memory bounded
+                        if (markEntries.length >= INSERT_CHUNK * 2) {
+                            await this.chunkInsertMarks(markEntries);
+                            markEntries.length = 0;
+                        }
+
+                        break; // Move to next aItem after finding a match
                     }
                 }
             }
 
-            // mark unpaired rows as Documentos estornados (to be excluded from conciliation)
-            for (const aRow of listA) {
-                if (pairedA.has(aRow.id)) continue;
-                const status = STATUS_NAO_AVALIADO;
+            // Mark unpaired rows as "Documentos estornados"
+            for (const aItem of listA) {
+                if (pairedInKeyA.has(aItem.id)) continue;
                 const chave = `${jobIdPart}${key}_docest_${Date.now()}_${groupCounter++}`;
-                markEntries.push({ base_id: baseId, row_id: aRow.id, status, grupo: GROUP_DOC_ESTORNADOS, chave, created_at: this.db.fn.now() });
+                markEntries.push({
+                    base_id: baseId,
+                    row_id: aItem.id,
+                    status: STATUS_NAO_AVALIADO,
+                    grupo: GROUP_DOC_ESTORNADOS,
+                    chave,
+                    created_at: this.db.fn.now()
+                });
             }
 
-            for (const bRow of listB) {
-                if (pairedB.has(bRow.id)) continue;
-                const status = STATUS_NAO_AVALIADO;
+            for (const bItem of listB) {
+                if (pairedInKeyB.has(bItem.id)) continue;
                 const chave = `${jobIdPart}${key}_docest_${Date.now()}_${groupCounter++}`;
-                markEntries.push({ base_id: baseId, row_id: bRow.id, status, grupo: GROUP_DOC_ESTORNADOS, chave, created_at: this.db.fn.now() });
+                markEntries.push({
+                    base_id: baseId,
+                    row_id: bItem.id,
+                    status: STATUS_NAO_AVALIADO,
+                    grupo: GROUP_DOC_ESTORNADOS,
+                    chave,
+                    created_at: this.db.fn.now()
+                });
+            }
+
+            // Flush periodically
+            if (markEntries.length >= INSERT_CHUNK * 2) {
+                await this.chunkInsertMarks(markEntries);
+                markEntries.length = 0;
             }
         }
 
-        if (markEntries.length === 0) return;
-
-        // Remove entries that already exist (same base_id, row_id, grupo)
-        const rowIds = Array.from(new Set(markEntries.map(e => e.row_id)));
-        const groups = Array.from(new Set(markEntries.map(e => e.grupo)));
-        const existingRows = await this.db('conciliacao_marks').where({ base_id: baseId }).whereIn('grupo', groups).whereIn('row_id', rowIds).select('row_id', 'grupo');
-        const existingSet = new Set(existingRows.map((r: any) => `${r.row_id}|${r.grupo}`));
-
-        const toInsert = markEntries.filter(e => !existingSet.has(`${e.row_id}|${e.grupo}`));
-        if (toInsert.length === 0) return;
-
-        await this.chunkInsertMarks(toInsert);
+        // Final flush
+        if (markEntries.length > 0) {
+            await this.chunkInsertMarks(markEntries);
+        }
     }
 }
 

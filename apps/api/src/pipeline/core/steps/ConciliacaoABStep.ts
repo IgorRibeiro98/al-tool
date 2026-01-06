@@ -8,45 +8,98 @@ import { Knex } from 'knex';
     - ensure result table exists with key columns
     - collect marks and match/unmatch groups by configured keys
     - insert result rows in batches
+
+    MEMORY OPTIMIZATIONS (2025-01):
+    - Paginated JOIN processing instead of loading all matched pairs
+    - Limited row caching with periodic clearing
+    - Reduced a_values/b_values storage to essential columns only
+    - Batch inserts with frequent flushes
+    - Stream-based processing for large datasets
 */
 
+const LOG_PREFIX = '[ConciliacaoAB]';
 const RESULT_INSERT_CHUNK = 200;
-const PAGE_SIZE = 1000;
-const MATCHED_NOTIN_THRESHOLD = 5000;
+const PAGE_SIZE = 2000;
 const EPSILON = 1e-6;
+const CHUNK_SIZE = 500; // SQLite variable limit safety
 
-const STATUS_CONCILIADO = '01_Conciliado';
-const STATUS_FOUND_DIFF = '02_Encontrado c/Diferença';
-const STATUS_NOT_FOUND = '03_Não Encontrado';
+const STATUS_CONCILIADO = '01_Conciliado' as const;
+const STATUS_FOUND_DIFF = '02_Encontrado c/Diferença' as const;
+const STATUS_NOT_FOUND = '03_Não Encontrado' as const;
 
-const LABEL_CONCILIADO = 'Conciliado';
-const LABEL_DIFF_IMATERIAL = 'Diferença Imaterial';
-const LABEL_NOT_FOUND = 'Não encontrado';
+const LABEL_CONCILIADO = 'Conciliado' as const;
+const LABEL_DIFF_IMATERIAL = 'Diferença Imaterial' as const;
+const LABEL_NOT_FOUND = 'Não encontrado' as const;
 
-type ConfigConciliacaoRow = {
-    id: number;
-    base_contabil_id: number;
-    base_fiscal_id: number;
-    chaves_contabil?: string | null;
-    chaves_fiscal?: string | null;
-    coluna_conciliacao_contabil?: string | null;
-    coluna_conciliacao_fiscal?: string | null;
-    inverter_sinal_fiscal?: number | boolean | null;
-    limite_diferenca_imaterial?: number | null;
-};
+interface ConfigConciliacaoRow {
+    readonly id: number;
+    readonly base_contabil_id: number;
+    readonly base_fiscal_id: number;
+    readonly chaves_contabil?: string | null;
+    readonly chaves_fiscal?: string | null;
+    readonly coluna_conciliacao_contabil?: string | null;
+    readonly coluna_conciliacao_fiscal?: string | null;
+    readonly inverter_sinal_fiscal?: number | boolean | null;
+    readonly limite_diferenca_imaterial?: number | null;
+}
 
-type BaseRow = { id: number; tabela_sqlite?: string | null };
+interface BaseRow {
+    readonly id: number;
+    readonly tabela_sqlite?: string | null;
+    readonly subtype?: string | null;
+}
 
-type MarkRow = { id: number; base_id: number; row_id: number; status?: string | null; grupo?: string | null; chave?: string | null };
+interface MarkRow {
+    readonly id: number;
+    readonly base_id: number;
+    row_id: number;
+    readonly status?: string | null;
+    readonly grupo?: string | null;
+    readonly chave?: string | null;
+}
 
-type ResultEntry = Record<string, any>;
+interface ResultEntry {
+    job_id: number;
+    chave: string | null;
+    status: string | null | undefined;
+    grupo: string | null | undefined;
+    a_row_id: number | null;
+    b_row_id: number | null;
+    a_values: string | null;
+    b_values: string | null;
+    value_a: number;
+    value_b: number;
+    difference: number;
+    created_at: ReturnType<Knex['fn']['now']>;
+    [key: string]: unknown;
+}
+
+interface GroupData {
+    keyId: string;
+    chaveValor: string | null;
+    aIds: Set<number>;
+    bIds: Set<number>;
+}
+
+// Minimal row representation for storage (excludes large/unnecessary columns)
+function serializeRowCompact(row: Record<string, unknown> | null | undefined, keyCols: string[], valueCol?: string): string {
+    if (!row) return '{}';
+    const compact: Record<string, unknown> = { id: row.id };
+    // Include key columns
+    for (const c of keyCols) {
+        if (c && row[c] !== undefined) compact[c] = row[c];
+    }
+    // Include value column
+    if (valueCol && row[valueCol] !== undefined) compact[valueCol] = row[valueCol];
+    return JSON.stringify(compact);
+}
 
 export class ConciliacaoABStep implements PipelineStep {
-    name = 'ConciliacaoAB';
+    readonly name = 'ConciliacaoAB';
 
-    constructor(private readonly db: Knex) {}
+    constructor(private readonly db: Knex) { }
 
-    private async ensureResultTable(jobId: number) {
+    private async ensureResultTable(jobId: number): Promise<string> {
         const tableName = `conciliacao_result_${jobId}`;
         const exists = await this.db.schema.hasTable(tableName);
         if (!exists) {
@@ -72,10 +125,10 @@ export class ConciliacaoABStep implements PipelineStep {
     private parseChaves(raw?: string | null): Record<string, string[]> {
         if (!raw) return {};
         try {
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed)) return { CHAVE_1: parsed };
+            const parsed: unknown = JSON.parse(raw);
+            if (Array.isArray(parsed)) return { CHAVE_1: parsed as string[] };
             if (parsed && typeof parsed === 'object') return parsed as Record<string, string[]>;
-        } catch (_) {
+        } catch {
             // ignore parse errors and return empty
         }
         return {};
@@ -182,24 +235,29 @@ export class ConciliacaoABStep implements PipelineStep {
         return Number(Number(value).toFixed(6));
     }
 
-    private async getRowFromTable(table: string, id: number, cache: Map<number, any>) {
-        if (cache.has(id)) return cache.get(id);
+    private async getRowFromTable(table: string, id: number, cache: Map<number, Record<string, unknown>>): Promise<Record<string, unknown> | null> {
+        if (cache.has(id)) return cache.get(id) ?? null;
         const row = await this.db.select('*').from(table).where({ id }).first();
-        if (row) cache.set(id, row);
+        if (row) cache.set(id, row as Record<string, unknown>);
         return row ?? null;
     }
 
     // Batch fetch rows by ids and populate cache to avoid N queries
-    private async fetchRowsBatch(table: string, ids: number[], cache: Map<number, any>) {
+    // Uses chunked queries to avoid SQLite variable limits
+    private async fetchRowsBatch(table: string, ids: number[], cache: Map<number, Record<string, unknown>>): Promise<void> {
         const missing = ids.filter(id => !cache.has(id));
-        if (!missing || missing.length === 0) return;
-        const rows = await this.db.select('*').from(table).whereIn('id', missing as number[]);
-        for (const r of rows) {
-            cache.set(Number(r.id), r);
+        if (missing.length === 0) return;
+
+        for (let i = 0; i < missing.length; i += CHUNK_SIZE) {
+            const chunk = missing.slice(i, i + CHUNK_SIZE);
+            const rows = await this.db.select('*').from(table).whereIn('id', chunk);
+            for (const r of rows) {
+                cache.set(Number(r.id), r as Record<string, unknown>);
+            }
         }
     }
 
-    private async ensureResultColumns(tableName: string, keys: string[]) {
+    private async ensureResultColumns(tableName: string, keys: string[]): Promise<void> {
         if (!keys || keys.length === 0) return;
         const exists = await this.db.schema.hasTable(tableName);
         if (!exists) return;
@@ -212,23 +270,24 @@ export class ConciliacaoABStep implements PipelineStep {
         });
     }
 
-    private async loadMarksForBases(baseAId: number, baseBId: number) {
+    private async loadMarksForBases(baseAId: number, baseBId: number): Promise<{ marksA: Map<number, MarkRow>; marksB: Map<number, MarkRow> }> {
         const rows = await this.db<MarkRow>('conciliacao_marks').whereIn('base_id', [baseAId, baseBId]).select('*');
         const marksA = new Map<number, MarkRow>();
         const marksB = new Map<number, MarkRow>();
         for (const m of rows) {
             const rid = Number(m.row_id);
-            const markCopy = { ...m, row_id: rid } as MarkRow;
+            const markCopy: MarkRow = { ...m, row_id: rid };
             if (m.base_id === baseAId && !marksA.has(rid)) marksA.set(rid, markCopy);
             if (m.base_id === baseBId && !marksB.has(rid)) marksB.set(rid, markCopy);
         }
-        return { marksA, marksB } as { marksA: Map<number, MarkRow>; marksB: Map<number, MarkRow> };
+        return { marksA, marksB };
     }
 
-    private async findMatchedPairsForKey(tableA: string, tableB: string, aCols: string[], bCols: string[]) {
+    // Paginated version - yields matched pairs page by page to limit memory
+    private buildMatchedPairsQuery(tableA: string, tableB: string, aCols: string[], bCols: string[]) {
         const aAlias = 'a';
         const bAlias = 'b';
-        const query = this.db
+        return this.db
             .select(this.db.raw(`${aAlias}.id as a_row_id`), this.db.raw(`${bAlias}.id as b_row_id`))
             .from({ [aAlias]: tableA })
             .innerJoin({ [bAlias]: tableB }, function () {
@@ -238,27 +297,57 @@ export class ConciliacaoABStep implements PipelineStep {
                     const bKey = bCols[i] || bCols[0];
                     if (aKey && bKey) this.on(`${aAlias}.${aKey}`, '=', `${bAlias}.${bKey}`);
                 }
-            });
-        return query;
+            })
+            .orderBy([{ column: `${aAlias}.id`, order: 'asc' }, { column: `${bAlias}.id`, order: 'asc' }]);
+    }
+
+    // Fetch only specific columns to reduce memory usage
+    // Uses chunked queries to avoid SQLite variable limits
+    private async fetchRowsLightweight(table: string, ids: number[], cols: string[], valueCol?: string): Promise<Map<number, Record<string, unknown>>> {
+        if (!ids || ids.length === 0) return new Map();
+        const selectCols = ['id', ...cols];
+        if (valueCol && !selectCols.includes(valueCol)) selectCols.push(valueCol);
+
+        const map = new Map<number, Record<string, unknown>>();
+
+        for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+            const chunk = ids.slice(i, i + CHUNK_SIZE);
+            const rows = await this.db.select(selectCols.map(c => `${table}.${c}`)).from(table).whereIn('id', chunk);
+            for (const r of rows) map.set(Number(r.id), r as Record<string, unknown>);
+        }
+
+        return map;
     }
 
     async execute(ctx: PipelineContext): Promise<void> {
         const cfgId = ctx.configConciliacaoId;
-        if (!cfgId) return;
+        if (!cfgId) {
+            console.log(`${LOG_PREFIX} No configConciliacaoId in context, skipping`);
+            return;
+        }
 
         const cfg = await this.db<ConfigConciliacaoRow>('configs_conciliacao').where({ id: cfgId }).first();
-        if (!cfg) return;
+        if (!cfg) {
+            console.log(`${LOG_PREFIX} Config ${cfgId} not found, skipping`);
+            return;
+        }
 
         const baseAId = ctx.baseContabilId ?? cfg.base_contabil_id;
         const baseBId = ctx.baseFiscalId ?? cfg.base_fiscal_id;
-        if (!baseAId || !baseBId) return;
+        if (!baseAId || !baseBId) {
+            console.log(`${LOG_PREFIX} Missing baseAId or baseBId, skipping`);
+            return;
+        }
 
         const baseA = await this.db<BaseRow>('bases').where({ id: baseAId }).first();
         const baseB = await this.db<BaseRow>('bases').where({ id: baseBId }).first();
-        if (!baseA || !baseA.tabela_sqlite || !baseB || !baseB.tabela_sqlite) return;
+        if (!baseA?.tabela_sqlite || !baseB?.tabela_sqlite) {
+            console.log(`${LOG_PREFIX} Base A or B not found or missing tabela_sqlite, skipping`);
+            return;
+        }
 
-        const tableA = baseA.tabela_sqlite as string;
-        const tableB = baseB.tabela_sqlite as string;
+        const tableA = baseA.tabela_sqlite;
+        const tableB = baseB.tabela_sqlite;
 
         // Resolve keys from central linking table; fall back to legacy inline chaves only if no links present
         let chavesContabil: Record<string, string[]> = {};
@@ -289,72 +378,19 @@ export class ConciliacaoABStep implements PipelineStep {
         const resultTable = await this.ensureResultTable(jobId);
         await this.ensureResultColumns(resultTable, keyIdentifiers);
 
-        const aRowCache = new Map<number, any>();
-        const bRowCache = new Map<number, any>();
+        // Collect all key columns for compact serialization
+        const allAKeyCols = new Set<string>();
+        const allBKeyCols = new Set<string>();
+        for (const kid of keyIdentifiers) {
+            (chavesContabil[kid] || []).forEach(c => allAKeyCols.add(c));
+            (chavesFiscal[kid] || []).forEach(c => allBKeyCols.add(c));
+        }
 
         const { marksA, marksB } = await this.loadMarksForBases(baseAId, baseBId);
 
         const inserts: ResultEntry[] = [];
         const matchedA = new Set<number>();
         const matchedB = new Set<number>();
-
-        // Process pre-existing marks (A and B) first
-        for (const [rowId, mark] of marksA.entries()) {
-            const aRow = await this.getRowFromTable(tableA, rowId, aRowCache);
-            if (!aRow) continue;
-            const markKey = mark?.grupo ?? mark?.chave ?? null;
-            const valueA = aRow && colA ? Number(aRow[colA]) || 0 : 0;
-            const diff = valueA - 0;
-
-            const entry: ResultEntry = {
-                job_id: jobId,
-                chave: markKey,
-                status: mark.status,
-                grupo: mark.grupo,
-                a_row_id: rowId,
-                b_row_id: null,
-                a_values: JSON.stringify(aRow),
-                b_values: null,
-                value_a: valueA,
-                value_b: 0,
-                difference: diff,
-                created_at: this.db.fn.now()
-            };
-
-            for (const kid of keyIdentifiers) entry[kid] = markKey ?? this.buildComposite(aRow, chavesContabil[kid]);
-
-            inserts.push(entry);
-            matchedA.add(rowId);
-        }
-
-        for (const [rowId, mark] of marksB.entries()) {
-            const bRow = await this.getRowFromTable(tableB, rowId, bRowCache);
-            if (!bRow) continue;
-            const markKey = mark?.grupo ?? mark?.chave ?? null;
-            const rawB = bRow && colB ? Number(bRow[colB]) || 0 : 0;
-            const valueB = inverter ? -rawB : rawB;
-            const diff = 0 - valueB;
-
-            const entry: ResultEntry = {
-                job_id: jobId,
-                chave: markKey,
-                status: mark.status,
-                grupo: mark.grupo,
-                a_row_id: null,
-                b_row_id: rowId,
-                a_values: null,
-                b_values: JSON.stringify(bRow),
-                value_a: 0,
-                value_b: valueB,
-                difference: diff,
-                created_at: this.db.fn.now()
-            };
-
-            for (const kid of keyIdentifiers) entry[kid] = markKey ?? this.buildComposite(bRow, chavesFiscal[kid]);
-
-            inserts.push(entry);
-            matchedB.add(rowId);
-        }
 
         // Helper to insert accumulated results in chunks inside a transaction
         const flushInserts = async () => {
@@ -373,163 +409,331 @@ export class ConciliacaoABStep implements PipelineStep {
             }
         };
 
-        // Main grouping/conciliation per key
+        // Process pre-existing marks (A and B) first - paginated to avoid loading all rows at once
+        const processMarksPagedA = async () => {
+            const markIds = Array.from(marksA.keys());
+            for (let i = 0; i < markIds.length; i += PAGE_SIZE) {
+                const pageIds = markIds.slice(i, i + PAGE_SIZE);
+                const aRowMap = await this.fetchRowsLightweight(tableA, pageIds, Array.from(allAKeyCols), colA);
+
+                for (const rowId of pageIds) {
+                    const mark = marksA.get(rowId);
+                    if (!mark) continue;
+                    const aRow = aRowMap.get(rowId);
+                    if (!aRow) continue;
+
+                    const markKey = mark.grupo ?? mark.chave ?? null;
+                    const valueA = colA ? Number(aRow[colA]) || 0 : 0;
+                    const diff = valueA - 0;
+
+                    const entry: ResultEntry = {
+                        job_id: jobId,
+                        chave: markKey,
+                        status: mark.status,
+                        grupo: mark.grupo,
+                        a_row_id: rowId,
+                        b_row_id: null,
+                        a_values: serializeRowCompact(aRow, Array.from(allAKeyCols), colA),
+                        b_values: null,
+                        value_a: valueA,
+                        value_b: 0,
+                        difference: diff,
+                        created_at: this.db.fn.now()
+                    };
+
+                    for (const kid of keyIdentifiers) entry[kid] = markKey ?? this.buildComposite(aRow, chavesContabil[kid]);
+
+                    inserts.push(entry);
+                    matchedA.add(rowId);
+
+                    if (inserts.length >= RESULT_INSERT_CHUNK) await flushInserts();
+                }
+            }
+            await flushInserts();
+        };
+
+        const processMarksPagedB = async () => {
+            const markIds = Array.from(marksB.keys());
+            for (let i = 0; i < markIds.length; i += PAGE_SIZE) {
+                const pageIds = markIds.slice(i, i + PAGE_SIZE);
+                const bRowMap = await this.fetchRowsLightweight(tableB, pageIds, Array.from(allBKeyCols), colB);
+
+                for (const rowId of pageIds) {
+                    const mark = marksB.get(rowId);
+                    if (!mark) continue;
+                    const bRow = bRowMap.get(rowId);
+                    if (!bRow) continue;
+
+                    const markKey = mark.grupo ?? mark.chave ?? null;
+                    const rawB = colB ? Number(bRow[colB]) || 0 : 0;
+                    const valueB = inverter ? -rawB : rawB;
+                    const diff = 0 - valueB;
+
+                    const entry: ResultEntry = {
+                        job_id: jobId,
+                        chave: markKey,
+                        status: mark.status,
+                        grupo: mark.grupo,
+                        a_row_id: null,
+                        b_row_id: rowId,
+                        a_values: null,
+                        b_values: serializeRowCompact(bRow, Array.from(allBKeyCols), colB),
+                        value_a: 0,
+                        value_b: valueB,
+                        difference: diff,
+                        created_at: this.db.fn.now()
+                    };
+
+                    for (const kid of keyIdentifiers) entry[kid] = markKey ?? this.buildComposite(bRow, chavesFiscal[kid]);
+
+                    inserts.push(entry);
+                    matchedB.add(rowId);
+
+                    if (inserts.length >= RESULT_INSERT_CHUNK) await flushInserts();
+                }
+            }
+            await flushInserts();
+        };
+
+        await processMarksPagedA();
+        await processMarksPagedB();
+
+        // Main grouping/conciliation per key - PAGINATED JOIN processing
         for (const keyId of keyIdentifiers) {
             const aCols = chavesContabil[keyId] || [];
             const bCols = chavesFiscal[keyId] || [];
             if ((aCols.length === 0) && (bCols.length === 0)) continue;
 
-            const rows = await this.findMatchedPairsForKey(tableA, tableB, aCols, bCols);
+            // Process matched pairs in pages to avoid loading entire JOIN result into memory
+            let lastAId = 0;
+            let lastBId = 0;
 
-            // Build groups in memory keyed by `${keyId}|${chaveValor}`
+            // Accumulate all groups for this key - DO NOT process intermediately to avoid fragmentation
             const groups = new Map<string, { keyId: string; chaveValor: string | null; aIds: Set<number>; bIds: Set<number> }>();
 
-            for (const r of rows) {
-                const a_row_id: number | null = r.a_row_id ? Number(r.a_row_id) : null;
-                const b_row_id: number | null = r.b_row_id ? Number(r.b_row_id) : null;
+            const processGroupsBatch = async () => {
+                if (groups.size === 0) return;
 
-                if (a_row_id !== null && matchedA.has(a_row_id)) continue;
-                if (b_row_id !== null && matchedB.has(b_row_id)) continue;
-
-                const aRow = a_row_id ? await this.getRowFromTable(tableA, a_row_id, aRowCache) : null;
-                const bRow = b_row_id ? await this.getRowFromTable(tableB, b_row_id, bRowCache) : null;
-                if (a_row_id && !aRow) continue;
-                if (b_row_id && !bRow) continue;
-
-                const chaveA = aRow ? this.buildComposite(aRow, aCols) : null;
-                const chaveB = bRow ? this.buildComposite(bRow, bCols) : null;
-                const chaveValor = chaveA ?? chaveB ?? null;
-                const groupKey = `${keyId}|${chaveValor ?? ''}`;
-
-                let group = groups.get(groupKey);
-                if (!group) {
-                    group = { keyId, chaveValor, aIds: new Set<number>(), bIds: new Set<number>() };
-                    groups.set(groupKey, group);
+                // Collect all unique IDs for batch fetch
+                const allAIdsInBatch = new Set<number>();
+                const allBIdsInBatch = new Set<number>();
+                for (const g of groups.values()) {
+                    g.aIds.forEach(id => allAIdsInBatch.add(id));
+                    g.bIds.forEach(id => allBIdsInBatch.add(id));
                 }
 
-                if (a_row_id) group.aIds.add(a_row_id);
-                if (b_row_id) group.bIds.add(b_row_id);
-            }
+                // Fetch rows for this batch (lightweight)
+                const aRowMap = await this.fetchRowsLightweight(tableA, Array.from(allAIdsInBatch), Array.from(allAKeyCols), colA);
+                const bRowMap = await this.fetchRowsLightweight(tableB, Array.from(allBIdsInBatch), Array.from(allBKeyCols), colB);
 
-            for (const [, group] of groups) {
-                const { keyId: groupKeyId, aIds, bIds } = group;
-                const hasA = aIds.size > 0;
-                const hasB = bIds.size > 0;
-                if (!hasA && !hasB) continue;
+                for (const [, group] of groups) {
+                    const { keyId: groupKeyId, aIds, bIds } = group;
+                    const hasA = aIds.size > 0;
+                    const hasB = bIds.size > 0;
+                    if (!hasA && !hasB) continue;
 
-                let somaA = 0;
-                let somaB = 0;
+                    let somaA = 0;
+                    let somaB = 0;
 
-                for (const aId of aIds) {
-                    const row = await this.getRowFromTable(tableA, aId, aRowCache);
-                    if (!row) continue;
-                    const valueA = colA ? Number(row[colA]) || 0 : 0;
-                    somaA += valueA;
-                }
-
-                for (const bId of bIds) {
-                    const row = await this.getRowFromTable(tableB, bId, bRowCache);
-                    if (!row) continue;
-                    const rawB = colB ? Number(row[colB]) || 0 : 0;
-                    const valueB = inverter ? -rawB : rawB;
-                    somaB += valueB;
-                }
-
-                somaA = this.normalizeAmount(somaA);
-                somaB = this.normalizeAmount(somaB);
-                const diffGroup = this.normalizeAmount(somaA - somaB);
-                const absDiff = Math.abs(diffGroup);
-                const limiteEfetivo = Math.max(limite, EPSILON);
-
-                let status: string;
-                let groupLabel: string;
-
-                if (hasA && hasB) {
-                    if (absDiff <= EPSILON) {
-                        status = STATUS_CONCILIADO;
-                        groupLabel = LABEL_CONCILIADO;
-                    } else if (limite > 0 && absDiff <= limiteEfetivo) {
-                        status = STATUS_FOUND_DIFF;
-                        groupLabel = LABEL_DIFF_IMATERIAL;
-                    } else if (diffGroup > 0) {
-                        status = STATUS_FOUND_DIFF;
-                        groupLabel = 'Encontrado com diferença, BASE A MAIOR';
-                    } else {
-                        status = STATUS_FOUND_DIFF;
-                        groupLabel = 'Encontrado com diferença, BASE B MAIOR';
+                    for (const aId of aIds) {
+                        const row = aRowMap.get(aId);
+                        if (!row) continue;
+                        const valueA = colA ? Number(row[colA]) || 0 : 0;
+                        somaA += valueA;
                     }
-                } else {
-                    status = STATUS_NOT_FOUND;
-                    groupLabel = LABEL_NOT_FOUND;
+
+                    for (const bId of bIds) {
+                        const row = bRowMap.get(bId);
+                        if (!row) continue;
+                        const rawB = colB ? Number(row[colB]) || 0 : 0;
+                        const valueB = inverter ? -rawB : rawB;
+                        somaB += valueB;
+                    }
+
+                    somaA = this.normalizeAmount(somaA);
+                    somaB = this.normalizeAmount(somaB);
+                    const diffGroup = this.normalizeAmount(somaA - somaB);
+                    const absDiff = Math.abs(diffGroup);
+                    const limiteEfetivo = Math.max(limite, EPSILON);
+
+                    let status: string;
+                    let groupLabel: string;
+
+                    if (hasA && hasB) {
+                        if (absDiff <= EPSILON) {
+                            status = STATUS_CONCILIADO;
+                            groupLabel = LABEL_CONCILIADO;
+                        } else if (limite > 0 && absDiff <= limiteEfetivo) {
+                            status = STATUS_FOUND_DIFF;
+                            groupLabel = LABEL_DIFF_IMATERIAL;
+                        } else if (diffGroup > 0) {
+                            status = STATUS_FOUND_DIFF;
+                            groupLabel = 'Encontrado com diferença, BASE A MAIOR';
+                        } else {
+                            status = STATUS_FOUND_DIFF;
+                            groupLabel = 'Encontrado com diferença, BASE B MAIOR';
+                        }
+                    } else {
+                        status = STATUS_NOT_FOUND;
+                        groupLabel = LABEL_NOT_FOUND;
+                    }
+
+                    // create entries for A
+                    for (const aId of aIds) {
+                        if (matchedA.has(aId)) continue;
+                        const row = aRowMap.get(aId);
+                        if (!row) continue;
+
+                        const entry: ResultEntry = {
+                            job_id: jobId,
+                            chave: groupKeyId,
+                            status,
+                            grupo: groupLabel,
+                            a_row_id: aId,
+                            b_row_id: null,
+                            a_values: serializeRowCompact(row, Array.from(allAKeyCols), colA),
+                            b_values: null,
+                            value_a: somaA,
+                            value_b: somaB,
+                            difference: diffGroup,
+                            created_at: this.db.fn.now()
+                        };
+
+                        for (const kid of keyIdentifiers) entry[kid] = this.buildComposite(row, chavesContabil[kid]);
+
+                        inserts.push(entry);
+                        matchedA.add(aId);
+
+                        if (inserts.length >= RESULT_INSERT_CHUNK) await flushInserts();
+                    }
+
+                    // create entries for B
+                    for (const bId of bIds) {
+                        if (matchedB.has(bId)) continue;
+                        const row = bRowMap.get(bId);
+                        if (!row) continue;
+
+                        const entry: ResultEntry = {
+                            job_id: jobId,
+                            chave: groupKeyId,
+                            status,
+                            grupo: groupLabel,
+                            a_row_id: null,
+                            b_row_id: bId,
+                            a_values: null,
+                            b_values: serializeRowCompact(row, Array.from(allBKeyCols), colB),
+                            value_a: somaA,
+                            value_b: somaB,
+                            difference: diffGroup,
+                            created_at: this.db.fn.now()
+                        };
+
+                        for (const kid of keyIdentifiers) entry[kid] = this.buildComposite(row, chavesFiscal[kid]);
+
+                        inserts.push(entry);
+                        matchedB.add(bId);
+
+                        if (inserts.length >= RESULT_INSERT_CHUNK) await flushInserts();
+                    }
                 }
 
-                // create entries for A
-                for (const aId of aIds) {
-                    if (matchedA.has(aId)) continue;
-                    const row = await this.getRowFromTable(tableA, aId, aRowCache);
-                    if (!row) continue;
+                // Clear groups to free memory after processing
+                groups.clear();
+            };
 
-                    const entry: ResultEntry = {
-                        job_id: jobId,
-                        chave: groupKeyId,
-                        status,
-                        grupo: groupLabel,
-                        a_row_id: aId,
-                        b_row_id: null,
-                        a_values: JSON.stringify(row),
-                        b_values: null,
-                        value_a: somaA,
-                        value_b: somaB,
-                        difference: diffGroup,
-                        created_at: this.db.fn.now()
-                    };
+            // Paginated iteration over the JOIN results
+            while (true) {
+                const baseQuery = this.buildMatchedPairsQuery(tableA, tableB, aCols, bCols);
+                const page = await baseQuery
+                    .where(function () {
+                        this.where('a.id', '>', lastAId)
+                            .orWhere(function () {
+                                this.where('a.id', '=', lastAId).andWhere('b.id', '>', lastBId);
+                            });
+                    })
+                    .limit(PAGE_SIZE);
 
-                    for (const kid of keyIdentifiers) entry[kid] = this.buildComposite(row, chavesContabil[kid]);
+                if (!page || page.length === 0) break;
 
-                    inserts.push(entry);
-                    matchedA.add(aId);
+                // Collect IDs from this page for batch lookup
+                const pageAIds = new Set<number>();
+                const pageBIds = new Set<number>();
+                for (const r of page) {
+                    if (r.a_row_id) pageAIds.add(Number(r.a_row_id));
+                    if (r.b_row_id) pageBIds.add(Number(r.b_row_id));
                 }
 
-                // create entries for B
-                for (const bId of bIds) {
-                    if (matchedB.has(bId)) continue;
-                    const row = await this.getRowFromTable(tableB, bId, bRowCache);
-                    if (!row) continue;
+                // Lightweight batch fetch for this page
+                const pageARows = await this.fetchRowsLightweight(tableA, Array.from(pageAIds), aCols, colA);
+                const pageBRows = await this.fetchRowsLightweight(tableB, Array.from(pageBIds), bCols, colB);
 
-                    const entry: ResultEntry = {
-                        job_id: jobId,
-                        chave: groupKeyId,
-                        status,
-                        grupo: groupLabel,
-                        a_row_id: null,
-                        b_row_id: bId,
-                        a_values: null,
-                        b_values: JSON.stringify(row),
-                        value_a: somaA,
-                        value_b: somaB,
-                        difference: diffGroup,
-                        created_at: this.db.fn.now()
-                    };
+                for (const r of page) {
+                    const a_row_id: number | null = r.a_row_id ? Number(r.a_row_id) : null;
+                    const b_row_id: number | null = r.b_row_id ? Number(r.b_row_id) : null;
 
-                    for (const kid of keyIdentifiers) entry[kid] = this.buildComposite(row, chavesFiscal[kid]);
+                    if (a_row_id !== null && matchedA.has(a_row_id)) continue;
+                    if (b_row_id !== null && matchedB.has(b_row_id)) continue;
 
-                    inserts.push(entry);
-                    matchedB.add(bId);
+                    const aRow = a_row_id ? pageARows.get(a_row_id) : null;
+                    const bRow = b_row_id ? pageBRows.get(b_row_id) : null;
+                    if (a_row_id && !aRow) continue;
+                    if (b_row_id && !bRow) continue;
+
+                    const chaveA = aRow ? this.buildComposite(aRow, aCols) : null;
+                    const chaveB = bRow ? this.buildComposite(bRow, bCols) : null;
+                    const chaveValor = chaveA ?? chaveB ?? null;
+                    const groupKey = `${keyId}|${chaveValor ?? ''}`;
+
+                    let group = groups.get(groupKey);
+                    if (!group) {
+                        group = { keyId, chaveValor, aIds: new Set<number>(), bIds: new Set<number>() };
+                        groups.set(groupKey, group);
+                    }
+
+                    if (a_row_id && !group.aIds.has(a_row_id)) {
+                        group.aIds.add(a_row_id);
+                    }
+                    if (b_row_id && !group.bIds.has(b_row_id)) {
+                        group.bIds.add(b_row_id);
+                    }
                 }
+
+                // DO NOT process groups intermediately - this fragments groups across pages
+                // causing incorrect sums and duplicate entries
+
+                // Update pagination cursors
+                const lastRow = page[page.length - 1];
+                lastAId = Number(lastRow.a_row_id) || lastAId;
+                lastBId = Number(lastRow.b_row_id) || lastBId;
+
+                if (page.length < PAGE_SIZE) break; // last page
             }
+
+            // Process ALL groups for this key at once (after all pages accumulated)
+            await processGroupsBatch();
         }
 
-        // Persist intermediate inserts
+        // Persist any remaining inserts
         await flushInserts();
 
-        // Process unmatched rows in a paginated way to avoid loading entire tables or huge whereNotIn lists
-        const processRemaining = async (table: string, matchedSet: Set<number>, cache: Map<number, any>, col: string | undefined, marksMap: Map<number, MarkRow>, chavesMap: Record<string, string[]>, keyDefault: string | null, isA: boolean) => {
+        // Process unmatched rows in a paginated way to avoid loading entire tables
+        const processRemaining = async (
+            table: string,
+            col: string | undefined,
+            marksMap: Map<number, MarkRow>,
+            chavesMap: Record<string, string[]>,
+            keyCols: Set<string>,
+            keyDefault: string | null,
+            isA: boolean,
+            alreadyMatched: Set<number> // Add parameter to check already processed rows
+        ) => {
             let lastId = 0;
             const joinSide = isA ? 'a_row_id' : 'b_row_id';
+
             while (true) {
                 const dbRef = this.db;
                 // Build base query to fetch a page of rows that are not yet present in result for this job
-                const pageQuery = this.db.select(`${table}.*`).from(table)
+                const pageQuery = this.db.select(`${table}.id`).from(table)
                     .leftJoin(resultTable, function () {
                         this.on(`${table}.id`, '=', `${resultTable}.${joinSide}`)
                             .andOn(`${resultTable}.job_id`, '=', dbRef.raw('?', [jobId]));
@@ -539,17 +743,25 @@ export class ConciliacaoABStep implements PipelineStep {
                     .orderBy(`${table}.id`, 'asc')
                     .limit(PAGE_SIZE);
 
-                const rows: any[] = await pageQuery;
-                if (!rows || rows.length === 0) break;
+                const idRows: any[] = await pageQuery;
+                if (!idRows || idRows.length === 0) break;
 
-                const ids = rows.map(r => Number(r.id)).filter(Boolean) as number[];
-                await this.fetchRowsBatch(table, ids, cache);
+                const ids = idRows.map(r => Number(r.id)).filter(Boolean) as number[];
 
-                for (const row of rows) {
-                    const id = Number(row.id);
-                    if (!id) continue;
+                // Filter out already matched IDs to avoid duplicates
+                const unprocessedIds = ids.filter(id => !alreadyMatched.has(id));
+                if (unprocessedIds.length === 0) {
+                    lastId = ids[ids.length - 1] || lastId;
+                    if (idRows.length < PAGE_SIZE) break;
+                    continue;
+                }
 
-                    const cached = cache.get(id) ?? row;
+                // Fetch only needed columns for these IDs
+                const rowMap = await this.fetchRowsLightweight(table, unprocessedIds, Array.from(keyCols), col);
+
+                for (const id of unprocessedIds) {
+                    const cached = rowMap.get(id);
+                    if (!cached) continue;
 
                     const valueA = isA ? (col ? Number(cached[col] ?? 0) || 0 : 0) : 0;
                     const rawB = !isA ? (col ? Number(cached[col] ?? 0) || 0 : 0) : 0;
@@ -565,8 +777,8 @@ export class ConciliacaoABStep implements PipelineStep {
                         grupo: mark ? mark.grupo ?? LABEL_NOT_FOUND : LABEL_NOT_FOUND,
                         a_row_id: isA ? id : null,
                         b_row_id: isA ? null : id,
-                        a_values: isA ? JSON.stringify(cached) : null,
-                        b_values: !isA ? JSON.stringify(cached) : null,
+                        a_values: isA ? serializeRowCompact(cached, Array.from(keyCols), col) : null,
+                        b_values: !isA ? serializeRowCompact(cached, Array.from(keyCols), col) : null,
                         value_a: valueA,
                         value_b: valueB,
                         difference: diff,
@@ -578,22 +790,22 @@ export class ConciliacaoABStep implements PipelineStep {
                     }
 
                     inserts.push(entry);
+                    alreadyMatched.add(id); // Mark as processed to avoid any future duplicates
                     // flush periodically to keep memory bounded
                     if (inserts.length >= RESULT_INSERT_CHUNK) await flushInserts();
                 }
 
-                lastId = Number(rows[rows.length - 1].id) || lastId;
-                if (rows.length < PAGE_SIZE) break; // last page
+                lastId = ids[ids.length - 1] || lastId;
+                if (idRows.length < PAGE_SIZE) break; // last page
             }
             // flush any remaining
             if (inserts.length > 0) await flushInserts();
         };
 
         const defaultKey = keyIdentifiers.length ? keyIdentifiers[0] : null;
-        await processRemaining(tableA, matchedA, aRowCache, colA, marksA, chavesContabil, defaultKey, true);
-        await processRemaining(tableB, matchedB, bRowCache, colB, marksB, chavesFiscal, defaultKey, false);
+        await processRemaining(tableA, colA, marksA, chavesContabil, allAKeyCols, defaultKey, true, matchedA);
+        await processRemaining(tableB, colB, marksB, chavesFiscal, allBKeyCols, defaultKey, false, matchedB);
     }
 }
 
 export default ConciliacaoABStep;
-

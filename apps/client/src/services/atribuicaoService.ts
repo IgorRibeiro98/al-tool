@@ -7,6 +7,7 @@ export type AtribuicaoRun = {
     base_destino_id: number;
     mode_write: 'OVERWRITE' | 'ONLY_EMPTY';
     selected_columns: string[];
+    update_original_base?: boolean;  // default true
     status: 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED';
     pipeline_stage?: string | null;
     pipeline_progress?: number | null;
@@ -38,6 +39,7 @@ export function createRun(data: {
     baseDestinoId: number;
     modeWrite: 'OVERWRITE' | 'ONLY_EMPTY';
     selectedColumns: string[];
+    updateOriginalBase?: boolean;
     keysPairs: Array<{ keysPairId: number; keyIdentifier?: string; ordem?: number }>;
 }) {
     return api.post('/atribuicoes/runs', data);

@@ -3,18 +3,19 @@ import { DB_PATH } from '../config/paths';
 
 // Environment and default constants
 const NODE_ENV = process.env.NODE_ENV || 'development';
-const DEFAULTS = {
+
+const DEFAULTS = Object.freeze({
     JOURNAL: 'WAL',
     SYNCHRONOUS: 'NORMAL',
     CACHE_PAGES_PROD: -8000,
     CACHE_PAGES_TEST: -1000,
     CACHE_PAGES_DEV: -4000,
     TEMP_STORE: 'MEMORY',
-    BUSY_TIMEOUT_PROD: 8000,
-    BUSY_TIMEOUT_TEST: 2000,
-    BUSY_TIMEOUT_DEV: 5000,
+    BUSY_TIMEOUT_PROD: 30000,
+    BUSY_TIMEOUT_TEST: 5000,
+    BUSY_TIMEOUT_DEV: 30000,
     FOREIGN_KEYS: 'ON',
-} as const;
+});
 
 const dbPath = DB_PATH;
 
@@ -28,29 +29,29 @@ const knexConfig: Knex.Config = {
 
 const db = createKnex(knexConfig);
 
-type Pragmas = {
-    journal: string;
-    synchronous: string;
-    cacheSize: string; // negative value = pages in memory (keeps parity with previous behavior)
-    tempStore: string;
-    busyTimeoutMs: number;
-    foreignKeys: string;
-};
+interface Pragmas {
+    readonly journal: string;
+    readonly synchronous: string;
+    readonly cacheSize: number; // negative value = pages in memory
+    readonly tempStore: string;
+    readonly busyTimeoutMs: number;
+    readonly foreignKeys: string;
+}
 
 function resolveDefaultPragmas(): Pragmas {
     const journal = process.env.SQLITE_JOURNAL_MODE || DEFAULTS.JOURNAL;
     const synchronous = process.env.SQLITE_SYNCHRONOUS || DEFAULTS.SYNCHRONOUS;
 
     const cacheSizeEnv = process.env.SQLITE_CACHE_SIZE;
-    let cacheSize: string;
+    let cacheSize: number;
     if (cacheSizeEnv) {
-        cacheSize = String(cacheSizeEnv);
+        cacheSize = parseInt(cacheSizeEnv, 10) || DEFAULTS.CACHE_PAGES_DEV;
     } else if (NODE_ENV === 'production') {
-        cacheSize = String(DEFAULTS.CACHE_PAGES_PROD);
+        cacheSize = DEFAULTS.CACHE_PAGES_PROD;
     } else if (NODE_ENV === 'test') {
-        cacheSize = String(DEFAULTS.CACHE_PAGES_TEST);
+        cacheSize = DEFAULTS.CACHE_PAGES_TEST;
     } else {
-        cacheSize = String(DEFAULTS.CACHE_PAGES_DEV);
+        cacheSize = DEFAULTS.CACHE_PAGES_DEV;
     }
 
     const tempStore = process.env.SQLITE_TEMP_STORE || DEFAULTS.TEMP_STORE;
@@ -58,7 +59,7 @@ function resolveDefaultPragmas(): Pragmas {
     const busyTimeoutEnv = process.env.SQLITE_BUSY_TIMEOUT;
     let busyTimeoutMs: number;
     if (busyTimeoutEnv) {
-        busyTimeoutMs = Number(busyTimeoutEnv) || DEFAULTS.BUSY_TIMEOUT_DEV;
+        busyTimeoutMs = parseInt(busyTimeoutEnv, 10) || DEFAULTS.BUSY_TIMEOUT_DEV;
     } else if (NODE_ENV === 'production') {
         busyTimeoutMs = DEFAULTS.BUSY_TIMEOUT_PROD;
     } else if (NODE_ENV === 'test') {
@@ -69,14 +70,14 @@ function resolveDefaultPragmas(): Pragmas {
 
     const foreignKeys = process.env.SQLITE_FOREIGN_KEYS || DEFAULTS.FOREIGN_KEYS;
 
-    return {
+    return Object.freeze({
         journal,
         synchronous,
         cacheSize,
         tempStore,
         busyTimeoutMs,
         foreignKeys,
-    };
+    });
 }
 
 async function applyPragmaRaw(sql: string) {
@@ -84,9 +85,9 @@ async function applyPragmaRaw(sql: string) {
     return db.raw(sql);
 }
 
-async function applyPragmas(pragmas: Pragmas) {
+async function applyPragmas(pragmas: Pragmas): Promise<void> {
     // Order matters for some PRAGMAs (e.g., busy_timeout, foreign_keys, journal_mode)
-    await applyPragmaRaw(`PRAGMA busy_timeout = ${Number(pragmas.busyTimeoutMs)}`);
+    await applyPragmaRaw(`PRAGMA busy_timeout = ${pragmas.busyTimeoutMs}`);
     await applyPragmaRaw(`PRAGMA foreign_keys = ${pragmas.foreignKeys}`);
     await applyPragmaRaw(`PRAGMA journal_mode = ${pragmas.journal}`);
     await applyPragmaRaw(`PRAGMA synchronous = ${pragmas.synchronous}`);

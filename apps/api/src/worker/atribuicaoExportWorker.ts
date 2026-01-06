@@ -6,15 +6,35 @@ import fs from 'fs';
 import db from '../db/knex';
 import * as baseColumnsRepo from '../repos/baseColumnsRepository';
 
-async function main() {
-    const runId = Number(process.argv[2]);
-    if (!runId) {
-        console.error('RunId não informado');
-        process.exit(1);
+const LOG_PREFIX = '[atribuicaoExportWorker]';
+const EXIT_SUCCESS = 0;
+const EXIT_INVALID_ARG = 1;
+const EXIT_FAILURE = 2;
+const CHUNK_SIZE = 1000;
+
+const EXCLUDE_COLS = Object.freeze(new Set(['dest_row_id', 'orig_row_id', 'created_at', 'updated_at']));
+
+interface AtribuicaoRun {
+    readonly id: number;
+    readonly status: string;
+    readonly result_table_name?: string | null;
+    readonly base_origem_id?: number | null;
+    readonly base_destino_id?: number | null;
+}
+
+interface PragmaColumn {
+    readonly name: string;
+}
+
+async function main(): Promise<void> {
+    const runId = parseInt(process.argv[2] || '', 10);
+    if (!runId || Number.isNaN(runId)) {
+        console.error(`${LOG_PREFIX} RunId não informado`);
+        process.exit(EXIT_INVALID_ARG);
     }
     try {
         // Verifica se a run existe e está DONE
-        const run = await db('atribuicao_runs').where({ id: runId }).first();
+        const run = await db<AtribuicaoRun>('atribuicao_runs').where({ id: runId }).first();
         if (!run) throw new Error('Run não encontrada');
         if (run.status !== 'DONE') throw new Error('Run não está concluída');
 
@@ -32,15 +52,12 @@ async function main() {
         const sheet = workbook.addWorksheet('Atribuicao');
 
         // Colunas (nomes sqlite)
-        const rawPragma: any = await db.raw(`PRAGMA table_info("${table}")`);
-        const pragmaAny = Array.isArray(rawPragma) ? rawPragma : rawPragma[0] || [];
-        const sqliteColumns = Array.isArray(pragmaAny) ? pragmaAny.map((c: any) => String(c.name)) : [];
-
-        // Excluir colunas técnicas
-        const excludeCols = new Set(['dest_row_id', 'orig_row_id', 'created_at', 'updated_at']);
+        const rawPragma = await db.raw(`PRAGMA table_info("${table}")`) as unknown;
+        const pragmaArray = Array.isArray(rawPragma) ? rawPragma : (rawPragma as { 0?: unknown[] })[0] || [];
+        const sqliteColumns = (Array.isArray(pragmaArray) ? pragmaArray : []).map((c: PragmaColumn) => String(c.name));
 
         // Filtra colunas técnicas antes de montar header/linhas
-        const dataSqliteColumns = sqliteColumns.filter(c => !excludeCols.has(c));
+        const dataSqliteColumns = sqliteColumns.filter(c => !EXCLUDE_COLS.has(c));
 
         // Tenta mapear para excel_name usando base_columns (fallback para sqlite name)
         let header: string[] = dataSqliteColumns;
@@ -48,8 +65,8 @@ async function main() {
         try {
             // Tenta mapear consultando as colunas de base_origem e base_destino
             // Preferir o excel_name da base_destino em caso de conflito
-            const origemId = (run && (run as any).base_origem_id) || null;
-            const destinoId = (run && (run as any).base_destino_id) || null;
+            const origemId = run.base_origem_id ?? null;
+            const destinoId = run.base_destino_id ?? null;
             // Primeiro aplica origem (como fallback)
             if (origemId) {
                 const origemCols = await baseColumnsRepo.getColumnsForBase(origemId);
@@ -86,7 +103,6 @@ async function main() {
         sheet.addRow(headerLabels).commit();
 
         // Stream rows
-        const CHUNK_SIZE = 1000;
         let lastId = 0;
         while (true) {
             const rows = await db(table)
@@ -100,11 +116,11 @@ async function main() {
             for (const r of rows) {
                 // build a case-insensitive lookup for row values because some DB drivers
                 // may normalize column name casing differently than PRAGMA
-                const rowLookup: Record<string, any> = {};
+                const rowLookup: Record<string, unknown> = {};
                 for (const k of Object.keys(r || {})) rowLookup[String(k).toLowerCase()] = r[k];
 
                 const values = exportCols.map(col => {
-                    if (r.hasOwnProperty(col)) return r[col] ?? '';
+                    if (Object.prototype.hasOwnProperty.call(r, col)) return (r as Record<string, unknown>)[col] ?? '';
                     const alt = rowLookup[String(col).toLowerCase()];
                     return alt ?? '';
                 });
@@ -117,12 +133,12 @@ async function main() {
         }
 
         await workbook.commit();
-        console.log('Export concluído:', outPath);
-        process.exit(0);
-    } catch (err: any) {
-        console.error('Erro no export worker:', err);
-        process.exit(2);
+        console.log(`${LOG_PREFIX} Export concluído:`, outPath);
+        process.exit(EXIT_SUCCESS);
+    } catch (err) {
+        console.error(`${LOG_PREFIX} Erro no export worker:`, err);
+        process.exit(EXIT_FAILURE);
     }
 }
 
-main();
+void main();

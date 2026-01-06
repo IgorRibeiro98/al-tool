@@ -15,6 +15,7 @@ import licenseRouter from './routes/license';
 import './pipeline/integration';
 import { startConciliacaoWorker } from './worker/conciliacaoWorker';
 import { startIngestWorker } from './worker/ingestWorker';
+import { startDerivedColumnWorker } from './worker/derivedColumnWorkerLoop';
 import { env } from './env';
 
 const CLIENT_DIST = path.resolve(__dirname, '../../client/dist');
@@ -115,6 +116,13 @@ function startBackgroundWorkers() {
         console.log('Ingest worker started');
     } catch (err) {
         console.error('Failed to start ingest worker', err);
+    }
+
+    try {
+        startDerivedColumnWorker();
+        console.log('Derived column worker started');
+    } catch (err) {
+        console.error('Failed to start derived column worker', err);
     }
 }
 

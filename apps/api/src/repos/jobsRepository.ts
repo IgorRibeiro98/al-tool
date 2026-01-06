@@ -3,8 +3,8 @@ import type { Knex } from 'knex';
 
 export type JobStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED';
 
-export type JobsRow = {
-    id: number;
+export interface JobsRow {
+    readonly id: number;
     status?: JobStatus;
     erro?: string | null;
     arquivo_exportado?: string | null;
@@ -15,14 +15,20 @@ export type JobsRow = {
     pipeline_progress?: number | null;
     created_at?: string;
     updated_at?: string;
-    [key: string]: any;
-};
+    [key: string]: unknown;
+}
 
-function validateId(id: number) {
+interface RepoOptions {
+    readonly knex?: Knex;
+}
+
+const LOG_PREFIX = '[jobsRepository]';
+
+function validateId(id: number): void {
     if (!Number.isInteger(id) || id <= 0) throw new TypeError('id must be a positive integer');
 }
 
-async function ensureTable(knexInstance?: Knex) {
+async function ensureTable(knexInstance?: Knex): Promise<void> {
     const k = knexInstance ?? db;
     const exists = await k.schema.hasTable('jobs_conciliacao');
     if (!exists) {
@@ -30,24 +36,24 @@ async function ensureTable(knexInstance?: Knex) {
     }
 }
 
-async function addOptionalJobColumns(knexInstance?: Knex) {
+async function addOptionalJobColumns(knexInstance?: Knex): Promise<void> {
     const k = knexInstance ?? db;
     await k.schema.table('jobs_conciliacao', t => {
-        try { t.string('arquivo_exportado').nullable(); } catch (_) { }
-        try { t.string('config_estorno_nome').nullable(); } catch (_) { }
-        try { t.string('config_cancelamento_nome').nullable(); } catch (_) { }
-        try { t.integer('config_mapeamento_id').unsigned().nullable(); } catch (_) { }
-        try { t.string('config_mapeamento_nome').nullable(); } catch (_) { }
-        try { t.integer('base_contabil_id_override').unsigned().nullable(); } catch (_) { }
-        try { t.integer('base_fiscal_id_override').unsigned().nullable(); } catch (_) { }
+        try { t.string('arquivo_exportado').nullable(); } catch { /* column exists */ }
+        try { t.string('config_estorno_nome').nullable(); } catch { /* column exists */ }
+        try { t.string('config_cancelamento_nome').nullable(); } catch { /* column exists */ }
+        try { t.integer('config_mapeamento_id').unsigned().nullable(); } catch { /* column exists */ }
+        try { t.string('config_mapeamento_nome').nullable(); } catch { /* column exists */ }
+        try { t.integer('base_contabil_id_override').unsigned().nullable(); } catch { /* column exists */ }
+        try { t.integer('base_fiscal_id_override').unsigned().nullable(); } catch { /* column exists */ }
     });
 }
 
-async function ensureColumnsAndRetryUpdate(knexInstance: Knex, id: number, update: Record<string, any>, columnHints: string[]) {
+async function ensureColumnsAndRetryUpdate(knexInstance: Knex, id: number, update: Record<string, unknown>, columnHints: string[]): Promise<void> {
     try {
         await knexInstance('jobs_conciliacao').where({ id }).update(update);
-    } catch (err: any) {
-        const msg = err && (err.message || String(err)) || '';
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
         const missing = columnHints.some(h => msg.includes(h) || /no such column/.test(msg) || /no column named/.test(msg));
         if (missing) {
             try {
@@ -61,7 +67,7 @@ async function ensureColumnsAndRetryUpdate(knexInstance: Knex, id: number, updat
                             if (col === 'pipeline_stage') t.string('pipeline_stage').nullable();
                             if (col === 'pipeline_stage_label') t.string('pipeline_stage_label').nullable();
                             if (col === 'pipeline_progress') t.integer('pipeline_progress').nullable();
-                        } catch (_) { }
+                        } catch { /* column exists */ }
                     }
                 });
                 await knexInstance('jobs_conciliacao').where({ id }).update(update);
@@ -74,7 +80,7 @@ async function ensureColumnsAndRetryUpdate(knexInstance: Knex, id: number, updat
     }
 }
 
-export async function createJob(payload: Record<string, any>, options?: { knex?: Knex }) {
+export async function createJob(payload: Record<string, unknown>, options?: RepoOptions): Promise<JobsRow | null> {
     const knex = options?.knex ?? db;
     await ensureTable(knex);
     try {
@@ -83,12 +89,12 @@ export async function createJob(payload: Record<string, any>, options?: { knex?:
         if (!id) throw new Error('Failed to insert job');
         const row = (await knex('jobs_conciliacao').where({ id }).first()) as JobsRow | undefined;
         return row ?? null;
-    } catch (err: any) {
-        const msg = err && (err.message || String(err)) || '';
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes('no such column') || msg.includes('no column named') || /no such column:/.test(msg)) {
             try {
                 await addOptionalJobColumns(knex);
-            } catch (_) {
+            } catch {
                 // ignore - will rethrow original error below
             }
             const retry = await knex('jobs_conciliacao').insert(payload);
@@ -100,18 +106,18 @@ export async function createJob(payload: Record<string, any>, options?: { knex?:
     }
 }
 
-export async function updateJobStatus(id: number, status: JobStatus, error?: string, options?: { knex?: Knex }) {
+export async function updateJobStatus(id: number, status: JobStatus, error?: string, options?: RepoOptions): Promise<JobsRow | null> {
     validateId(id);
     const knex = options?.knex ?? db;
     await ensureTable(knex);
-    const update: Record<string, any> = { status, updated_at: knex.fn.now() };
+    const update: Record<string, unknown> = { status, updated_at: knex.fn.now() };
     if (error) update.erro = error;
     await knex('jobs_conciliacao').where({ id }).update(update);
     const row = (await knex('jobs_conciliacao').where({ id }).first()) as JobsRow | undefined;
     return row ?? null;
 }
 
-export async function getJobById(id: number, options?: { knex?: Knex }) {
+export async function getJobById(id: number, options?: RepoOptions): Promise<JobsRow | null> {
     validateId(id);
     const knex = options?.knex ?? db;
     await ensureTable(knex);
@@ -119,21 +125,21 @@ export async function getJobById(id: number, options?: { knex?: Knex }) {
     return row ?? null;
 }
 
-export async function setJobExportPath(id: number, arquivoPath: string | null, options?: { knex?: Knex }) {
+export async function setJobExportPath(id: number, arquivoPath: string | null, options?: RepoOptions): Promise<JobsRow | null> {
     validateId(id);
     const knex = options?.knex ?? db;
     await ensureTable(knex);
-    const update: Record<string, any> = { arquivo_exportado: arquivoPath, updated_at: knex.fn.now() };
+    const update: Record<string, unknown> = { arquivo_exportado: arquivoPath, updated_at: knex.fn.now() };
     await ensureColumnsAndRetryUpdate(knex, id, update, ['arquivo_exportado']);
     const row = (await knex('jobs_conciliacao').where({ id }).first()) as JobsRow | undefined;
     return row ?? null;
 }
 
-export async function setJobExportProgress(id: number, progress: number | null, status?: string | null, options?: { knex?: Knex }) {
+export async function setJobExportProgress(id: number, progress: number | null, status?: string | null, options?: RepoOptions): Promise<JobsRow | null> {
     validateId(id);
     const knex = options?.knex ?? db;
     await ensureTable(knex);
-    const update: Record<string, any> = { updated_at: knex.fn.now() };
+    const update: Record<string, unknown> = { updated_at: knex.fn.now() };
     if (progress !== null && progress !== undefined) update.export_progress = progress;
     if (status !== undefined) update.export_status = status;
     await ensureColumnsAndRetryUpdate(knex, id, update, ['export_progress', 'export_status']);

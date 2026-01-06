@@ -5,11 +5,19 @@ import db from '../db/knex';
 import baseColumnsService from './baseColumnsService';
 import { Knex } from 'knex';
 
-// Constants for sensible defaults and magic numbers
-const DEFAULT_SAMPLE_ROWS_JSONL = 1000;
-const DEFAULT_BATCH_SIZE_JSONL = 200;
-const DEFAULT_SAMPLE_ROWS_XLSX = 500;
-const DEFAULT_BATCH_SIZE_XLSX = 100;
+// Constants for sensible defaults - optimized for SQLite WAL mode
+// Larger batches significantly reduce transaction overhead
+const DEFAULT_SAMPLE_ROWS_JSONL = 500;
+const DEFAULT_BATCH_SIZE_JSONL = 2000;  // Increased from 200 - SQLite handles this well with WAL
+const DEFAULT_SAMPLE_ROWS_XLSX = 300;
+const DEFAULT_BATCH_SIZE_XLSX = 1500;   // Increased from 100 - reduces transaction commits
+
+// Maximum rows per transaction to prevent long locks
+const MAX_ROWS_PER_TRANSACTION = 50000;
+
+// SQLite has a limit of ~999 SQL variables per statement
+// We calculate chunk size dynamically based on column count
+const SQLITE_MAX_VARIABLES = 999;
 
 type IngestResult = { tableName: string; rowsInserted: number };
 
@@ -70,6 +78,29 @@ export class ExcelIngestService {
         }
     }
 
+    /**
+     * Optimized bulk insert that chunks data to avoid SQLite variable limits
+     * Dynamically calculates chunk size based on number of columns
+     */
+    private async bulkInsert(conn: Knex | Knex.Transaction, tableName: string, rows: Record<string, any>[]): Promise<number> {
+        if (!rows.length) return 0;
+
+        let inserted = 0;
+
+        // Calculate safe chunk size based on column count
+        // SQLite limit is ~999 variables, so rows_per_chunk = floor(999 / columns)
+        const columnCount = Object.keys(rows[0]).length;
+        const safeChunkSize = Math.max(1, Math.floor(SQLITE_MAX_VARIABLES / Math.max(1, columnCount)));
+
+        for (let i = 0; i < rows.length; i += safeChunkSize) {
+            const chunk = rows.slice(i, i + safeChunkSize);
+            await conn(tableName).insert(chunk);
+            inserted += chunk.length;
+        }
+
+        return inserted;
+    }
+
     // Automatic monetary detection removed: columns are initialized as non-monetary at ingest time
 
     private async appendIngestLog(prefix: string, info: any) {
@@ -92,13 +123,13 @@ export class ExcelIngestService {
         const candidates = path.isAbsolute(relOrAbs)
             ? [relOrAbs]
             : [
-                  path.resolve(process.cwd(), relOrAbs),
-                  path.resolve(process.cwd(), '..', relOrAbs),
-                  path.resolve(process.cwd(), '..', '..', relOrAbs),
-                  path.resolve(__dirname, '..', '..', relOrAbs),
-                  path.join(process.cwd(), 'apps', 'api', relOrAbs),
-                  path.join(process.cwd(), relOrAbs.replace(/^\/+/, ''))
-              ];
+                path.resolve(process.cwd(), relOrAbs),
+                path.resolve(process.cwd(), '..', relOrAbs),
+                path.resolve(process.cwd(), '..', '..', relOrAbs),
+                path.resolve(__dirname, '..', '..', relOrAbs),
+                path.join(process.cwd(), 'apps', 'api', relOrAbs),
+                path.join(process.cwd(), relOrAbs.replace(/^\/+/, ''))
+            ];
 
         for (const c of candidates) {
             if (!c) continue;
@@ -253,6 +284,7 @@ export class ExcelIngestService {
     }
 
     // Process JSONL: infer header from meta or first rows, then insert in chunks
+    // Optimized: uses smaller transactions to prevent long locks
     private async ingestFromJsonl(baseId: number, base: any, filePath: string, headerLinhaInicial: number, headerColunaInicial: number): Promise<IngestResult> {
         const rl = (await import('readline')).createInterface({ input: (await import('fs')).createReadStream(filePath, { encoding: 'utf8' }) });
         const SAMPLE_ROWS = Number(process.env.INGEST_SAMPLE_ROWS || DEFAULT_SAMPLE_ROWS_JSONL);
@@ -269,8 +301,9 @@ export class ExcelIngestService {
         let inserted = 0;
         let dataLineIndex = 0;
         let batch: Record<string, any>[] = [];
+        let rowsInCurrentTransaction = 0;
 
-        const prepareTable = async (trx: Knex.Transaction) => {
+        const prepareTable = async () => {
             if (tableReady) return;
             if (!headerSlice || headerSlice.length === 0) return;
 
@@ -286,83 +319,93 @@ export class ExcelIngestService {
 
             colTypes = this.inferColumnTypes(sampleRows);
 
-            await this.applyPragmas(trx);
-            await this.createSqliteTableFromColumns(trx, tableName, columns, colTypes, baseId, startColIdx0);
+            // Create table in its own transaction (quick)
+            await db.transaction(async trx => {
+                await this.applyPragmas(trx);
+                await this.createSqliteTableFromColumns(trx, tableName, columns, colTypes, baseId, startColIdx0);
+            });
             tableReady = true;
         };
 
-        await db.transaction(async trx => {
-            for await (const line of rl) {
-                if (!line || !line.trim()) continue;
-                const parsed = JSON.parse(line);
-                if (parsed && parsed.meta && !headerSlice) {
-                    headerSlice = parsed.meta.headers || null;
-                    continue;
-                }
-                if (!headerSlice) {
-                    dataLineIndex += 1;
-                    if (dataLineIndex < headerLinhaInicial) continue;
-                    headerSlice = Array.isArray(parsed) ? parsed.slice(headerColunaInicial - 1) : Object.keys(parsed).slice(headerColunaInicial - 1);
-                    continue;
-                }
+        const flushBatch = async () => {
+            if (batch.length === 0) return;
 
-                dataLineIndex += 1;
-                if (dataLineIndex <= headerLinhaInicial) continue; // header row itself
+            // Use chunked bulk insert in a transaction
+            await db.transaction(async trx => {
+                inserted += await this.bulkInsert(trx, tableName, batch);
+            });
 
-                const rowArr = Array.isArray(parsed) ? parsed.slice(startColIdx0) : Object.values(parsed).slice(startColIdx0);
-                const normalizedRowArr = rowArr.map(v => (v && v.__num__ ? v.__num__ : v));
+            rowsInCurrentTransaction = 0;
+            batch = [];
+        };
 
-                if (!tableReady) {
-                    sampleRows.push(normalizedRowArr);
-                    pendingRowArrays.push(normalizedRowArr);
-                    if (sampleRows.length >= SAMPLE_ROWS) {
-                        await prepareTable(trx);
-                        for (const arr of pendingRowArrays) {
-                            const { rowObj, allEmpty } = this.buildRowObject(arr, columns, colTypes);
-                            if (!allEmpty) {
-                                batch.push(rowObj);
-                                if (batch.length >= BATCH_SIZE) {
-                                    await trx(tableName).insert(batch);
-                                    inserted += batch.length;
-                                    batch = [];
-                                }
-                            }
-                        }
-                        pendingRowArrays.length = 0;
-                    }
-                    continue;
-                }
-
-                const { rowObj, allEmpty } = this.buildRowObject(normalizedRowArr, columns, colTypes);
-                if (!allEmpty) {
-                    batch.push(rowObj);
-                    if (batch.length >= BATCH_SIZE) {
-                        await trx(tableName).insert(batch);
-                        inserted += batch.length;
-                        batch = [];
-                    }
-                }
+        // First pass: collect sample rows and determine schema
+        for await (const line of rl) {
+            if (!line || !line.trim()) continue;
+            const parsed = JSON.parse(line);
+            if (parsed && parsed.meta && !headerSlice) {
+                headerSlice = parsed.meta.headers || null;
+                continue;
             }
+            if (!headerSlice) {
+                dataLineIndex += 1;
+                if (dataLineIndex < headerLinhaInicial) continue;
+                headerSlice = Array.isArray(parsed) ? parsed.slice(headerColunaInicial - 1) : Object.keys(parsed).slice(headerColunaInicial - 1);
+                continue;
+            }
+
+            dataLineIndex += 1;
+            if (dataLineIndex <= headerLinhaInicial) continue; // header row itself
+
+            const rowArr = Array.isArray(parsed) ? parsed.slice(startColIdx0) : Object.values(parsed).slice(startColIdx0);
+            const normalizedRowArr = rowArr.map(v => (v && v.__num__ ? v.__num__ : v));
 
             if (!tableReady) {
-                await prepareTable(trx);
-                for (const arr of pendingRowArrays) {
-                    const { rowObj, allEmpty } = this.buildRowObject(arr, columns, colTypes);
-                    if (!allEmpty) batch.push(rowObj);
+                sampleRows.push(normalizedRowArr);
+                pendingRowArrays.push(normalizedRowArr);
+                if (sampleRows.length >= SAMPLE_ROWS) {
+                    await prepareTable();
+                    // Process pending rows
+                    for (const arr of pendingRowArrays) {
+                        const { rowObj, allEmpty } = this.buildRowObject(arr, columns, colTypes);
+                        if (!allEmpty) {
+                            batch.push(rowObj);
+                            rowsInCurrentTransaction++;
+                        }
+                    }
+                    pendingRowArrays.length = 0;
+
+                    // Flush if batch is large
                     if (batch.length >= BATCH_SIZE) {
-                        await trx(tableName).insert(batch);
-                        inserted += batch.length;
-                        batch = [];
+                        await flushBatch();
                     }
                 }
+                continue;
             }
 
-            if (batch.length > 0) {
-                await trx(tableName).insert(batch);
-                inserted += batch.length;
-                batch = [];
+            const { rowObj, allEmpty } = this.buildRowObject(normalizedRowArr, columns, colTypes);
+            if (!allEmpty) {
+                batch.push(rowObj);
+                rowsInCurrentTransaction++;
+
+                // Flush when batch is full or transaction is too large
+                if (batch.length >= BATCH_SIZE || rowsInCurrentTransaction >= MAX_ROWS_PER_TRANSACTION) {
+                    await flushBatch();
+                }
             }
-        });
+        }
+
+        // Handle case where we never reached SAMPLE_ROWS
+        if (!tableReady && (headerSlice || pendingRowArrays.length > 0)) {
+            await prepareTable();
+            for (const arr of pendingRowArrays) {
+                const { rowObj, allEmpty } = this.buildRowObject(arr, columns, colTypes);
+                if (!allEmpty) batch.push(rowObj);
+            }
+        }
+
+        // Final flush
+        await flushBatch();
 
         try { const idxHelpers = await import('../db/indexHelpers'); await idxHelpers.ensureIndicesForBaseFromConfigs(baseId); } catch (e: any) { await this.appendIngestLog('IndexEnsureFailed', { baseId, error: e && (e instanceof Error ? (e.stack || e.message) : String(e)) }); }
         try { await this.analyzeTable(db, tableName); } catch (_) { }
@@ -388,6 +431,7 @@ export class ExcelIngestService {
 
         await this.appendIngestLog('IngestHeaderAttempt', { baseId, headerLinhaInicial, headerColunaInicial, filePath });
 
+        // First pass: read header and sample rows for type inference
         const reader = new (ExcelJS as any).stream.xlsx.WorkbookReader(filePath);
         for await (const worksheet of reader) {
             for await (const row of worksheet) {
@@ -443,50 +487,62 @@ export class ExcelIngestService {
         const tableName = `base_${baseId}`;
         let inserted = 0;
 
+        // Create table in its own quick transaction
         await db.transaction(async trx => {
             await this.applyPragmas(trx);
             await this.createSqliteTableFromColumns(trx, tableName, columns, colTypes, baseId, startColIdx);
-
-            const insertReader = new (ExcelJS as any).stream.xlsx.WorkbookReader(filePath);
-            let batch: Record<string, any>[] = [];
-            let processingRows = false;
-
-            for await (const worksheet of insertReader) {
-                for await (const row of worksheet) {
-                    if (!processingRows) {
-                        if (row.number < headerRowNum) continue;
-                        if (row.number === headerRowNum) { processingRows = true; continue; }
-                    }
-
-                    const rowArr: any[] = [];
-                    for (let c = startColOne; c < startColOne + columnsCount; c++) {
-                        const cell = row.getCell(c);
-                        rowArr.push(extractCellValue(cell));
-                    }
-
-                    const allEmpty = rowArr.every(v => v === null || v === undefined || v === '');
-                    if (allEmpty) continue;
-
-                    const { rowObj } = this.buildRowObject(rowArr, columns, colTypes);
-                    batch.push(rowObj);
-                    if (batch.length >= BATCH_SIZE) {
-                        try {
-                            await trx(tableName).insert(batch);
-                            inserted += batch.length;
-                        } catch (insertErr) {
-                            await this.appendIngestLog('ErrorInsertingBatch', { table: tableName, batchSize: batch.length, sample: batch.slice(0, 5), error: insertErr && (insertErr instanceof Error ? (insertErr.stack || insertErr.message) : String(insertErr)) });
-                            throw insertErr;
-                        }
-                        batch = [];
-                    }
-                }
-                break;
-            }
-
-            if (batch.length > 0) {
-                try { await trx(tableName).insert(batch); inserted += batch.length; } catch (insertErr) { await this.appendIngestLog('ErrorInsertingFinalBatch', { table: tableName, batchSize: batch.length, sample: batch.slice(0, 5), error: insertErr && (insertErr instanceof Error ? (insertErr.stack || insertErr.message) : String(insertErr)) }); throw insertErr; }
-            }
         });
+
+        // Second pass: insert data with smaller transactions
+        const insertReader = new (ExcelJS as any).stream.xlsx.WorkbookReader(filePath);
+        let batch: Record<string, any>[] = [];
+        let processingRows = false;
+        let rowsInCurrentTransaction = 0;
+
+        const flushBatch = async () => {
+            if (batch.length === 0) return;
+            try {
+                await db.transaction(async trx => {
+                    inserted += await this.bulkInsert(trx, tableName, batch);
+                });
+            } catch (insertErr) {
+                await this.appendIngestLog('ErrorInsertingBatch', { table: tableName, batchSize: batch.length, sample: batch.slice(0, 5), error: insertErr && (insertErr instanceof Error ? (insertErr.stack || insertErr.message) : String(insertErr)) });
+                throw insertErr;
+            }
+            rowsInCurrentTransaction = 0;
+            batch = [];
+        };
+
+        for await (const worksheet of insertReader) {
+            for await (const row of worksheet) {
+                if (!processingRows) {
+                    if (row.number < headerRowNum) continue;
+                    if (row.number === headerRowNum) { processingRows = true; continue; }
+                }
+
+                const rowArr: any[] = [];
+                for (let c = startColOne; c < startColOne + columnsCount; c++) {
+                    const cell = row.getCell(c);
+                    rowArr.push(extractCellValue(cell));
+                }
+
+                const allEmpty = rowArr.every(v => v === null || v === undefined || v === '');
+                if (allEmpty) continue;
+
+                const { rowObj } = this.buildRowObject(rowArr, columns, colTypes);
+                batch.push(rowObj);
+                rowsInCurrentTransaction++;
+
+                // Flush when batch is full or transaction is too large
+                if (batch.length >= BATCH_SIZE || rowsInCurrentTransaction >= MAX_ROWS_PER_TRANSACTION) {
+                    await flushBatch();
+                }
+            }
+            break;
+        }
+
+        // Final flush
+        await flushBatch();
 
         try { const idxHelpers = await import('../db/indexHelpers'); await idxHelpers.ensureIndicesForBaseFromConfigs(baseId); } catch (e) { await this.appendIngestLog('IndexEnsureFailed', { baseId, error: e && (e instanceof Error ? (e.stack || e.message) : String(e)) }); }
         try { await this.analyzeTable(db, tableName); } catch (_) { }
