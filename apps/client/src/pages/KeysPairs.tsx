@@ -6,6 +6,16 @@ import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { Form, FormItem, FormLabel, FormControl } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import {
+    AlertDialog,
+    AlertDialogContent,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogAction,
+    AlertDialogCancel,
+} from '@/components/ui/alert-dialog';
 import { useForm, useWatch } from 'react-hook-form';
 import { toast } from 'sonner';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -204,7 +214,7 @@ const KeysPairs: FC = () => {
                                 </FormItem>
 
                                 <DialogFooter>
-                                        <div className="flex gap-2">
+                                    <div className="flex gap-2">
                                         <Button variant="outline" type="button" onClick={() => setDialogOpen(false)}>Cancelar</Button>
                                         <Button type="submit" disabled={saving}>{saving ? 'Salvando...' : 'Salvar'}</Button>
                                     </div>
@@ -213,24 +223,30 @@ const KeysPairs: FC = () => {
                         </Form>
                     </DialogContent>
                 </Dialog>
-                <div>
-                    {/* Delete confirmation dialog */}
-                    {deleteDialogOpen && (
-                        <div>
-                            <div className="fixed inset-0 bg-black/40" />
-                            <div className="fixed inset-0 flex items-center justify-center">
-                                <div className="bg-white rounded-lg p-6 shadow-lg w-full max-w-md">
-                                    <h3 className="text-lg font-medium">Confirmação de exclusão</h3>
-                                    <p className="text-sm text-muted-foreground mt-2">Deseja realmente excluir este par de chaves? Esta ação não pode ser desfeita.</p>
-                                    <div className="mt-4 flex justify-end gap-2">
-                                        <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>Cancelar</Button>
-                                        <Button variant="destructive" onClick={confirmDelete} disabled={deleting}>{deleting ? 'Excluindo...' : 'Excluir'}</Button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                </div>
+
+                <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+                    <AlertDialogContent>
+                        <AlertDialogHeader>
+                            <AlertDialogTitle>Confirmação de Exclusão</AlertDialogTitle>
+                            <AlertDialogDescription>
+                                Deseja realmente deletar este par de chaves? Esta ação não pode ser desfeita.
+                            </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                            <AlertDialogCancel
+                                onClick={() => {
+                                    setDeleteDialogOpen(false);
+                                    setToDeleteId(null);
+                                }}
+                            >
+                                Cancelar
+                            </AlertDialogCancel>
+                            <AlertDialogAction onClick={confirmDelete} disabled={deleting}>
+                                {deleting ? 'Excluindo...' : 'Excluir'}
+                            </AlertDialogAction>
+                        </AlertDialogFooter>
+                    </AlertDialogContent>
+                </AlertDialog>
             </div>
         </PageSkeletonWrapper>
     );

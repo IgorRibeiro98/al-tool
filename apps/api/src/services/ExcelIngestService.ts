@@ -31,9 +31,19 @@ function sanitizeColumnName(name: any, idx: number): string {
 function extractCellValue(cell: any): any {
     if (!cell) return null;
     const v = cell.value;
-    if (typeof v === 'number') return v;
+    // For numbers, preserve precision by using string representation when available
+    // This mimics the __num__ pattern used in JSONL conversion
+    if (typeof v === 'number') {
+        // Return as object with string representation to preserve precision
+        // The buildRowObject function will handle this format
+        return { __num__: String(v) };
+    }
     if (v instanceof Date) return typeof cell.text === 'string' ? cell.text : v.toISOString();
     if (v && typeof v === 'object' && v.result instanceof Date) return typeof cell.text === 'string' ? cell.text : new Date(v.result).toISOString();
+    if (v && typeof v === 'object' && typeof v.result === 'number') {
+        // Formula result that is a number - preserve precision
+        return { __num__: String(v.result) };
+    }
     if (v && typeof v === 'object' && Array.isArray(v.richText)) return v.richText.map((t: any) => t?.text || '').join('');
     if (typeof cell.text === 'string' && cell.text.length > 0) return cell.text;
     return v ?? null;
@@ -80,22 +90,69 @@ export class ExcelIngestService {
 
     /**
      * Optimized bulk insert that chunks data to avoid SQLite variable limits
-     * Dynamically calculates chunk size based on number of columns
+     * Uses raw SQL with proper type casting to preserve INTEGER vs REAL storage
      */
     private async bulkInsert(conn: Knex | Knex.Transaction, tableName: string, rows: Record<string, any>[]): Promise<number> {
         if (!rows.length) return 0;
 
         let inserted = 0;
-
-        // Calculate safe chunk size based on column count
-        // SQLite limit is ~999 variables, so rows_per_chunk = floor(999 / columns)
-        const columnCount = Object.keys(rows[0]).length;
+        const columns = Object.keys(rows[0]);
+        const columnCount = columns.length;
         const safeChunkSize = Math.max(1, Math.floor(SQLITE_MAX_VARIABLES / Math.max(1, columnCount)));
 
         for (let i = 0; i < rows.length; i += safeChunkSize) {
             const chunk = rows.slice(i, i + safeChunkSize);
-            await conn(tableName).insert(chunk);
-            inserted += chunk.length;
+
+            // Build INSERT with explicit CAST for integers, proper formatting for decimals
+            const valueSets = chunk.map(row => {
+                const values = columns.map(col => {
+                    const val = row[col];
+                    if (val === null || val === undefined) return 'NULL';
+                    if (typeof val === 'number') {
+                        // Ensure number is valid
+                        if (Number.isNaN(val) || !Number.isFinite(val)) return 'NULL';
+                        // If integer, cast to INTEGER to preserve storage class
+                        if (Number.isInteger(val)) {
+                            return `CAST(${val} AS INTEGER)`;
+                        }
+                        // For decimals, format with full precision - ensure no scientific notation
+                        const strVal = val.toFixed(20).replace(/\.?0+$/, '');
+                        return strVal;
+                    }
+                    if (typeof val === 'string') {
+                        // Escape single quotes
+                        return `'${val.replace(/'/g, "''")}'`;
+                    }
+                    // For other types, convert to string and escape
+                    return `'${String(val).replace(/'/g, "''")}'`;
+                });
+                return `(${values.join(', ')})`;
+            }).join(', ');
+
+            const colNames = columns.map(c => `\`${c}\``).join(', ');
+            const sql = `INSERT INTO \`${tableName}\` (${colNames}) VALUES ${valueSets}`;
+
+            // Log first insert of each batch for debugging
+            if (i === 0) {
+                await this.appendIngestLog('BulkInsertSQL', {
+                    tableName,
+                    sqlPreview: sql.substring(0, 500),
+                    firstRow: rows[0]
+                });
+            }
+
+            try {
+                await conn.raw(sql);
+                inserted += chunk.length;
+            } catch (err) {
+                await this.appendIngestLog('BulkInsertError', {
+                    tableName,
+                    error: err instanceof Error ? err.message : String(err),
+                    sqlPreview: sql.substring(0, 500),
+                    sampleRow: chunk[0]
+                });
+                throw err;
+            }
         }
 
         return inserted;
@@ -215,43 +272,53 @@ export class ExcelIngestService {
         return { filePath: path.isAbsolute(base.arquivo_caminho) ? base.arquivo_caminho : path.resolve(process.cwd(), base.arquivo_caminho), isJsonl: false };
     }
 
-    private inferColumnTypes(sampleRows: any[][]): ('integer' | 'real' | 'text')[] {
+    // Returns 'real' for any numeric column, 'text' otherwise.
+    // We intentionally avoid 'integer' type to prevent precision loss when
+    // a column starts with integer-like values (e.g., zeros) but later contains decimals.
+    private inferColumnTypes(sampleRows: any[][]): ('real' | 'text')[] {
         const columns = (sampleRows[0] || []).length;
-        const result: ('integer' | 'real' | 'text')[] = [];
+        const result: ('real' | 'text')[] = [];
         for (let colIdx = 0; colIdx < columns; colIdx++) {
-            let isInteger = true;
             let isNumber = true;
             for (const r of sampleRows) {
-                const v = r ? r[colIdx] : undefined;
+                let v = r ? r[colIdx] : undefined;
+                // Extract value from __num__ wrapper if present
+                if (v && typeof v === 'object' && v.__num__ !== undefined) {
+                    v = v.__num__;
+                }
                 if (v === null || v === undefined || v === '') continue;
                 const n = Number(v);
                 if (Number.isNaN(n)) {
                     isNumber = false;
-                    isInteger = false;
                     break;
                 }
-                if (!Number.isInteger(n)) isInteger = false;
             }
-            if (isInteger) result.push('integer');
-            else if (isNumber) result.push('real');
+            if (isNumber) result.push('real');
             else result.push('text');
         }
         return result;
     }
 
-    private createSqliteTableFromColumns = async (trx: Knex.Transaction, tableName: string, columns: ColumnDef[], colTypes: ('integer' | 'real' | 'text')[], baseId: number, startColIdx0: number) => {
+    private createSqliteTableFromColumns = async (trx: Knex.Transaction, tableName: string, columns: ColumnDef[], colTypes: ('real' | 'text')[], baseId: number, startColIdx0: number) => {
         const exists = await trx.schema.hasTable(tableName);
         if (exists) throw new Error(`Table ${tableName} already exists`);
 
-        await trx.schema.createTable(tableName, (t: Knex.CreateTableBuilder) => {
-            t.increments('id').primary();
-            columns.forEach((c, idx) => {
-                const colType = colTypes[idx];
-                if (colType === 'text') t.text(c.name).nullable();
-                else t.decimal(c.name, 30, 10).nullable();
-            });
-            t.timestamp('created_at').defaultTo(trx.fn.now()).notNullable();
-        });
+        // Build CREATE TABLE with NUMERIC affinity for numbers (preserves integers as integers)
+        const columnDefs = columns.map((c, idx) => {
+            const colType = colTypes[idx];
+            if (colType === 'text') return `\`${c.name}\` TEXT`;
+            else return `\`${c.name}\` NUMERIC`;
+        }).join(', ');
+
+        const createTableSQL = `
+            CREATE TABLE \`${tableName}\` (
+                \`id\` INTEGER PRIMARY KEY AUTOINCREMENT,
+                ${columnDefs},
+                \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        `;
+
+        await trx.raw(createTableSQL);
 
         try {
             const mappings = columns.map((c, idx) => ({ base_id: baseId, col_index: startColIdx0 + idx + 1, excel_name: c.original == null ? null : String(c.original), sqlite_name: c.name, is_monetary: 0 }));
@@ -264,19 +331,41 @@ export class ExcelIngestService {
     };
 
     // Build row object for DB from raw array and column defs/types
-    private buildRowObject(rowArr: any[], columns: ColumnDef[], colTypes: ('integer' | 'real' | 'text')[]) {
+    // For NUMERIC columns in SQLite, we pass integers as integers and decimals as numbers/strings.
+    // SQLite's NUMERIC affinity preserves the storage class (INTEGER vs REAL).
+    private buildRowObject(rowArr: any[], columns: ColumnDef[], colTypes: ('real' | 'text')[]) {
         const obj: Record<string, any> = {};
         let allEmpty = true;
         columns.forEach((c, idx) => {
             const raw = rowArr ? rowArr[idx] : undefined;
+            // Extract the original string representation if available (__num__ from JSONL)
             const valRaw = raw && raw.__num__ ? raw.__num__ : raw;
             let v: any = valRaw === undefined ? null : valRaw;
             if (v === '') v = null;
             if (v !== null && v !== undefined) allEmpty = false;
             const t = colTypes[idx];
-            if (v != null && (t === 'integer' || t === 'real')) {
-                const n = Number(v);
-                v = Number.isNaN(n) ? null : n;
+            if (v != null && t === 'real') {
+                // Parse as number - SQLite NUMERIC will store integers as INTEGER, decimals as REAL
+                if (typeof v === 'string') {
+                    const trimmed = v.trim();
+                    // Replace comma with dot for decimal parsing (Excel uses comma in pt-BR locale)
+                    const normalized = trimmed.replace(',', '.');
+                    const numVal = parseFloat(normalized);
+                    if (Number.isNaN(numVal)) {
+                        v = null;
+                    } else {
+                        // Keep as JavaScript Number - SQLite will handle storage class
+                        v = numVal;
+                    }
+                } else if (typeof v === 'number') {
+                    // Already a number, keep as is
+                    v = v;
+                } else {
+                    // Try to convert
+                    const numVal = Number(v);
+                    if (Number.isNaN(numVal)) v = null;
+                    else v = numVal;
+                }
             }
             obj[c.name] = v;
         });
@@ -296,7 +385,7 @@ export class ExcelIngestService {
         const sampleRows: any[][] = [];
         const pendingRowArrays: any[][] = [];
         let columns: ColumnDef[] = [];
-        let colTypes: ('integer' | 'real' | 'text')[] = [];
+        let colTypes: ('real' | 'text')[] = [];
         let tableReady = false;
         let inserted = 0;
         let dataLineIndex = 0;

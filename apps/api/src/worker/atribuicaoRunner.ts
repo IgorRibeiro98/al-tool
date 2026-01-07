@@ -2,7 +2,7 @@ import db from '../db/knex';
 import * as atribuicaoRepo from '../repos/atribuicaoRunsRepository';
 
 const LOG_PREFIX = '[atribuicaoRunner]';
-const BATCH_SIZE = 500;
+const BATCH_SIZE = 50; // SQLite SQLITE_LIMIT_COMPOUND_SELECT=500, keep rows × cols < 500
 const PAGE_SIZE = 1000;
 const EXIT_MISSING_ARG = 2;
 const EXIT_RUN_NOT_FOUND = 3;

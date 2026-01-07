@@ -6,7 +6,11 @@ import { Knex } from 'knex';
     Finds pairs (A,B) within the same table where column_sum(A) + column_sum(B) ~= 0
     and inserts conciliacao_marks with group 'Conciliado_Estorno'.
     
-    OPTIMIZED: Uses streaming/pagination to avoid loading entire table into memory.
+    OPTIMIZED v2: 
+    - Uses O(n) matching algorithm via soma-indexed lookup instead of O(n²) nested loops
+    - Streaming/pagination to avoid loading entire table into memory at once
+    - Batch inserts with larger chunks
+    - Single timestamp for all marks in a batch
 */
 
 const LOG_PREFIX = '[EstornoBaseA]';
@@ -14,8 +18,10 @@ const GROUP_ESTORNO = 'Conciliado_Estorno' as const;
 const STATUS_CONCILIADO = '01_Conciliado' as const;
 const GROUP_DOC_ESTORNADOS = 'Documentos estornados' as const;
 const STATUS_NAO_AVALIADO = '04_Não Avaliado' as const;
-const INSERT_CHUNK = 500;
-const PAGE_SIZE = 5000;
+const INSERT_CHUNK = 50; // SQLite SQLITE_LIMIT_COMPOUND_SELECT=500, 6 cols × 50 rows = 300 < 500
+const PAGE_SIZE = 10000;
+// Precision for soma indexing (to handle floating point)
+const SOMA_PRECISION = 100; // 2 decimal places
 
 interface ConfigEstorno {
     readonly id: number;
@@ -34,6 +40,7 @@ interface BaseRow {
 interface IndexEntry {
     readonly id: number;
     readonly soma: number;
+    paired: boolean; // mutable for tracking
 }
 
 interface MarkEntry {
@@ -62,8 +69,15 @@ export class EstornoBaseAStep implements PipelineStep {
         return String(value);
     }
 
-    private async chunkInsertMarks(entries: MarkEntry[]): Promise<void> {
-        if (entries.length === 0) return;
+    /**
+     * Round soma to integer key for indexing (handles floating point comparison)
+     */
+    private somaToKey(soma: number): number {
+        return Math.round(soma * SOMA_PRECISION);
+    }
+
+    private async chunkInsertMarks(entries: MarkEntry[]): Promise<number> {
+        if (entries.length === 0) return 0;
 
         // Deduplicate entries within the batch (same base_id, row_id, grupo)
         const seen = new Set<string>();
@@ -76,17 +90,81 @@ export class EstornoBaseAStep implements PipelineStep {
             }
         }
 
+        let inserted = 0;
         for (let i = 0; i < uniqueEntries.length; i += INSERT_CHUNK) {
             const slice = uniqueEntries.slice(i, i + INSERT_CHUNK);
             await this.db('conciliacao_marks')
                 .insert(slice)
                 .onConflict(['base_id', 'row_id', 'grupo'])
                 .ignore();
+            inserted += slice.length;
         }
+        return inserted;
+    }
+
+    /**
+     * O(n) matching algorithm using soma-indexed lookup
+     * For each item in listA, look up items in listB whose soma is approximately -soma
+     */
+    private matchPairsOptimized(
+        listA: IndexEntry[],
+        listB: IndexEntry[],
+        limiteZero: number
+    ): Array<{ aId: number; bId: number }> {
+        const pairs: Array<{ aId: number; bId: number }> = [];
+
+        // Build index of listB by rounded soma value
+        // Map from somaKey -> list of entries with that soma
+        const bBySoma = new Map<number, IndexEntry[]>();
+        for (const bItem of listB) {
+            const key = this.somaToKey(bItem.soma);
+            let arr = bBySoma.get(key);
+            if (!arr) {
+                arr = [];
+                bBySoma.set(key, arr);
+            }
+            arr.push(bItem);
+        }
+
+        // For each item in A, find matching B items
+        // We need to check the target key and neighboring keys due to limiteZero tolerance
+        const keyTolerance = Math.ceil(limiteZero * SOMA_PRECISION) + 1;
+
+        for (const aItem of listA) {
+            if (aItem.paired) continue;
+
+            const targetSoma = -aItem.soma;
+            const targetKey = this.somaToKey(targetSoma);
+
+            // Check keys in range [targetKey - keyTolerance, targetKey + keyTolerance]
+            let found = false;
+            for (let k = targetKey - keyTolerance; k <= targetKey + keyTolerance && !found; k++) {
+                const candidates = bBySoma.get(k);
+                if (!candidates) continue;
+
+                for (const bItem of candidates) {
+                    if (bItem.paired) continue;
+                    if (aItem.id === bItem.id) continue;
+
+                    const sum = aItem.soma + bItem.soma;
+                    if (Math.abs(sum) <= limiteZero) {
+                        aItem.paired = true;
+                        bItem.paired = true;
+                        pairs.push({ aId: aItem.id, bId: bItem.id });
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        return pairs;
     }
 
     async execute(ctx: PipelineContext): Promise<void> {
+        const startTime = Date.now();
         const cfgId = ctx.configEstornoId;
+
         if (!cfgId) {
             console.log(`${LOG_PREFIX} No configEstornoId in context, skipping`);
             return;
@@ -129,13 +207,19 @@ export class EstornoBaseAStep implements PipelineStep {
             return;
         }
 
-        // OPTIMIZATION: Build indexes in memory using pagination
-        // Store only minimal data: {id, soma} per key
+        // Get row count for logging
+        const countResult = await this.db(tableName).count('* as cnt').first();
+        const rowCount = Number(countResult?.cnt ?? 0);
+        console.log(`${LOG_PREFIX} Processing ${rowCount.toLocaleString()} rows from ${tableName}`);
+
+        // Build indexes in memory using pagination
+        // Map: key (from colunaA/B) -> list of {id, soma, paired}
         const mapA = new Map<string, IndexEntry[]>();
         const mapB = new Map<string, IndexEntry[]>();
 
-        // Read all rows in pages, building indexes with minimal data
         let lastId = 0;
+        let rowsRead = 0;
+
         while (true) {
             const rows = await this.db
                 .select('id', colunaA, colunaB, colunaSoma)
@@ -158,7 +242,7 @@ export class EstornoBaseAStep implements PipelineStep {
                         arr = [];
                         mapA.set(keyA, arr);
                     }
-                    arr.push({ id, soma });
+                    arr.push({ id, soma, paired: false });
                 }
                 if (keyB) {
                     let arr = mapB.get(keyB);
@@ -166,99 +250,87 @@ export class EstornoBaseAStep implements PipelineStep {
                         arr = [];
                         mapB.set(keyB, arr);
                     }
-                    arr.push({ id, soma });
+                    arr.push({ id, soma, paired: false });
                 }
             }
 
+            rowsRead += rows.length;
             lastId = Number(rows[rows.length - 1].id);
             if (rows.length < PAGE_SIZE) break;
         }
 
-        // Process matches
+        console.log(`${LOG_PREFIX} Built indexes: ${mapA.size} keys in A, ${mapB.size} keys in B`);
+
+        // Process matches using optimized algorithm
         const markEntries: MarkEntry[] = [];
         let groupCounter = 0;
+        let pairsFound = 0;
+        let unpairedCount = 0;
         const jobIdPart = ctx.jobId ? `${ctx.jobId}_` : '';
+        const batchTimestamp = Date.now();
+        const nowFn = this.db.fn.now();
 
         for (const [key, listA] of mapA.entries()) {
             const listB = mapB.get(key);
             if (!listB) continue;
 
-            // Track rows that found a zero-sum partner within this key
-            const pairedInKeyA = new Set<number>();
-            const pairedInKeyB = new Set<number>();
+            // Use optimized O(n) matching
+            const pairs = this.matchPairsOptimized(listA, listB, limiteZero);
+            pairsFound += pairs.length;
 
-            // Match rows where sum ~= 0
-            for (const aItem of listA) {
-                if (pairedInKeyA.has(aItem.id)) continue;
+            // Create marks for matched pairs
+            for (const { aId, bId } of pairs) {
+                const chave = `${jobIdPart}${key}_${batchTimestamp}_${groupCounter++}`;
 
-                for (const bItem of listB) {
-                    if (aItem.id === bItem.id) continue;
-                    if (pairedInKeyB.has(bItem.id)) continue;
-
-                    const sum = aItem.soma + bItem.soma;
-                    if (Math.abs(sum) <= limiteZero) {
-                        const chave = `${jobIdPart}${key}_${Date.now()}_${groupCounter++}`;
-
-                        pairedInKeyA.add(aItem.id);
-                        pairedInKeyB.add(bItem.id);
-
-                        markEntries.push({
-                            base_id: baseId,
-                            row_id: aItem.id,
-                            status: STATUS_CONCILIADO,
-                            grupo: GROUP_ESTORNO,
-                            chave,
-                            created_at: this.db.fn.now()
-                        });
-                        markEntries.push({
-                            base_id: baseId,
-                            row_id: bItem.id,
-                            status: STATUS_CONCILIADO,
-                            grupo: GROUP_ESTORNO,
-                            chave,
-                            created_at: this.db.fn.now()
-                        });
-
-                        // Flush periodically to keep memory bounded
-                        if (markEntries.length >= INSERT_CHUNK * 2) {
-                            await this.chunkInsertMarks(markEntries);
-                            markEntries.length = 0;
-                        }
-
-                        break; // Move to next aItem after finding a match
-                    }
-                }
+                markEntries.push({
+                    base_id: baseId,
+                    row_id: aId,
+                    status: STATUS_CONCILIADO,
+                    grupo: GROUP_ESTORNO,
+                    chave,
+                    created_at: nowFn
+                });
+                markEntries.push({
+                    base_id: baseId,
+                    row_id: bId,
+                    status: STATUS_CONCILIADO,
+                    grupo: GROUP_ESTORNO,
+                    chave,
+                    created_at: nowFn
+                });
             }
 
             // Mark unpaired rows as "Documentos estornados"
             for (const aItem of listA) {
-                if (pairedInKeyA.has(aItem.id)) continue;
-                const chave = `${jobIdPart}${key}_docest_${Date.now()}_${groupCounter++}`;
+                if (aItem.paired) continue;
+                const chave = `${jobIdPart}${key}_docest_${batchTimestamp}_${groupCounter++}`;
                 markEntries.push({
                     base_id: baseId,
                     row_id: aItem.id,
                     status: STATUS_NAO_AVALIADO,
                     grupo: GROUP_DOC_ESTORNADOS,
                     chave,
-                    created_at: this.db.fn.now()
+                    created_at: nowFn
                 });
+                unpairedCount++;
             }
 
             for (const bItem of listB) {
-                if (pairedInKeyB.has(bItem.id)) continue;
-                const chave = `${jobIdPart}${key}_docest_${Date.now()}_${groupCounter++}`;
+                if (bItem.paired) continue;
+                const chave = `${jobIdPart}${key}_docest_${batchTimestamp}_${groupCounter++}`;
                 markEntries.push({
                     base_id: baseId,
                     row_id: bItem.id,
                     status: STATUS_NAO_AVALIADO,
                     grupo: GROUP_DOC_ESTORNADOS,
                     chave,
-                    created_at: this.db.fn.now()
+                    created_at: nowFn
                 });
+                unpairedCount++;
             }
 
-            // Flush periodically
-            if (markEntries.length >= INSERT_CHUNK * 2) {
+            // Flush periodically to keep memory bounded
+            if (markEntries.length >= INSERT_CHUNK * 4) {
                 await this.chunkInsertMarks(markEntries);
                 markEntries.length = 0;
             }
@@ -268,6 +340,9 @@ export class EstornoBaseAStep implements PipelineStep {
         if (markEntries.length > 0) {
             await this.chunkInsertMarks(markEntries);
         }
+
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        console.log(`${LOG_PREFIX} Completed in ${elapsed}s - ${pairsFound} pairs matched, ${unpairedCount} unpaired rows marked`);
     }
 }
 

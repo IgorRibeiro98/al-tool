@@ -1,9 +1,19 @@
 import { PipelineStep, PipelineContext } from '../index';
 import { Knex } from 'knex';
 
+/*
+    Cancelamento step for Base B (fiscal).
+    Marks rows where indicator column matches canceled value as 'NF Cancelada'.
+    
+    OPTIMIZED v2:
+    - Uses INSERT ... SELECT to avoid loading all IDs into memory
+    - Single query for finding and inserting marks
+    - Batch processing for very large result sets
+*/
+
 const GROUP_NF_CANCELADA = 'NF Cancelada' as const;
 const STATUS_NAO_AVALIADO = '04_Não Avaliado' as const;
-const INSERT_CHUNK = 500;
+const BATCH_SIZE = 10000;
 const LOG_PREFIX = '[CancelamentoBaseB]';
 
 interface ConfigCancelamentoRow {
@@ -40,70 +50,131 @@ export class CancelamentoBaseBStep implements PipelineStep {
         return base ?? null;
     }
 
-    private async fetchCanceledRowIds(tableName: string, indicatorColumn: string, canceledValue: string): Promise<number[]> {
-        // Normalize value and compare using lower(trim(ifnull(...))) to handle whitespace and case differences.
+    /**
+     * Count rows that match the canceled value
+     */
+    private async countCanceledRows(tableName: string, indicatorColumn: string, canceledValue: string): Promise<number> {
         const val = canceledValue.trim().toLowerCase();
-        if (val === '') return [];
+        if (val === '') return 0;
 
-        // Use identifier binding (??) to safely inject column name into raw SQL
-        const rows = await this.db.select('id').from(tableName).whereRaw("lower(trim(ifnull(??, ''))) = ?", [indicatorColumn, val]);
-        return rows
-            .map((r: { id?: number | string }) => Number(r.id))
-            .filter((id): id is number => !isNaN(id) && id > 0);
+        const result = await this.db(tableName)
+            .count('* as cnt')
+            .whereRaw("lower(trim(ifnull(??, ''))) = ?", [indicatorColumn, val])
+            .first();
+
+        return Number(result?.cnt ?? 0);
     }
 
-    private async fetchExistingMarks(baseId: number, rowIds: number[], grupo = GROUP_NF_CANCELADA): Promise<Set<number>> {
-        if (rowIds.length === 0) return new Set<number>();
+    /**
+     * Insert marks for all canceled rows that don't already have marks.
+     * Uses INSERT ... SELECT for efficiency - no data loaded into JS memory.
+     * Returns number of rows inserted.
+     */
+    private async insertMarksDirectly(
+        baseId: number,
+        tableName: string,
+        indicatorColumn: string,
+        canceledValue: string
+    ): Promise<number> {
+        const val = canceledValue.trim().toLowerCase();
+        if (val === '') return 0;
 
-        // Paginate whereIn for large arrays to avoid SQLite limits
-        const result = new Set<number>();
-        for (let i = 0; i < rowIds.length; i += INSERT_CHUNK) {
-            const chunk = rowIds.slice(i, i + INSERT_CHUNK);
-            const existing = await this.db('conciliacao_marks')
-                .select('row_id')
-                .where({ base_id: baseId, grupo })
-                .whereIn('row_id', chunk);
-            for (const r of existing) result.add(Number(r.row_id));
-        }
-        return result;
+        // Use raw SQL for INSERT ... SELECT with NOT EXISTS
+        // This avoids loading any row data into JavaScript
+        const sql = `
+            INSERT OR IGNORE INTO conciliacao_marks (base_id, row_id, status, grupo, chave, created_at)
+            SELECT 
+                ? as base_id,
+                t.id as row_id,
+                ? as status,
+                ? as grupo,
+                NULL as chave,
+                datetime('now') as created_at
+            FROM "${tableName}" t
+            WHERE lower(trim(ifnull(t."${indicatorColumn}", ''))) = ?
+            AND NOT EXISTS (
+                SELECT 1 FROM conciliacao_marks m 
+                WHERE m.base_id = ? 
+                AND m.row_id = t.id 
+                AND m.grupo = ?
+            )
+        `;
+
+        const result = await this.db.raw(sql, [
+            baseId,
+            STATUS_NAO_AVALIADO,
+            GROUP_NF_CANCELADA,
+            val,
+            baseId,
+            GROUP_NF_CANCELADA
+        ]);
+
+        return result?.changes ?? 0;
     }
 
-    private async insertMarks(baseId: number, rowIds: number[], status = STATUS_NAO_AVALIADO, grupo = GROUP_NF_CANCELADA): Promise<number> {
-        if (rowIds.length === 0) return 0;
+    /**
+     * For very large tables, use batched INSERT ... SELECT by ID range
+     * to avoid long-running single transactions
+     */
+    private async insertMarksBatched(
+        baseId: number,
+        tableName: string,
+        indicatorColumn: string,
+        canceledValue: string
+    ): Promise<number> {
+        const val = canceledValue.trim().toLowerCase();
+        if (val === '') return 0;
 
-        const chunks: number[][] = [];
-        for (let i = 0; i < rowIds.length; i += INSERT_CHUNK) {
-            chunks.push(rowIds.slice(i, i + INSERT_CHUNK));
+        // Get max ID for batching
+        const maxIdResult = await this.db(tableName).max('id as maxId').first();
+        const maxId = Number(maxIdResult?.maxId ?? 0);
+
+        if (maxId === 0) return 0;
+
+        let totalInserted = 0;
+
+        for (let startId = 0; startId <= maxId; startId += BATCH_SIZE) {
+            const endId = startId + BATCH_SIZE;
+
+            const sql = `
+                INSERT OR IGNORE INTO conciliacao_marks (base_id, row_id, status, grupo, chave, created_at)
+                SELECT 
+                    ? as base_id,
+                    t.id as row_id,
+                    ? as status,
+                    ? as grupo,
+                    NULL as chave,
+                    datetime('now') as created_at
+                FROM "${tableName}" t
+                WHERE t.id > ? AND t.id <= ?
+                AND lower(trim(ifnull(t."${indicatorColumn}", ''))) = ?
+                AND NOT EXISTS (
+                    SELECT 1 FROM conciliacao_marks m 
+                    WHERE m.base_id = ? 
+                    AND m.row_id = t.id 
+                    AND m.grupo = ?
+                )
+            `;
+
+            const result = await this.db.raw(sql, [
+                baseId,
+                STATUS_NAO_AVALIADO,
+                GROUP_NF_CANCELADA,
+                startId,
+                endId,
+                val,
+                baseId,
+                GROUP_NF_CANCELADA
+            ]);
+
+            totalInserted += result?.changes ?? 0;
         }
 
-        let insertedCount = 0;
-
-        // Use transaction for atomicity - all or nothing
-        await this.db.transaction(async trx => {
-            for (const chunk of chunks) {
-                const inserts = chunk.map(rid => ({
-                    base_id: baseId,
-                    row_id: rid,
-                    status,
-                    grupo,
-                    chave: null,
-                    created_at: trx.fn.now()
-                }));
-
-                // Idempotent insert - ignore if already exists
-                await trx('conciliacao_marks')
-                    .insert(inserts)
-                    .onConflict(['base_id', 'row_id', 'grupo'])
-                    .ignore();
-
-                insertedCount += chunk.length;
-            }
-        });
-
-        return insertedCount;
+        return totalInserted;
     }
 
     async execute(ctx: PipelineContext): Promise<void> {
+        const startTime = Date.now();
         const cfgId = ctx.configCancelamentoId as number | undefined | null;
 
         // Determine baseId first (from ctx or from cfg fallback)
@@ -172,24 +243,30 @@ export class CancelamentoBaseBStep implements PipelineStep {
             return;
         }
 
-        const canceledRowIds = await this.fetchCanceledRowIds(tableName, indicatorColumn, canceledValueStr);
-        if (canceledRowIds.length === 0) {
-            console.log(`${LOG_PREFIX} No rows found with canceled value "${canceledValueStr}" in column ${indicatorColumn}`);
+        // Get row count to decide on strategy
+        const countResult = await this.db(tableName).count('* as cnt').first();
+        const rowCount = Number(countResult?.cnt ?? 0);
+
+        // Count canceled rows for logging
+        const canceledCount = await this.countCanceledRows(tableName, indicatorColumn, canceledValueStr);
+        console.log(`${LOG_PREFIX} Processing ${tableName} (${rowCount.toLocaleString()} rows, ${canceledCount.toLocaleString()} with canceled value "${canceledValueStr}")`);
+
+        if (canceledCount === 0) {
+            console.log(`${LOG_PREFIX} No rows found with canceled value - nothing to do`);
             return;
         }
 
-        const existing = await this.fetchExistingMarks(baseId, canceledRowIds);
-        const missing = canceledRowIds.filter(id => !existing.has(id));
-
-        console.log(`${LOG_PREFIX} Found ${canceledRowIds.length} canceled rows, ${existing.size} already marked, ${missing.length} new marks to insert`);
-
-        if (missing.length === 0) {
-            console.log(`${LOG_PREFIX} All canceled rows already marked - nothing to do`);
-            return;
+        // Use batched approach for large tables, direct for smaller ones
+        let inserted: number;
+        if (rowCount > 500000) {
+            console.log(`${LOG_PREFIX} Using batched insert strategy for large table`);
+            inserted = await this.insertMarksBatched(baseId, tableName, indicatorColumn, canceledValueStr);
+        } else {
+            inserted = await this.insertMarksDirectly(baseId, tableName, indicatorColumn, canceledValueStr);
         }
 
-        await this.insertMarks(baseId, missing);
-        console.log(`${LOG_PREFIX} Inserted ${missing.length} new marks for base ${baseId}`);
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        console.log(`${LOG_PREFIX} Completed in ${elapsed}s - inserted ${inserted} new marks (${canceledCount - inserted} already existed)`);
     }
 }
 

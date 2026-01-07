@@ -66,10 +66,43 @@ const BASE_B_STYLES = {
 const LOG_PREFIX = '[conciliacao-export]';
 const ZIP_COMPRESSION_LEVEL = 9;
 const WORKBOOK_OPTIONS = { useStyles: true, useSharedStrings: true } as const;
-const EXPORT_CHUNK_SIZE = 1000; // rows per DB fetch when chunking exports
+const EXPORT_CHUNK_SIZE = 10000; // rows per DB fetch when chunking exports (increased for 800k+ tables)
+const STREAM_BATCH_SIZE = 5000; // rows to buffer before writing to Excel
+const TEMP_INDEX_THRESHOLD = 50000; // create temp indexes for tables larger than this
 
 function createWorkbookWriter(filePath: string) {
     return new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, ...WORKBOOK_OPTIONS });
+}
+
+// Pre-compiled regex for performance (avoid recompiling on every call)
+const NUMERIC_TYPE_REGEX = /INT|REAL|NUM|DEC|DOUBLE|FLOAT/i;
+const DATE_TYPE_REGEX = /DATE/i;
+const ISO_DATE_REGEX = /^(\d{4})-(\d{2})-(\d{2})(?:[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z)?)?$/;
+const BR_DATE_REGEX = /^\d{2}\/\d{2}\/\d{4}$/;
+const THOUSAND_SEP_REGEX = /\./g;
+const DECIMAL_SEP_REGEX = /,/g;
+
+/**
+ * Create temporary index on result table join columns for faster JOINs.
+ * Returns index name if created, null otherwise.
+ */
+async function createTempIndexIfNeeded(resultTable: string, column: string, rowCount: number): Promise<string | null> {
+    if (rowCount < TEMP_INDEX_THRESHOLD) return null;
+    const indexName = `idx_temp_export_${resultTable}_${column}_${Date.now()}`;
+    try {
+        await db.raw(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${resultTable}" ("${column}")`);
+        return indexName;
+    } catch (err) {
+        console.warn(`${LOG_PREFIX} Could not create temp index ${indexName}:`, err);
+        return null;
+    }
+}
+
+async function dropTempIndex(indexName: string | null): Promise<void> {
+    if (!indexName) return;
+    try {
+        await db.raw(`DROP INDEX IF EXISTS "${indexName}"`);
+    } catch { /* ignore */ }
 }
 
 function styleHeaderRow(row: ExcelJS.Row, headerColor: string) {
@@ -117,7 +150,7 @@ function parseMappingPairs(raw: any): MappingPair[] {
         })
         .filter((item: MappingPair) => item.coluna_contabil.length > 0 && item.coluna_fiscal.length > 0);
 }
-    
+
 export async function exportJobResultToXlsx(jobId: number) {
     const job = await jobsRepo.getJobById(jobId);
     if (!job) throw new Error('job not found');
@@ -181,7 +214,7 @@ export async function exportJobResultToXlsx(jobId: number) {
 
                 const excelRow = sheet.addRow(rowArr);
                 applyAlternateRowShading(excelRow, (rowIndex % 2) === 0, null, 'FFF2F2F2');
-                try { applyMonetaryFormattingToRow(excelRow, monetaryIndexes); } catch (e) {}
+                try { applyMonetaryFormattingToRow(excelRow, monetaryIndexes); } catch (e) { }
                 excelRow.commit();
                 lastId = Number(r.id) || lastId;
                 rowIndex += 1;
@@ -355,7 +388,7 @@ function applyMonetaryFormattingToRow(row: ExcelJS.Row, monetaryIndexes: number[
                     continue;
                 }
                 // Replace thousand separators and unify decimal separator to dot
-                const onlyDigits = trimmed.replace(/\./g, '').replace(/,/g, '.');
+                const onlyDigits = trimmed.replace(THOUSAND_SEP_REGEX, '').replace(DECIMAL_SEP_REGEX, '.');
                 const n = Number(onlyDigits);
                 if (Number.isFinite(n)) {
                     cell.value = n;
@@ -382,13 +415,12 @@ function applyMonetaryFormattingToRow(row: ExcelJS.Row, monetaryIndexes: number[
 
 function isNumericType(sqliteType?: string | null) {
     if (!sqliteType || typeof sqliteType !== 'string') return false;
-    const t = sqliteType.toUpperCase();
-    return /INT|REAL|NUM|DEC|DOUBLE|FLOAT/.test(t);
+    return NUMERIC_TYPE_REGEX.test(sqliteType);
 }
 
 function isDateType(sqliteType?: string | null) {
     if (!sqliteType || typeof sqliteType !== 'string') return false;
-    return sqliteType.toUpperCase().includes('DATE');
+    return DATE_TYPE_REGEX.test(sqliteType);
 }
 
 function formatDateForExport(value: any) {
@@ -401,8 +433,8 @@ function formatDateForExport(value: any) {
 
     if (typeof value === 'string') {
         const trimmed = value.trim();
-        if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmed)) return trimmed;
-        const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (BR_DATE_REGEX.test(trimmed)) return trimmed;
+        const isoMatch = trimmed.match(ISO_DATE_REGEX);
         if (isoMatch) {
             const [, y, m, d] = isoMatch;
             return `${d}/${m}/${y}`;
@@ -419,14 +451,14 @@ function formatIfDateLike(value: any) {
 
     const trimmed = value.trim();
     // Accept pure date (YYYY-MM-DD) or ISO-like with time (YYYY-MM-DDTHH:mm:ss[.SSS][Z])
-    const isoLike = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z)?)?$/);
+    const isoLike = trimmed.match(ISO_DATE_REGEX);
     if (isoLike) {
         const [, y, m, d] = isoLike;
         return `${d}/${m}/${y}`;
     }
 
     // Already formatted
-    if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmed)) return trimmed;
+    if (BR_DATE_REGEX.test(trimmed)) return trimmed;
 
     return value;
 }
@@ -468,6 +500,10 @@ function buildColumnMapping(metaA: BaseSheetMetadata, metaB: BaseSheetMetadata, 
     return mapping;
 }
 
+/**
+ * Stream base rows with pagination for better performance on large tables.
+ * Uses cursor-based pagination (id > lastId) instead of loading entire JOIN result.
+ */
 async function streamBaseRows(params: {
     meta: BaseSheetMetadata;
     side: 'A' | 'B';
@@ -477,47 +513,99 @@ async function streamBaseRows(params: {
 }) {
     const { meta, side, resultTable, keyIds, onRow } = params;
     const sqliteCols = meta.columns.map((col) => col.sqliteName);
-    const selectCols = sqliteCols.map((col) => `${meta.tableName}.${col}`);
-    const joinCondition = side === 'A'
-        ? `${resultTable}.a_row_id = ${meta.tableName}.id`
-        : `${resultTable}.b_row_id = ${meta.tableName}.id`;
+    const joinColumn = side === 'A' ? 'a_row_id' : 'b_row_id';
+
+    // Get row count for progress/optimization decisions
+    const countResult = await db(meta.tableName).count('* as cnt').first();
+    const rowCount = Number(countResult?.cnt) || 0;
+    console.log(`${LOG_PREFIX} streamBaseRows(${side}): ${rowCount} rows in ${meta.tableName}`);
+
+    // Create temp index on result table join column for faster lookups
+    const tempIndex = await createTempIndexIfNeeded(resultTable, joinColumn, rowCount);
 
     const keyAlias = (key: string) => `__key_${key}`;
-    const keySelects = keyIds.map((key) => db.raw('??.?? as ??', [resultTable, key, keyAlias(key)]));
     const statusAlias = '__status';
     const chaveAlias = '__chave';
     const grupoAlias = '__grupo';
 
-    const selectPieces: any[] = [
-        ...selectCols,
-        ...keySelects,
-        db.raw('??.?? as ??', [resultTable, 'status', statusAlias]),
-        db.raw('??.?? as ??', [resultTable, 'chave', chaveAlias]),
-        db.raw('??.?? as ??', [resultTable, 'grupo', grupoAlias]),
-    ];
-
-    const query = db.select(selectPieces)
-        .from(meta.tableName)
-        .leftJoin(resultTable, db.raw(joinCondition))
-        .orderBy(`${meta.tableName}.id`, 'asc');
-
-    const stream: any = await (query as any).stream();
     try {
-        for await (const row of stream) {
-            const baseValues: Record<string, any> = {};
-            for (const col of sqliteCols) baseValues[col] = row[col];
-            const keyValues: Record<string, any> = {};
-            for (const key of keyIds) keyValues[key] = row[keyAlias(key)] ?? null;
-            await onRow({
-                baseValues,
-                keyValues,
-                status: row[statusAlias] ?? null,
-                chave: row[chaveAlias] ?? null,
-                grupo: row[grupoAlias] ?? null,
-            });
+        let lastId = 0;
+        let processed = 0;
+        const startTime = Date.now();
+
+        while (true) {
+            // Paginated query: fetch base rows in chunks, then batch lookup result data
+            const baseRows: any[] = await db
+                .select(['id', ...sqliteCols])
+                .from(meta.tableName)
+                .where('id', '>', lastId)
+                .orderBy('id', 'asc')
+                .limit(EXPORT_CHUNK_SIZE);
+
+            if (!baseRows || baseRows.length === 0) break;
+
+            // Collect IDs for batch lookup in result table
+            const ids = baseRows.map(r => Number(r.id));
+
+            // Batch fetch result data for these IDs
+            const resultSelectCols = [
+                joinColumn,
+                ...keyIds,
+                'status',
+                'chave',
+                'grupo'
+            ];
+            const resultRows: any[] = await db
+                .select(resultSelectCols)
+                .from(resultTable)
+                .whereIn(joinColumn, ids);
+
+            // Build lookup map for fast access
+            const resultMap = new Map<number, any>();
+            for (const r of resultRows) {
+                resultMap.set(Number(r[joinColumn]), r);
+            }
+
+            // Process each base row with its result data
+            for (const baseRow of baseRows) {
+                const id = Number(baseRow.id);
+                const resultData = resultMap.get(id);
+
+                const baseValues: Record<string, any> = {};
+                for (const col of sqliteCols) baseValues[col] = baseRow[col];
+
+                const keyValues: Record<string, any> = {};
+                for (const key of keyIds) {
+                    keyValues[key] = resultData ? (resultData[key] ?? null) : null;
+                }
+
+                await onRow({
+                    baseValues,
+                    keyValues,
+                    status: resultData ? (resultData.status ?? null) : null,
+                    chave: resultData ? (resultData.chave ?? null) : null,
+                    grupo: resultData ? (resultData.grupo ?? null) : null,
+                });
+            }
+
+            lastId = ids[ids.length - 1] || lastId;
+            processed += baseRows.length;
+
+            // Progress log every 50k rows
+            if (processed % 50000 === 0) {
+                const elapsed = Date.now() - startTime;
+                const rate = Math.round(processed / (elapsed / 1000));
+                console.log(`${LOG_PREFIX} streamBaseRows(${side}): processed ${processed}/${rowCount} rows (${rate} rows/sec)`);
+            }
+
+            if (baseRows.length < EXPORT_CHUNK_SIZE) break;
         }
+
+        const totalTime = Date.now() - startTime;
+        console.log(`${LOG_PREFIX} streamBaseRows(${side}): completed ${processed} rows in ${totalTime}ms`);
     } finally {
-        try { stream.destroy && stream.destroy(); } catch (err) { }
+        // Cleanup temp index
+        await dropTempIndex(tempIndex);
     }
 }
 
@@ -529,6 +617,7 @@ async function buildSheetFileForBase(params: {
     keyIds: string[];
     keyHeaders: string[];
 }): Promise<string> {
+    const startTime = Date.now();
     const { jobId, side, meta, resultTable, keyIds, keyHeaders } = params;
     await fs.mkdir(EXPORT_DIR, { recursive: true });
     const fileName = `${side === 'A' ? 'Base_A' : 'Base_B'}_${jobId}.xlsx`;
@@ -550,6 +639,12 @@ async function buildSheetFileForBase(params: {
         .filter(x => Number(x.c.is_monetary) === 1)
         .map(x => x.i + 1);
 
+    // Pre-compute column info for faster row processing
+    const colInfo = meta.columns.map(col => ({
+        sqliteName: col.sqliteName,
+        sqliteType: col.sqliteType
+    }));
+
     try {
         await streamBaseRows({
             meta,
@@ -557,19 +652,24 @@ async function buildSheetFileForBase(params: {
             resultTable,
             keyIds,
             onRow: (row) => {
-                const rowArr = meta.columns.map((col) => {
-                    const value = row.baseValues[col.sqliteName];
-                    return coerceValue(value, col.sqliteType);
-                });
-                for (const key of keyIds) rowArr.push(row.keyValues[key] ?? null);
-                rowArr.push(row.status ?? null);
-                rowArr.push(row.chave ?? null);
-                rowArr.push(row.grupo ?? null);
+                // Optimized row building - avoid map() overhead
+                const rowArr: any[] = new Array(colInfo.length + keyIds.length + 3);
+                for (let i = 0; i < colInfo.length; i++) {
+                    const ci = colInfo[i];
+                    rowArr[i] = coerceValue(row.baseValues[ci.sqliteName], ci.sqliteType);
+                }
+                let idx = colInfo.length;
+                for (const key of keyIds) rowArr[idx++] = row.keyValues[key] ?? null;
+                rowArr[idx++] = row.status ?? null;
+                rowArr[idx++] = row.chave ?? null;
+                rowArr[idx] = row.grupo ?? null;
 
                 const excelRow = sheet.addRow(rowArr);
                 const isEven = (rowIndex % 2) === 0;
                 applyAlternateRowShading(excelRow, isEven, styles.rowColor1, styles.rowColor2);
-                try { applyMonetaryFormattingToRow(excelRow, baseMonetaryIndexes); } catch (e) { }
+                if (baseMonetaryIndexes.length > 0) {
+                    try { applyMonetaryFormattingToRow(excelRow, baseMonetaryIndexes); } catch (e) { }
+                }
                 excelRow.commit();
                 rowIndex += 1;
             }
@@ -579,6 +679,7 @@ async function buildSheetFileForBase(params: {
         await workbook.commit();
     }
 
+    console.log(`${LOG_PREFIX} buildSheetFileForBase(${side}): created ${filePath} with ${rowIndex - 2} rows in ${Date.now() - startTime}ms`);
     return filePath;
 }
 
@@ -591,6 +692,7 @@ async function buildCombinedWorkbook(params: {
     keyHeaders: string[];
     mappingPairs: MappingPair[];
 }): Promise<string> {
+    const startTime = Date.now();
     const { jobId, metaA, metaB, resultTable, keyIds, keyHeaders, mappingPairs } = params;
     await fs.mkdir(EXPORT_DIR, { recursive: true });
     const fileName = `Base_Comparativo_${jobId}.xlsx`;
@@ -611,6 +713,12 @@ async function buildCombinedWorkbook(params: {
         .filter(x => Number(x.c.is_monetary) === 1)
         .map(x => x.i + 1);
 
+    // Pre-compute column info for faster processing
+    const colInfoA = metaA.columns.map(col => ({
+        sqliteName: col.sqliteName,
+        sqliteType: col.sqliteType
+    }));
+
     try {
         await streamBaseRows({
             meta: metaA,
@@ -618,18 +726,22 @@ async function buildCombinedWorkbook(params: {
             resultTable,
             keyIds,
             onRow: (row) => {
-                const rowArr = metaA.columns.map((col) => {
-                    const value = row.baseValues[col.sqliteName];
-                    return coerceValue(value, col.sqliteType);
-                });
-                for (const key of keyIds) rowArr.push(row.keyValues[key] ?? null);
-                rowArr.push(row.status ?? null);
-                rowArr.push(row.chave ?? null);
-                rowArr.push(row.grupo ?? null);
+                const rowArr: any[] = new Array(colInfoA.length + keyIds.length + 3);
+                for (let i = 0; i < colInfoA.length; i++) {
+                    const ci = colInfoA[i];
+                    rowArr[i] = coerceValue(row.baseValues[ci.sqliteName], ci.sqliteType);
+                }
+                let idx = colInfoA.length;
+                for (const key of keyIds) rowArr[idx++] = row.keyValues[key] ?? null;
+                rowArr[idx++] = row.status ?? null;
+                rowArr[idx++] = row.chave ?? null;
+                rowArr[idx] = row.grupo ?? null;
 
                 const excelRow = sheetResultado.addRow(rowArr);
                 applyAlternateRowShading(excelRow, (rowIndex % 2) === 0, BASE_A_STYLES.rowColor1, BASE_A_STYLES.rowColor2);
-                try { applyMonetaryFormattingToRow(excelRow, monetaryIndexesA); } catch (e) {}
+                if (monetaryIndexesA.length > 0) {
+                    try { applyMonetaryFormattingToRow(excelRow, monetaryIndexesA); } catch (e) { }
+                }
                 excelRow.commit();
                 rowIndex += 1;
             }
@@ -637,29 +749,36 @@ async function buildCombinedWorkbook(params: {
 
         const mapping = buildColumnMapping(metaA, metaB, mappingPairs);
 
+        // Pre-compute mapped column lookups for Base B
+        const mappedColInfo = colInfoA.map(ci => ({
+            mappedCol: mapping.get(ci.sqliteName) || null,
+            sqliteType: ci.sqliteType
+        }));
+
         await streamBaseRows({
             meta: metaB,
             side: 'B',
             resultTable,
             keyIds,
             onRow: (row) => {
-                const rowArr = metaA.columns.map((col) => {
-                    const mappedCol = mapping.get(col.sqliteName);
-                    if (!mappedCol) {
-                        return coerceValue(null, col.sqliteType);
-                    }
-                    const value = row.baseValues[mappedCol];
-                    return coerceValue(value, col.sqliteType);
-                });
-                for (const key of keyIds) rowArr.push(row.keyValues[key] ?? null);
-                rowArr.push(row.status ?? null);
-                rowArr.push(row.chave ?? null);
-                rowArr.push(row.grupo ?? null);
+                const rowArr: any[] = new Array(colInfoA.length + keyIds.length + 3);
+                for (let i = 0; i < mappedColInfo.length; i++) {
+                    const mci = mappedColInfo[i];
+                    const value = mci.mappedCol ? row.baseValues[mci.mappedCol] : null;
+                    rowArr[i] = coerceValue(value, mci.sqliteType);
+                }
+                let idx = colInfoA.length;
+                for (const key of keyIds) rowArr[idx++] = row.keyValues[key] ?? null;
+                rowArr[idx++] = row.status ?? null;
+                rowArr[idx++] = row.chave ?? null;
+                rowArr[idx] = row.grupo ?? null;
 
                 const excelRow = sheetResultado.addRow(rowArr);
                 // apply Base B alternating shading
                 applyAlternateRowShading(excelRow, (rowIndex % 2) === 0, BASE_B_STYLES.rowColor1, BASE_B_STYLES.rowColor2);
-                try { applyMonetaryFormattingToRow(excelRow, monetaryIndexesA); } catch (e) {}
+                if (monetaryIndexesA.length > 0) {
+                    try { applyMonetaryFormattingToRow(excelRow, monetaryIndexesA); } catch (e) { }
+                }
                 excelRow.commit();
                 rowIndex += 1;
             }
@@ -669,6 +788,7 @@ async function buildCombinedWorkbook(params: {
         await workbook.commit();
     }
 
+    console.log(`${LOG_PREFIX} buildCombinedWorkbook: created ${filePath} with ${rowIndex - 2} rows in ${Date.now() - startTime}ms`);
     return filePath;
 }
 

@@ -1,7 +1,8 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Upload, Eye, Trash, X } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
+import { Plus, Upload, Eye, Trash, X, Loader2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FC } from 'react';
@@ -58,6 +59,17 @@ const Bases = () => {
     const [dialogAbsTargetName, setDialogAbsTargetName] = useState<string>('');
     const [dialogInverterTargetName, setDialogInverterTargetName] = useState<string>('');
     const [dialogLoading, setDialogLoading] = useState(false);
+    // Track derived column jobs in progress with their status
+    const [derivedColumnJobs, setDerivedColumnJobs] = useState<Record<string, {
+        jobId: number;
+        baseId: number;
+        op: string;
+        status: string;
+        progress: number;
+        processedRows: number;
+        totalRows: number;
+        error?: string;
+    }>>({});
     const [autoIngestEnabled, setAutoIngestEnabled] = useState<boolean>(() => {
         if (typeof window === 'undefined') return true;
         const stored = window.localStorage.getItem('autoIngestEnabled');
@@ -298,11 +310,24 @@ const Bases = () => {
     const handleCreateAbsColumnDialog = async () => {
         if (!dialogBaseId) return toast.error('Base inválida');
         if (!dialogAbsSourceColumn) return toast.error('Selecione a coluna de origem para ABS');
+        const jobKey = `${dialogBaseId}-ABS`;
         try {
             setDialogLoading(true);
             const resp = await createDerivedColumn(dialogBaseId, dialogAbsSourceColumn as string, 'ABS');
             if (resp.data.background) {
-                // Background job started - poll for completion
+                // Track job in state for visual feedback
+                setDerivedColumnJobs(prev => ({
+                    ...prev,
+                    [jobKey]: {
+                        jobId: resp.data.jobId,
+                        baseId: dialogBaseId,
+                        op: 'ABS',
+                        status: 'RUNNING',
+                        progress: 0,
+                        processedRows: 0,
+                        totalRows: resp.data.rowCount || 0
+                    }
+                }));
                 toast.info(resp.data.message || 'Processamento iniciado em background');
                 pollDerivedColumnJob(dialogBaseId, resp.data.jobId, 'ABS');
             } else {
@@ -320,11 +345,24 @@ const Bases = () => {
     const handleCreateInverterColumnDialog = async () => {
         if (!dialogBaseId) return toast.error('Base inválida');
         if (!dialogInverterSourceColumn) return toast.error('Selecione a coluna de origem para INVERTER');
+        const jobKey = `${dialogBaseId}-INVERTER`;
         try {
             setDialogLoading(true);
             const resp = await createDerivedColumn(dialogBaseId, dialogInverterSourceColumn as string, 'INVERTER');
             if (resp.data.background) {
-                // Background job started - poll for completion
+                // Track job in state for visual feedback
+                setDerivedColumnJobs(prev => ({
+                    ...prev,
+                    [jobKey]: {
+                        jobId: resp.data.jobId,
+                        baseId: dialogBaseId,
+                        op: 'INVERTER',
+                        status: 'RUNNING',
+                        progress: 0,
+                        processedRows: 0,
+                        totalRows: resp.data.rowCount || 0
+                    }
+                }));
                 toast.info(resp.data.message || 'Processamento iniciado em background');
                 pollDerivedColumnJob(dialogBaseId, resp.data.jobId, 'INVERTER');
             } else {
@@ -341,24 +379,51 @@ const Bases = () => {
 
     const pollDerivedColumnJob = async (baseId: number, jobId: number, op: string) => {
         const pollInterval = 2000;
-        let lastProgress = 0;
+        const jobKey = `${baseId}-${op}`;
         const poll = async () => {
             try {
                 const resp = await getDerivedColumnJobStatus(baseId, jobId);
                 const job = resp.data.job;
+
+                // Update state with job progress
+                setDerivedColumnJobs(prev => ({
+                    ...prev,
+                    [jobKey]: {
+                        jobId,
+                        baseId,
+                        op,
+                        status: job.status,
+                        progress: job.progress || 0,
+                        processedRows: job.processed_rows || 0,
+                        totalRows: job.total_rows || 0,
+                        error: job.error
+                    }
+                }));
+
                 if (job.status === 'DONE') {
                     toast.success(`Coluna ${op} criada com sucesso (${job.processed_rows} linhas)`);
+                    // Remove from tracking after a short delay
+                    setTimeout(() => {
+                        setDerivedColumnJobs(prev => {
+                            const updated = { ...prev };
+                            delete updated[jobKey];
+                            return updated;
+                        });
+                    }, 3000);
                     await loadBases({ silent: true });
                     return;
                 }
                 if (job.status === 'FAILED') {
                     toast.error(`Falha ao criar coluna ${op}: ${job.error || 'Erro desconhecido'}`);
+                    // Remove from tracking after a short delay
+                    setTimeout(() => {
+                        setDerivedColumnJobs(prev => {
+                            const updated = { ...prev };
+                            delete updated[jobKey];
+                            return updated;
+                        });
+                    }, 5000);
                     return;
-                }
-                // Still running - show progress if changed
-                if (job.progress > lastProgress) {
-                    lastProgress = job.progress;
-                    toast.info(`${op}: ${job.progress}% concluído (${job.processed_rows}/${job.total_rows})`);
                 }
                 setTimeout(poll, pollInterval);
             } catch (e) {
@@ -473,7 +538,24 @@ const Bases = () => {
                                     </div>
 
                                     <div className="col-span-12 md:col-span-2 flex items-center gap-2 justify-start">
-                                        <Button onClick={handleCreateAbsColumnDialog} disabled={!dialogNewColsSelection.includes('ABS') || !dialogAbsSourceColumn || dialogLoading}>Criar coluna</Button>
+                                        <Button
+                                            onClick={handleCreateAbsColumnDialog}
+                                            disabled={
+                                                !dialogNewColsSelection.includes('ABS') ||
+                                                !dialogAbsSourceColumn ||
+                                                dialogLoading ||
+                                                (dialogBaseId != null && derivedColumnJobs[`${dialogBaseId}-ABS`]?.status === 'RUNNING')
+                                            }
+                                        >
+                                            {dialogBaseId != null && derivedColumnJobs[`${dialogBaseId}-ABS`]?.status === 'RUNNING' ? (
+                                                <>
+                                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                    Processando...
+                                                </>
+                                            ) : (
+                                                'Criar coluna'
+                                            )}
+                                        </Button>
                                         <Button variant="outline" onClick={() => { setDialogNewColsSelection((prev) => prev.filter(p => p !== 'ABS')); setDialogAbsSourceColumn(null); setDialogAbsTargetName(''); }}>Limpar</Button>
                                     </div>
                                 </div>
@@ -511,10 +593,68 @@ const Bases = () => {
 
 
                                     <div className="col-span-12 md:col-span-2 flex items-center gap-2 justify-start">
-                                        <Button onClick={handleCreateInverterColumnDialog} disabled={!dialogNewColsSelection.includes('INVERTER') || !dialogInverterSourceColumn || dialogLoading}>Criar coluna</Button>
+                                        <Button
+                                            onClick={handleCreateInverterColumnDialog}
+                                            disabled={
+                                                !dialogNewColsSelection.includes('INVERTER') ||
+                                                !dialogInverterSourceColumn ||
+                                                dialogLoading ||
+                                                (dialogBaseId != null && derivedColumnJobs[`${dialogBaseId}-INVERTER`]?.status === 'RUNNING')
+                                            }
+                                        >
+                                            {dialogBaseId != null && derivedColumnJobs[`${dialogBaseId}-INVERTER`]?.status === 'RUNNING' ? (
+                                                <>
+                                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                    Processando...
+                                                </>
+                                            ) : (
+                                                'Criar coluna'
+                                            )}
+                                        </Button>
                                         <Button variant="outline" onClick={() => { setDialogNewColsSelection((prev) => prev.filter(p => p !== 'INVERTER')); setDialogInverterSourceColumn(null); setDialogInverterTargetName(''); }}>Limpar</Button>
                                     </div>
                                 </div>
+
+                                {/* Progress indicators for running derived column jobs */}
+                                {dialogBaseId && Object.entries(derivedColumnJobs).filter(([key]) => key.startsWith(`${dialogBaseId}-`)).length > 0 && (
+                                    <div className="space-y-3 pt-4 border-t mt-4">
+                                        <p className="text-sm font-medium text-muted-foreground">Jobs em andamento</p>
+                                        {Object.entries(derivedColumnJobs)
+                                            .filter(([key]) => key.startsWith(`${dialogBaseId}-`))
+                                            .map(([key, job]) => (
+                                                <div key={key} className="space-y-2 p-3 rounded-lg bg-muted/30 border">
+                                                    <div className="flex items-center justify-between">
+                                                        <div className="flex items-center gap-2">
+                                                            {job.status === 'RUNNING' || job.status === 'PENDING' ? (
+                                                                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                                                            ) : job.status === 'DONE' ? (
+                                                                <span className="text-green-500">✓</span>
+                                                            ) : (
+                                                                <span className="text-destructive">✗</span>
+                                                            )}
+                                                            <span className="text-sm font-medium">Coluna {job.op}</span>
+                                                        </div>
+                                                        <span className="text-sm text-muted-foreground">
+                                                            {job.status === 'DONE' ? 'Concluído' :
+                                                                job.status === 'FAILED' ? 'Falhou' :
+                                                                    `${job.progress}%`}
+                                                        </span>
+                                                    </div>
+                                                    {(job.status === 'RUNNING' || job.status === 'PENDING') && (
+                                                        <>
+                                                            <Progress value={job.progress} className="h-2" />
+                                                            <p className="text-xs text-muted-foreground">
+                                                                {job.processedRows.toLocaleString()} / {job.totalRows.toLocaleString()} linhas processadas
+                                                            </p>
+                                                        </>
+                                                    )}
+                                                    {job.status === 'FAILED' && job.error && (
+                                                        <p className="text-xs text-destructive">{job.error}</p>
+                                                    )}
+                                                </div>
+                                            ))}
+                                    </div>
+                                )}
                             </div>
                         </div>
                     </AlertDialogContent>

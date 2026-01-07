@@ -9,10 +9,17 @@ import baseColumnsRepo from '../../../repos/baseColumnsRepository';
     - text empty -> NULL
 
     Monetary columns detected by name heuristics (e.g. 'valor', 'vlr', 'amount', 'preco', 'price', 'total').
+    
+    Performance optimizations for large tables (800k+ rows):
+    - Uses direct SQL UPDATE with CASE expressions instead of row-by-row batches
+    - Groups columns by type (monetary vs non-monetary) to minimize queries
+    - Processes in batches of columns rather than batches of rows
+    - Single transaction for all updates
 */
 
 const IGNORED_COLUMNS = Object.freeze(new Set(['id', 'created_at', 'updated_at']));
-const BATCH_SIZE = 1000;
+const COLUMNS_PER_BATCH = 10; // Number of columns to update in a single query
+const ROWS_BATCH_SIZE = 50000; // For very large tables, process in row batches
 const LOG_PREFIX = '[NullsBaseB]';
 
 interface BaseRow {
@@ -20,37 +27,139 @@ interface BaseRow {
     tabela_sqlite?: string | null;
 }
 
+interface ColumnMeta {
+    sqlite_name: string;
+    is_monetary?: number | null;
+}
+
 export class NullsBaseBStep implements PipelineStep {
     readonly name = 'NullsBaseB';
 
     constructor(private readonly db: Knex) { }
 
-    private async updateNulls(tableName: string, column: string, replacement: unknown): Promise<void> {
-        await this.db.transaction(async trx => {
-            let hasMore = true;
-            while (hasMore) {
-                const ids = await trx(tableName)
-                    .whereNull(column)
-                    .orWhere(column, '')
-                    .limit(BATCH_SIZE)
-                    .pluck('id') as number[];
+    /**
+     * Update multiple columns at once using direct SQL UPDATE.
+     * For monetary columns: empty string or NULL -> 0.0
+     * For non-monetary columns: empty string -> NULL (already NULL stays NULL)
+     */
+    private async updateColumnsDirectly(
+        trx: Knex.Transaction,
+        table: string,
+        monetaryColumns: string[],
+        nonMonetaryColumns: string[]
+    ): Promise<{ monetaryUpdated: number; nonMonetaryUpdated: number }> {
+        let monetaryUpdated = 0;
+        let nonMonetaryUpdated = 0;
 
-                if (!ids || ids.length === 0) {
-                    hasMore = false;
-                    break;
-                }
+        // Update monetary columns: set NULL or empty to 0.0
+        if (monetaryColumns.length > 0) {
+            for (let i = 0; i < monetaryColumns.length; i += COLUMNS_PER_BATCH) {
+                const batch = monetaryColumns.slice(i, i + COLUMNS_PER_BATCH);
 
-                await trx(tableName).whereIn('id', ids).update({ [column]: replacement });
+                const setClauses = batch.map(col => {
+                    const quotedCol = `"${col}"`;
+                    return `${quotedCol} = CASE WHEN ${quotedCol} IS NULL OR ${quotedCol} = '' THEN 0.0 ELSE ${quotedCol} END`;
+                }).join(', ');
 
-                if (ids.length < BATCH_SIZE) {
-                    hasMore = false;
+                const whereConditions = batch.map(col => {
+                    const quotedCol = `"${col}"`;
+                    return `(${quotedCol} IS NULL OR ${quotedCol} = '')`;
+                }).join(' OR ');
+
+                const sql = `UPDATE "${table}" SET ${setClauses} WHERE ${whereConditions}`;
+                const result = await trx.raw(sql);
+                monetaryUpdated += result?.changes ?? 0;
+            }
+        }
+
+        // Update non-monetary columns: set empty string to NULL
+        if (nonMonetaryColumns.length > 0) {
+            for (let i = 0; i < nonMonetaryColumns.length; i += COLUMNS_PER_BATCH) {
+                const batch = nonMonetaryColumns.slice(i, i + COLUMNS_PER_BATCH);
+
+                const setClauses = batch.map(col => {
+                    const quotedCol = `"${col}"`;
+                    return `${quotedCol} = CASE WHEN ${quotedCol} = '' THEN NULL ELSE ${quotedCol} END`;
+                }).join(', ');
+
+                const whereConditions = batch.map(col => `"${col}" = ''`).join(' OR ');
+
+                const sql = `UPDATE "${table}" SET ${setClauses} WHERE ${whereConditions}`;
+                const result = await trx.raw(sql);
+                nonMonetaryUpdated += result?.changes ?? 0;
+            }
+        }
+
+        return { monetaryUpdated, nonMonetaryUpdated };
+    }
+
+    /**
+     * For very large tables, use batched row updates to avoid long locks
+     */
+    private async updateColumnsBatched(
+        trx: Knex.Transaction,
+        table: string,
+        monetaryColumns: string[],
+        nonMonetaryColumns: string[]
+    ): Promise<{ monetaryUpdated: number; nonMonetaryUpdated: number }> {
+        let monetaryUpdated = 0;
+        let nonMonetaryUpdated = 0;
+
+        const maxIdResult = await trx(table).max('id as maxId').first();
+        const maxId = maxIdResult?.maxId ?? 0;
+
+        if (maxId === 0) {
+            return { monetaryUpdated: 0, nonMonetaryUpdated: 0 };
+        }
+
+        for (let startId = 0; startId <= maxId; startId += ROWS_BATCH_SIZE) {
+            const endId = startId + ROWS_BATCH_SIZE;
+
+            if (monetaryColumns.length > 0) {
+                for (let i = 0; i < monetaryColumns.length; i += COLUMNS_PER_BATCH) {
+                    const batch = monetaryColumns.slice(i, i + COLUMNS_PER_BATCH);
+
+                    const setClauses = batch.map(col => {
+                        const quotedCol = `"${col}"`;
+                        return `${quotedCol} = CASE WHEN ${quotedCol} IS NULL OR ${quotedCol} = '' THEN 0.0 ELSE ${quotedCol} END`;
+                    }).join(', ');
+
+                    const whereConditions = batch.map(col => {
+                        const quotedCol = `"${col}"`;
+                        return `(${quotedCol} IS NULL OR ${quotedCol} = '')`;
+                    }).join(' OR ');
+
+                    const sql = `UPDATE "${table}" SET ${setClauses} WHERE id > ${startId} AND id <= ${endId} AND (${whereConditions})`;
+                    const result = await trx.raw(sql);
+                    monetaryUpdated += result?.changes ?? 0;
                 }
             }
-        });
+
+            if (nonMonetaryColumns.length > 0) {
+                for (let i = 0; i < nonMonetaryColumns.length; i += COLUMNS_PER_BATCH) {
+                    const batch = nonMonetaryColumns.slice(i, i + COLUMNS_PER_BATCH);
+
+                    const setClauses = batch.map(col => {
+                        const quotedCol = `"${col}"`;
+                        return `${quotedCol} = CASE WHEN ${quotedCol} = '' THEN NULL ELSE ${quotedCol} END`;
+                    }).join(', ');
+
+                    const whereConditions = batch.map(col => `"${col}" = ''`).join(' OR ');
+
+                    const sql = `UPDATE "${table}" SET ${setClauses} WHERE id > ${startId} AND id <= ${endId} AND (${whereConditions})`;
+                    const result = await trx.raw(sql);
+                    nonMonetaryUpdated += result?.changes ?? 0;
+                }
+            }
+        }
+
+        return { monetaryUpdated, nonMonetaryUpdated };
     }
 
     async execute(ctx: PipelineContext): Promise<void> {
+        const startTime = Date.now();
         const baseId = ctx.baseFiscalId;
+
         if (!baseId) {
             console.log(`${LOG_PREFIX} No baseFiscalId in context, skipping`);
             return;
@@ -76,8 +185,13 @@ export class NullsBaseBStep implements PipelineStep {
             return;
         }
 
+        // Get row count to decide on strategy
+        const countResult = await this.db(tableName).count('* as cnt').first();
+        const rowCount = Number(countResult?.cnt ?? 0);
+        console.log(`${LOG_PREFIX} Processing ${columns.length} columns in ${tableName} (${rowCount.toLocaleString()} rows)`);
+
         // Try to read persisted metadata once
-        let metas: Awaited<ReturnType<typeof baseColumnsRepo.getColumnsForBase>> = [];
+        let metas: ColumnMeta[] = [];
         try {
             metas = await baseColumnsRepo.getColumnsForBase(baseId, { useCache: true, knex: this.db });
         } catch (err) {
@@ -85,17 +199,34 @@ export class NullsBaseBStep implements PipelineStep {
             metas = [];
         }
 
+        // Separate columns by type
+        const monetaryColumns: string[] = [];
+        const nonMonetaryColumns: string[] = [];
+
         for (const col of columns) {
             const meta = metas.find(m => m.sqlite_name === col);
-            const isMonetary = meta?.is_monetary === 1;
-
-            try {
-                const replacement = isMonetary ? 0.0 : 'NULL';
-                await this.updateNulls(tableName, col, replacement);
-            } catch (err) {
-                console.error(`${LOG_PREFIX} Failed updating ${col} on ${tableName}:`, err instanceof Error ? err.message : err);
+            if (meta?.is_monetary === 1) {
+                monetaryColumns.push(col);
+            } else {
+                nonMonetaryColumns.push(col);
             }
         }
+
+        console.log(`${LOG_PREFIX} Columns: ${monetaryColumns.length} monetary, ${nonMonetaryColumns.length} non-monetary`);
+
+        // Use single transaction for all updates
+        const result = await this.db.transaction(async trx => {
+            // For very large tables (500k+ rows), use batched approach to avoid long locks
+            if (rowCount > 500000) {
+                console.log(`${LOG_PREFIX} Using batched update strategy for large table`);
+                return await this.updateColumnsBatched(trx, tableName, monetaryColumns, nonMonetaryColumns);
+            } else {
+                return await this.updateColumnsDirectly(trx, tableName, monetaryColumns, nonMonetaryColumns);
+            }
+        });
+
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        console.log(`${LOG_PREFIX} Completed in ${elapsed}s - monetary updates: ${result.monetaryUpdated}, non-monetary updates: ${result.nonMonetaryUpdated}`);
     }
 }
 

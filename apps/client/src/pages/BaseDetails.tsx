@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ArrowLeft, Trash } from 'lucide-react';
+import { Progress } from "@/components/ui/progress";
+import { ArrowLeft, Trash, Loader2 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
@@ -74,6 +75,17 @@ const BaseDetails = () => {
     const [referenceCandidates, setReferenceCandidates] = useState<any[]>([]);
     const [selectedReference, setSelectedReference] = useState<number | null>(null);
     const [reuseLoading, setReuseLoading] = useState(false);
+    // Track derived column jobs in progress with their status
+    const [derivedColumnJobs, setDerivedColumnJobs] = useState<Record<string, {
+        jobId: number;
+        baseId: number;
+        op: string;
+        status: string;
+        progress: number;
+        processedRows: number;
+        totalRows: number;
+        error?: string;
+    }>>({});
     const pollRef = useRef<number | null>(null);
     const lastBaseRef = useRef<any | null>(null);
 
@@ -240,24 +252,51 @@ const BaseDetails = () => {
 
     const pollDerivedColumnJob = useCallback(async (baseId: number, jobId: number, op: string) => {
         const pollInterval = 2000;
-        let lastProgress = 0;
+        const jobKey = `${baseId}-${op}`;
         const poll = async () => {
             try {
                 const resp = await getDerivedColumnJobStatus(baseId, jobId);
                 const job = resp.data.job;
+
+                // Update state with job progress
+                setDerivedColumnJobs(prev => ({
+                    ...prev,
+                    [jobKey]: {
+                        jobId,
+                        baseId,
+                        op,
+                        status: job.status,
+                        progress: job.progress || 0,
+                        processedRows: job.processed_rows || 0,
+                        totalRows: job.total_rows || 0,
+                        error: job.error
+                    }
+                }));
+
                 if (job.status === 'DONE') {
                     toast.success(`Coluna ${op} criada com sucesso (${job.processed_rows} linhas)`);
+                    // Remove from tracking after a short delay
+                    setTimeout(() => {
+                        setDerivedColumnJobs(prev => {
+                            const updated = { ...prev };
+                            delete updated[jobKey];
+                            return updated;
+                        });
+                    }, 3000);
                     await loadBaseData({ includePreview: true });
                     return;
                 }
                 if (job.status === 'FAILED') {
                     toast.error(`Falha ao criar coluna ${op}: ${job.error || 'Erro desconhecido'}`);
+                    // Remove from tracking after a short delay
+                    setTimeout(() => {
+                        setDerivedColumnJobs(prev => {
+                            const updated = { ...prev };
+                            delete updated[jobKey];
+                            return updated;
+                        });
+                    }, 5000);
                     return;
-                }
-                // Still running - show progress if changed
-                if (job.progress > lastProgress) {
-                    lastProgress = job.progress;
-                    toast.info(`${op}: ${job.progress}% concluído (${job.processed_rows}/${job.total_rows})`);
                 }
                 setTimeout(poll, pollInterval);
             } catch (e) {
@@ -272,11 +311,24 @@ const BaseDetails = () => {
         if (!id) return toast.error('Base inválida');
         if (!absSourceColumn) return toast.error('Selecione a coluna de origem para ABS');
         const numId = Number(id);
+        const jobKey = `${numId}-ABS`;
         try {
             setLoading(true);
             const resp = await createDerivedColumn(numId, absSourceColumn as string, 'ABS');
             if (resp.data.background) {
-                // Background job started - poll for completion
+                // Track job in state for visual feedback
+                setDerivedColumnJobs(prev => ({
+                    ...prev,
+                    [jobKey]: {
+                        jobId: resp.data.jobId,
+                        baseId: numId,
+                        op: 'ABS',
+                        status: 'RUNNING',
+                        progress: 0,
+                        processedRows: 0,
+                        totalRows: resp.data.rowCount || 0
+                    }
+                }));
                 toast.info(resp.data.message || 'Processamento iniciado em background');
                 pollDerivedColumnJob(numId, resp.data.jobId, 'ABS');
             } else {
@@ -295,11 +347,24 @@ const BaseDetails = () => {
         if (!id) return toast.error('Base inválida');
         if (!inverterSourceColumn) return toast.error('Selecione a coluna de origem para INVERTER');
         const numId = Number(id);
+        const jobKey = `${numId}-INVERTER`;
         try {
             setLoading(true);
             const resp = await createDerivedColumn(numId, inverterSourceColumn as string, 'INVERTER');
             if (resp.data.background) {
-                // Background job started - poll for completion
+                // Track job in state for visual feedback
+                setDerivedColumnJobs(prev => ({
+                    ...prev,
+                    [jobKey]: {
+                        jobId: resp.data.jobId,
+                        baseId: numId,
+                        op: 'INVERTER',
+                        status: 'RUNNING',
+                        progress: 0,
+                        processedRows: 0,
+                        totalRows: resp.data.rowCount || 0
+                    }
+                }));
                 toast.info(resp.data.message || 'Processamento iniciado em background');
                 pollDerivedColumnJob(numId, resp.data.jobId, 'INVERTER');
             } else {
@@ -445,7 +510,24 @@ const BaseDetails = () => {
 
 
                                     <div className="col-span-12 md:col-span-3 flex items-center gap-2 justify-start">
-                                        <Button onClick={handleCreateAbsColumn} disabled={!newColsSelection.includes('ABS') || !absSourceColumn || loading}>Criar coluna</Button>
+                                        <Button
+                                            onClick={handleCreateAbsColumn}
+                                            disabled={
+                                                !newColsSelection.includes('ABS') ||
+                                                !absSourceColumn ||
+                                                loading ||
+                                                (id != null && derivedColumnJobs[`${id}-ABS`]?.status === 'RUNNING')
+                                            }
+                                        >
+                                            {id != null && derivedColumnJobs[`${id}-ABS`]?.status === 'RUNNING' ? (
+                                                <>
+                                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                    Processando...
+                                                </>
+                                            ) : (
+                                                'Criar coluna'
+                                            )}
+                                        </Button>
                                         <Button variant="outline" onClick={() => { setNewColsSelection((prev) => prev.filter(p => p !== 'ABS')); setAbsSourceColumn(null); setAbsTargetName(''); }}>Limpar</Button>
                                     </div>
                                 </div>
@@ -486,9 +568,67 @@ const BaseDetails = () => {
 
 
                                     <div className="col-span-12 md:col-span-3 flex items-center gap-2 justify-start">
-                                        <Button onClick={handleCreateInverterColumn} disabled={!newColsSelection.includes('INVERTER') || !inverterSourceColumn || loading}>Criar coluna</Button>
+                                        <Button
+                                            onClick={handleCreateInverterColumn}
+                                            disabled={
+                                                !newColsSelection.includes('INVERTER') ||
+                                                !inverterSourceColumn ||
+                                                loading ||
+                                                (id != null && derivedColumnJobs[`${id}-INVERTER`]?.status === 'RUNNING')
+                                            }
+                                        >
+                                            {id != null && derivedColumnJobs[`${id}-INVERTER`]?.status === 'RUNNING' ? (
+                                                <>
+                                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                    Processando...
+                                                </>
+                                            ) : (
+                                                'Criar coluna'
+                                            )}
+                                        </Button>
                                         <Button variant="outline" onClick={() => { setNewColsSelection((prev) => prev.filter(p => p !== 'INVERTER')); setInverterSourceColumn(null); setInverterTargetName(''); }}>Limpar</Button>
                                     </div>
+                                </div>
+                            )}
+
+                            {/* Progress indicators for running derived column jobs */}
+                            {id && Object.entries(derivedColumnJobs).filter(([key]) => key.startsWith(`${id}-`)).length > 0 && (
+                                <div className="space-y-3 pt-4 border-t mt-4">
+                                    <p className="text-sm font-medium text-muted-foreground">Jobs em andamento</p>
+                                    {Object.entries(derivedColumnJobs)
+                                        .filter(([key]) => key.startsWith(`${id}-`))
+                                        .map(([key, job]) => (
+                                            <div key={key} className="space-y-2 p-3 rounded-lg bg-muted/30 border">
+                                                <div className="flex items-center justify-between">
+                                                    <div className="flex items-center gap-2">
+                                                        {job.status === 'RUNNING' || job.status === 'PENDING' ? (
+                                                            <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                                                        ) : job.status === 'DONE' ? (
+                                                            <span className="text-green-500">✓</span>
+                                                        ) : (
+                                                            <span className="text-destructive">✗</span>
+                                                        )}
+                                                        <span className="text-sm font-medium">Coluna {job.op}</span>
+                                                    </div>
+                                                    <span className="text-sm text-muted-foreground">
+                                                        {job.status === 'DONE' ? 'Concluído' :
+                                                            job.status === 'FAILED' ? 'Falhou' :
+                                                                `${job.progress}%`}
+                                                    </span>
+                                                </div>
+                                                {(job.status === 'RUNNING' || job.status === 'PENDING') && (
+                                                    <>
+                                                        <Progress value={job.progress} className="h-2" />
+                                                        <p className="text-xs text-muted-foreground">
+                                                            {job.processedRows.toLocaleString()} / {job.totalRows.toLocaleString()} linhas processadas
+                                                        </p>
+                                                    </>
+                                                )}
+                                                {job.status === 'FAILED' && job.error && (
+                                                    <p className="text-xs text-destructive">{job.error}</p>
+                                                )}
+                                            </div>
+                                        ))}
                                 </div>
                             )}
                         </div>

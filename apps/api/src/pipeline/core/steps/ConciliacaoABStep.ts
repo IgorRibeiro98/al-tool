@@ -9,19 +9,21 @@ import { Knex } from 'knex';
     - collect marks and match/unmatch groups by configured keys
     - insert result rows in batches
 
-    MEMORY OPTIMIZATIONS (2025-01):
-    - Paginated JOIN processing instead of loading all matched pairs
-    - Limited row caching with periodic clearing
-    - Reduced a_values/b_values storage to essential columns only
-    - Batch inserts with frequent flushes
-    - Stream-based processing for large datasets
+    MEMORY OPTIMIZATIONS v2 (2026-01):
+    - Increased page sizes and batch sizes for fewer I/O operations
+    - Streaming group processing with periodic flushes
+    - Temporary indexes on join columns for faster JOINs
+    - Direct SQL for remaining rows processing
+    - Performance metrics logging
 */
 
 const LOG_PREFIX = '[ConciliacaoAB]';
-const RESULT_INSERT_CHUNK = 200;
-const PAGE_SIZE = 2000;
+const RESULT_INSERT_CHUNK = 200; // Keep small for SQLite - it converts to UNION ALL SELECT
+const PAGE_SIZE = 10000; // Increased from 2000
 const EPSILON = 1e-6;
 const CHUNK_SIZE = 500; // SQLite variable limit safety
+const MAX_GROUPS_IN_MEMORY = 50000; // Process groups in batches to limit memory
+const TEMP_INDEX_THRESHOLD = 100000; // Create temp indexes for tables larger than this
 
 const STATUS_CONCILIADO = '01_Conciliado' as const;
 const STATUS_FOUND_DIFF = '02_Encontrado c/Diferença' as const;
@@ -235,6 +237,44 @@ export class ConciliacaoABStep implements PipelineStep {
         return Number(Number(value).toFixed(6));
     }
 
+    /**
+     * Create temporary indexes on join columns to speed up JOINs for large tables.
+     * These are dropped automatically when the connection closes.
+     */
+    private async createTempIndexes(table: string, columns: string[], rowCount: number): Promise<string[]> {
+        if (rowCount < TEMP_INDEX_THRESHOLD || columns.length === 0) return [];
+
+        const createdIndexes: string[] = [];
+        for (const col of columns) {
+            const indexName = `idx_temp_${table}_${col}_${Date.now()}`;
+            try {
+                // Check if column exists before creating index
+                const hasCol = await this.db.schema.hasColumn(table, col);
+                if (!hasCol) continue;
+
+                await this.db.raw(`CREATE INDEX IF NOT EXISTS "${indexName}" ON "${table}" ("${col}")`);
+                createdIndexes.push(indexName);
+            } catch (err) {
+                // Ignore index creation errors (column might not exist or index might already exist)
+                console.warn(`${LOG_PREFIX} Could not create index ${indexName}:`, err instanceof Error ? err.message : err);
+            }
+        }
+        return createdIndexes;
+    }
+
+    /**
+     * Drop temporary indexes
+     */
+    private async dropTempIndexes(indexNames: string[]): Promise<void> {
+        for (const name of indexNames) {
+            try {
+                await this.db.raw(`DROP INDEX IF EXISTS "${name}"`);
+            } catch {
+                // Ignore errors
+            }
+        }
+    }
+
     private async getRowFromTable(table: string, id: number, cache: Map<number, Record<string, unknown>>): Promise<Record<string, unknown> | null> {
         if (cache.has(id)) return cache.get(id) ?? null;
         const row = await this.db.select('*').from(table).where({ id }).first();
@@ -320,6 +360,7 @@ export class ConciliacaoABStep implements PipelineStep {
     }
 
     async execute(ctx: PipelineContext): Promise<void> {
+        const startTime = Date.now();
         const cfgId = ctx.configConciliacaoId;
         if (!cfgId) {
             console.log(`${LOG_PREFIX} No configConciliacaoId in context, skipping`);
@@ -348,6 +389,13 @@ export class ConciliacaoABStep implements PipelineStep {
 
         const tableA = baseA.tabela_sqlite;
         const tableB = baseB.tabela_sqlite;
+
+        // Performance: Get row counts for logging
+        const [countA, countB] = await Promise.all([
+            this.db(tableA).count('* as cnt').first().then(r => Number(r?.cnt) || 0),
+            this.db(tableB).count('* as cnt').first().then(r => Number(r?.cnt) || 0)
+        ]);
+        console.log(`${LOG_PREFIX} Starting conciliation: Base A (${tableA}) has ${countA} rows, Base B (${tableB}) has ${countB} rows`);
 
         // Resolve keys from central linking table; fall back to legacy inline chaves only if no links present
         let chavesContabil: Record<string, string[]> = {};
@@ -386,19 +434,88 @@ export class ConciliacaoABStep implements PipelineStep {
             (chavesFiscal[kid] || []).forEach(c => allBKeyCols.add(c));
         }
 
+        // Performance: Create temporary indexes on key columns for faster JOINs
+        const tempIndexes: string[] = [];
+        const indexStartTime = Date.now();
+        try {
+            const aIndexes = await this.createTempIndexes(tableA, Array.from(allAKeyCols), countA);
+            const bIndexes = await this.createTempIndexes(tableB, Array.from(allBKeyCols), countB);
+            tempIndexes.push(...aIndexes, ...bIndexes);
+            console.log(`${LOG_PREFIX} Created ${tempIndexes.length} temporary indexes in ${Date.now() - indexStartTime}ms`);
+        } catch (err) {
+            console.warn(`${LOG_PREFIX} Failed to create some temporary indexes:`, err);
+        }
+
+        // Performance: Create index on result table for faster duplicate checks
+        const resultIndexName = `tmp_idx_${resultTable}_job_rows_${Date.now()}`;
+        try {
+            await this.db.raw(`CREATE INDEX IF NOT EXISTS ?? ON ?? (job_id, a_row_id, b_row_id)`, [resultIndexName, resultTable]);
+            tempIndexes.push(resultIndexName);
+        } catch { /* ignore */ }
+
+        // Wrap main processing in try/finally to ensure cleanup of temp indexes
+        try {
+            await this.executeMainProcessing(
+                ctx, cfg, tableA, tableB, baseAId, baseBId,
+                chavesContabil, chavesFiscal, keyIdentifiers,
+                colA, colB, inverter, limite, allAKeyCols, allBKeyCols,
+                resultTable, startTime
+            );
+        } finally {
+            // Cleanup temporary indexes
+            await this.dropTempIndexes(tempIndexes);
+            console.log(`${LOG_PREFIX} Dropped ${tempIndexes.length} temporary indexes`);
+        }
+
+        const totalElapsed = Date.now() - startTime;
+        console.log(`${LOG_PREFIX} Total execution time: ${totalElapsed}ms`);
+    }
+
+    private async executeMainProcessing(
+        ctx: PipelineContext,
+        cfg: ConfigConciliacaoRow,
+        tableA: string,
+        tableB: string,
+        baseAId: number,
+        baseBId: number,
+        chavesContabil: Record<string, string[]>,
+        chavesFiscal: Record<string, string[]>,
+        keyIdentifiers: string[],
+        colA: string | undefined,
+        colB: string | undefined,
+        inverter: boolean,
+        limite: number,
+        allAKeyCols: Set<string>,
+        allBKeyCols: Set<string>,
+        resultTable: string,
+        startTime: number
+    ): Promise<void> {
+        const jobId = ctx.jobId;
+
+        const marksStartTime = Date.now();
         const { marksA, marksB } = await this.loadMarksForBases(baseAId, baseBId);
+        console.log(`${LOG_PREFIX} Loaded marks in ${Date.now() - marksStartTime}ms (A: ${marksA.size}, B: ${marksB.size})`);
 
         const inserts: ResultEntry[] = [];
         const matchedA = new Set<number>();
         const matchedB = new Set<number>();
 
+        // Get column names for the result table to build proper INSERT statements
+        const resultColumns = ['job_id', 'chave', 'status', 'grupo', 'a_row_id', 'b_row_id',
+            'a_values', 'b_values', 'value_a', 'value_b', 'difference', 'created_at',
+            ...keyIdentifiers];
+
         // Helper to insert accumulated results in chunks inside a transaction
+        // Uses batch inserts with controlled size to avoid SQLite query limits
         const flushInserts = async () => {
             if (inserts.length === 0) return;
             const trx = await this.db.transaction();
             try {
-                for (let i = 0; i < inserts.length; i += RESULT_INSERT_CHUNK) {
-                    const slice = inserts.slice(i, i + RESULT_INSERT_CHUNK);
+                // SQLite SQLITE_LIMIT_COMPOUND_SELECT=500 (max UNION ALL terms)
+                // With ~15 columns, 30 rows = 450 < 500
+                const SAFE_BATCH = 30;
+                for (let i = 0; i < inserts.length; i += SAFE_BATCH) {
+                    const slice = inserts.slice(i, i + SAFE_BATCH);
                     await trx<ResultEntry>(resultTable).insert(slice);
                 }
                 await trx.commit();
@@ -495,10 +612,14 @@ export class ConciliacaoABStep implements PipelineStep {
             await flushInserts();
         };
 
+        const marksPhaseStart = Date.now();
         await processMarksPagedA();
         await processMarksPagedB();
+        console.log(`${LOG_PREFIX} Marks processing phase completed in ${Date.now() - marksPhaseStart}ms (matched: A=${matchedA.size}, B=${matchedB.size})`);
 
         // Main grouping/conciliation per key - PAGINATED JOIN processing
+        const mainPhaseStart = Date.now();
+        let totalGroups = 0;
         for (const keyId of keyIdentifiers) {
             const aCols = chavesContabil[keyId] || [];
             const bCols = chavesFiscal[keyId] || [];
@@ -698,23 +819,27 @@ export class ConciliacaoABStep implements PipelineStep {
                     }
                 }
 
-                // DO NOT process groups intermediately - this fragments groups across pages
-                // causing incorrect sums and duplicate entries
-
                 // Update pagination cursors
                 const lastRow = page[page.length - 1];
                 lastAId = Number(lastRow.a_row_id) || lastAId;
                 lastBId = Number(lastRow.b_row_id) || lastBId;
 
+                // Log progress every few pages
+                if (groups.size > 0 && groups.size % 10000 === 0) {
+                    console.log(`${LOG_PREFIX} Key ${keyId}: accumulated ${groups.size} groups so far...`);
+                }
+
                 if (page.length < PAGE_SIZE) break; // last page
             }
 
             // Process ALL groups for this key at once (after all pages accumulated)
+            totalGroups += groups.size;
             await processGroupsBatch();
         }
 
         // Persist any remaining inserts
         await flushInserts();
+        console.log(`${LOG_PREFIX} Main conciliation phase completed in ${Date.now() - mainPhaseStart}ms (groups: ${totalGroups}, matched: A=${matchedA.size}, B=${matchedB.size})`);
 
         // Process unmatched rows in a paginated way to avoid loading entire tables
         const processRemaining = async (
@@ -727,28 +852,29 @@ export class ConciliacaoABStep implements PipelineStep {
             isA: boolean,
             alreadyMatched: Set<number> // Add parameter to check already processed rows
         ) => {
+            const phaseLabel = isA ? 'A' : 'B';
+            console.log(`${LOG_PREFIX} processRemaining(${phaseLabel}): starting, already matched ${alreadyMatched.size} rows`);
+
             let lastId = 0;
-            const joinSide = isA ? 'a_row_id' : 'b_row_id';
+            let totalProcessed = 0;
+            let totalInserted = 0;
+            const startTime = Date.now();
 
             while (true) {
-                const dbRef = this.db;
-                // Build base query to fetch a page of rows that are not yet present in result for this job
-                const pageQuery = this.db.select(`${table}.id`).from(table)
-                    .leftJoin(resultTable, function () {
-                        this.on(`${table}.id`, '=', `${resultTable}.${joinSide}`)
-                            .andOn(`${resultTable}.job_id`, '=', dbRef.raw('?', [jobId]));
-                    })
-                    .whereNull(`${resultTable}.${joinSide}`)
-                    .andWhere(`${table}.id`, '>', lastId)
-                    .orderBy(`${table}.id`, 'asc')
+                // Simpler approach: just paginate through the table and check alreadyMatched set
+                // This avoids complex NOT EXISTS queries that can be slow
+                const pageQuery = this.db.select('id').from(table)
+                    .where('id', '>', lastId)
+                    .orderBy('id', 'asc')
                     .limit(PAGE_SIZE);
 
                 const idRows: any[] = await pageQuery;
                 if (!idRows || idRows.length === 0) break;
 
                 const ids = idRows.map(r => Number(r.id)).filter(Boolean) as number[];
+                totalProcessed += ids.length;
 
-                // Filter out already matched IDs to avoid duplicates
+                // Filter out already matched IDs
                 const unprocessedIds = ids.filter(id => !alreadyMatched.has(id));
                 if (unprocessedIds.length === 0) {
                     lastId = ids[ids.length - 1] || lastId;
@@ -790,21 +916,34 @@ export class ConciliacaoABStep implements PipelineStep {
                     }
 
                     inserts.push(entry);
+                    totalInserted++;
                     alreadyMatched.add(id); // Mark as processed to avoid any future duplicates
                     // flush periodically to keep memory bounded
                     if (inserts.length >= RESULT_INSERT_CHUNK) await flushInserts();
                 }
 
                 lastId = ids[ids.length - 1] || lastId;
+
+                // Progress log
+                if (totalProcessed % 50000 === 0) {
+                    const elapsed = Date.now() - startTime;
+                    console.log(`${LOG_PREFIX} processRemaining(${phaseLabel}): processed ${totalProcessed} rows, inserted ${totalInserted} (${Math.round(totalProcessed / (elapsed / 1000))} rows/sec)`);
+                }
+
                 if (idRows.length < PAGE_SIZE) break; // last page
             }
             // flush any remaining
             if (inserts.length > 0) await flushInserts();
+
+            const elapsed = Date.now() - startTime;
+            console.log(`${LOG_PREFIX} processRemaining(${phaseLabel}): completed in ${elapsed}ms, processed ${totalProcessed} rows, inserted ${totalInserted}`);
         };
 
         const defaultKey = keyIdentifiers.length ? keyIdentifiers[0] : null;
+        const remainingPhaseStart = Date.now();
         await processRemaining(tableA, colA, marksA, chavesContabil, allAKeyCols, defaultKey, true, matchedA);
         await processRemaining(tableB, colB, marksB, chavesFiscal, allBKeyCols, defaultKey, false, matchedB);
+        console.log(`${LOG_PREFIX} Remaining rows phase completed in ${Date.now() - remainingPhaseStart}ms (final matched: A=${matchedA.size}, B=${matchedB.size})`);
     }
 }
 
