@@ -1,5 +1,6 @@
 import { PipelineStep, PipelineContext } from '../index';
 import { Knex } from 'knex';
+import { totalmem } from 'os';
 
 /*
     Conciliation step between Base A (contábil) and Base B (fiscal).
@@ -9,21 +10,43 @@ import { Knex } from 'knex';
     - collect marks and match/unmatch groups by configured keys
     - insert result rows in batches
 
-    MEMORY OPTIMIZATIONS v2 (2026-01):
-    - Increased page sizes and batch sizes for fewer I/O operations
+    MEMORY OPTIMIZATIONS v3 (2026-01):
+    - Dynamic batch/page sizes based on available RAM
     - Streaming group processing with periodic flushes
     - Temporary indexes on join columns for faster JOINs
     - Direct SQL for remaining rows processing
     - Performance metrics logging
+    - Optimized for 8GB RAM / i5 8th gen target machines
 */
 
 const LOG_PREFIX = '[ConciliacaoAB]';
-const RESULT_INSERT_CHUNK = 200; // Keep small for SQLite - it converts to UNION ALL SELECT
-const PAGE_SIZE = 10000; // Increased from 2000
+
+/**
+ * Calculate optimal processing sizes based on available RAM.
+ * Target: 8GB RAM machines
+ */
+function getOptimalSizes() {
+    const totalRamMB = Math.floor(totalmem() / 1024 / 1024);
+
+    if (totalRamMB < 6000) {
+        // Low memory mode
+        return { pageSize: 5000, resultChunk: 100, maxGroups: 25000, tempIndexThreshold: 50000 };
+    } else if (totalRamMB < 10000) {
+        // Standard mode (8GB target)
+        return { pageSize: 10000, resultChunk: 200, maxGroups: 50000, tempIndexThreshold: 100000 };
+    } else {
+        // High performance mode
+        return { pageSize: 20000, resultChunk: 300, maxGroups: 100000, tempIndexThreshold: 150000 };
+    }
+}
+
+const SIZES = getOptimalSizes();
+const RESULT_INSERT_CHUNK = SIZES.resultChunk; // Keep small for SQLite - it converts to UNION ALL SELECT
+const PAGE_SIZE = SIZES.pageSize;
 const EPSILON = 1e-6;
 const CHUNK_SIZE = 500; // SQLite variable limit safety
-const MAX_GROUPS_IN_MEMORY = 50000; // Process groups in batches to limit memory
-const TEMP_INDEX_THRESHOLD = 100000; // Create temp indexes for tables larger than this
+const MAX_GROUPS_IN_MEMORY = SIZES.maxGroups; // Process groups in batches to limit memory
+const TEMP_INDEX_THRESHOLD = SIZES.tempIndexThreshold; // Create temp indexes for tables larger than this
 
 const STATUS_CONCILIADO = '01_Conciliado' as const;
 const STATUS_FOUND_DIFF = '02_Encontrado c/Diferença' as const;

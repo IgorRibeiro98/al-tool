@@ -1,16 +1,18 @@
 import { PipelineStep, PipelineContext } from '../index';
 import { Knex } from 'knex';
+import { totalmem } from 'os';
 
 /*
     Estorno step for Base A (contábil).
     Finds pairs (A,B) within the same table where column_sum(A) + column_sum(B) ~= 0
     and inserts conciliacao_marks with group 'Conciliado_Estorno'.
     
-    OPTIMIZED v2: 
+    OPTIMIZED v3: 
     - Uses O(n) matching algorithm via soma-indexed lookup instead of O(n²) nested loops
     - Streaming/pagination to avoid loading entire table into memory at once
     - Batch inserts with larger chunks
     - Single timestamp for all marks in a batch
+    - Dynamic batch sizes based on available RAM
 */
 
 const LOG_PREFIX = '[EstornoBaseA]';
@@ -19,7 +21,19 @@ const STATUS_CONCILIADO = '01_Conciliado' as const;
 const GROUP_DOC_ESTORNADOS = 'Documentos estornados' as const;
 const STATUS_NAO_AVALIADO = '04_Não Avaliado' as const;
 const INSERT_CHUNK = 50; // SQLite SQLITE_LIMIT_COMPOUND_SELECT=500, 6 cols × 50 rows = 300 < 500
-const PAGE_SIZE = 10000;
+
+/**
+ * Calculate optimal page size based on available RAM.
+ */
+function getOptimalPageSize(): number {
+    const totalRamMB = Math.floor(totalmem() / 1024 / 1024);
+
+    if (totalRamMB < 6000) return 5000;
+    if (totalRamMB < 10000) return 10000;
+    return 20000;
+}
+
+const PAGE_SIZE = getOptimalPageSize();
 // Precision for soma indexing (to handle floating point)
 const SOMA_PRECISION = 100; // 2 decimal places
 

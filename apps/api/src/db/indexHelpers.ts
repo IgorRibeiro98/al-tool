@@ -81,23 +81,37 @@ export async function ensureIndicesForConfigConciliacao(cfg: ConfigConciliacao |
   const chavesA = safeParseChaves(cfg.chaves_contabil);
   const chavesB = safeParseChaves(cfg.chaves_fiscal);
 
+  // Collect all index creation promises for parallel execution
+  const indexPromises: Promise<void>[] = [];
+
   const baseA = cfg.base_contabil_id;
   if (baseA) {
     const tableA = `base_${baseA}`;
     for (const cols of Object.values(chavesA)) {
-      for (const c of cols) await ensureIndexForTableColumn(tableA, c, baseA);
+      for (const c of cols) {
+        indexPromises.push(ensureIndexForTableColumn(tableA, c, baseA));
+      }
     }
-    await ensureIndexForTableColumn(tableA, cfg.coluna_conciliacao_contabil ?? '', baseA);
+    if (cfg.coluna_conciliacao_contabil) {
+      indexPromises.push(ensureIndexForTableColumn(tableA, cfg.coluna_conciliacao_contabil, baseA));
+    }
   }
 
   const baseB = cfg.base_fiscal_id;
   if (baseB) {
     const tableB = `base_${baseB}`;
     for (const cols of Object.values(chavesB)) {
-      for (const c of cols) await ensureIndexForTableColumn(tableB, c, baseB);
+      for (const c of cols) {
+        indexPromises.push(ensureIndexForTableColumn(tableB, c, baseB));
+      }
     }
-    await ensureIndexForTableColumn(tableB, cfg.coluna_conciliacao_fiscal ?? '', baseB);
+    if (cfg.coluna_conciliacao_fiscal) {
+      indexPromises.push(ensureIndexForTableColumn(tableB, cfg.coluna_conciliacao_fiscal, baseB));
+    }
   }
+
+  // Execute all index creations in parallel (SQLite handles locking internally)
+  await Promise.all(indexPromises);
 }
 
 export async function ensureIndicesForConfigEstorno(cfg: any) {
@@ -106,8 +120,11 @@ export async function ensureIndicesForConfigEstorno(cfg: any) {
     const base = cfg.base_id;
     if (!base) return;
     const table = `base_${base}`;
-    await ensureIndexForTableColumn(table, cfg.coluna_a ?? '', base);
-    await ensureIndexForTableColumn(table, cfg.coluna_b ?? '', base);
+    // Parallel index creation
+    await Promise.all([
+      ensureIndexForTableColumn(table, cfg.coluna_a ?? '', base),
+      ensureIndexForTableColumn(table, cfg.coluna_b ?? '', base),
+    ]);
   } catch (err) {
     logError('ensureIndicesForConfigEstorno', err);
   }
@@ -128,17 +145,22 @@ export async function ensureIndicesForConfigCancelamento(cfg: any) {
 export async function ensureIndicesForBaseFromConfigs(baseId: number) {
   if (!baseId || Number.isNaN(baseId)) return;
   try {
-    const concRows = await db('configs_conciliacao')
-      .where({ base_contabil_id: baseId })
-      .orWhere({ base_fiscal_id: baseId })
-      .select('*');
-    for (const c of concRows) await ensureIndicesForConfigConciliacao(c as ConfigConciliacao);
+    // Fetch all configs in parallel
+    const [concRows, estRows, canRows] = await Promise.all([
+      db('configs_conciliacao')
+        .where({ base_contabil_id: baseId })
+        .orWhere({ base_fiscal_id: baseId })
+        .select('*'),
+      db('configs_estorno').where({ base_id: baseId }).select('*'),
+      db('configs_cancelamento').where({ base_id: baseId }).select('*'),
+    ]);
 
-    const estRows = await db('configs_estorno').where({ base_id: baseId }).select('*');
-    for (const c of estRows) await ensureIndicesForConfigEstorno(c);
-
-    const canRows = await db('configs_cancelamento').where({ base_id: baseId }).select('*');
-    for (const c of canRows) await ensureIndicesForConfigCancelamento(c);
+    // Process all configs in parallel
+    await Promise.all([
+      ...concRows.map(c => ensureIndicesForConfigConciliacao(c as ConfigConciliacao)),
+      ...estRows.map(c => ensureIndicesForConfigEstorno(c)),
+      ...canRows.map(c => ensureIndicesForConfigCancelamento(c)),
+    ]);
   } catch (err) {
     logError('ensureIndicesForBaseFromConfigs', err);
   }

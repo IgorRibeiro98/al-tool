@@ -53,6 +53,92 @@ A API do AL-Tool é uma aplicação **Express + TypeScript** que:
 
 ---
 
+## 🚀 Otimização de Performance
+
+A API implementa um sistema de **configuração dinâmica** que ajusta automaticamente os parâmetros de performance com base na RAM disponível na máquina.
+
+### Tiers de Memória
+
+O sistema detecta automaticamente a RAM total e configura os parâmetros:
+
+| Tier | RAM Total | Workers | SQLite Cache | SQLite MMAP | Batch JSONL | Batch XLSX |
+|------|-----------|---------|--------------|-------------|-------------|------------|
+| **Low** | < 6 GB | 2 | ~100 MB | ~256 MB | 2.500 | 1.500 |
+| **Standard** | 6-10 GB | 4 | ~400 MB | ~512 MB | 5.000 | 3.000 |
+| **High** | > 10 GB | 6+ | ~800 MB | ~1 GB | 10.000 | 5.000 |
+
+### Arquitetura de Performance
+
+```
+src/config/performance.ts    # Módulo centralizado de configuração
+├── getMemoryTier()          # Detecta tier (low/standard/high)
+├── getMemoryBasedConfig()   # Configurações para o tier atual
+├── shouldUseParallelExport()
+├── getRecommendedWorkerCount()
+└── logPerformanceSettings() # Log das configurações ativas
+```
+
+### Componentes Otimizados
+
+1. **Worker Threads** (`src/workers/config.ts`)
+   - Pool size calculado: `(RAM - 3.5GB) × 0.5 workers/GB`
+   - Máximo 4 workers para 8GB RAM
+   - Reserva memória para SO + Node + SQLite
+
+2. **SQLite** (`src/db/knex.ts`)
+   - Cache size: ~5% da RAM total
+   - MMAP size: ~8% da RAM total
+   - WAL mode + NORMAL sync para balance performance/durabilidade
+
+3. **Pipeline Steps** (`src/pipeline/core/steps/`)
+   - PAGE_SIZE dinâmico para conciliação
+   - Batch sizes adaptativos por step
+
+4. **Exportação** (`src/services/ConciliacaoExportService.ts`)
+   - Chunks de leitura ajustados
+   - Compressão ZIP nível 6 (balance velocidade/tamanho)
+   - Export paralelo Base A + B (se RAM disponível)
+
+5. **Índices** (`src/db/indexHelpers.ts`)
+   - Criação paralela de índices (batches de 5)
+   - Índices temporários para queries grandes
+
+### Variáveis de Override
+
+O sistema usa valores automáticos, mas você pode forçar configurações específicas:
+
+```bash
+# Workers
+WORKER_POOL_SIZE=4              # Força número de workers
+WORKER_INGEST_BATCH_SIZE=5000   # Batch para ingestão
+
+# SQLite
+SQLITE_CACHE_SIZE=-250000       # Cache em KB (negativo = KB)
+SQLITE_MMAP_SIZE=1073741824     # MMAP em bytes
+
+# Ingestão
+INGEST_BATCH_SIZE=15000         # Override para batch de ingestão
+
+# Exportação
+EXPORT_CHUNK_SIZE=25000         # Linhas por query de export
+EXPORT_PARALLEL_BASES=true      # Export Base A + B em paralelo
+```
+
+### Perfil de Referência
+
+Configuração otimizada para: **8GB RAM, Intel i5 8ª Gen, Windows 11, SSD**
+
+| Métrica | Valor Esperado |
+|---------|----------------|
+| Workers ativos | 4 |
+| Cache SQLite | ~400 MB |
+| MMAP SQLite | ~500 MB |
+| Ingestão JSONL | 5.000 rows/batch |
+| Conciliação PAGE_SIZE | 10.000 |
+| Export paralelo | Habilitado |
+
+---
+
 ## 📁 Estrutura de Diretórios
 
 \`\`\`
@@ -238,16 +324,35 @@ curl http://localhost:3000/health
 
 ## 🗄️ Banco de Dados (SQLite)
 
-### PRAGMAs Aplicados
+### PRAGMAs Aplicados (Dinâmico)
 
-\`\`\`sql
-PRAGMA busy_timeout = 30000;
+O SQLite é configurado automaticamente com base na RAM disponível:
+
+```sql
+PRAGMA journal_mode = WAL;          -- Write-ahead logging
+PRAGMA synchronous = NORMAL;        -- Balance performance/durabilidade
+PRAGMA busy_timeout = 60000;        -- 60s para locks
 PRAGMA foreign_keys = ON;
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-PRAGMA cache_size = -4000;
 PRAGMA temp_store = MEMORY;
-\`\`\`
+
+-- Calculados dinamicamente (~5% e ~8% da RAM):
+PRAGMA cache_size = -400000;        -- ~400MB para 8GB RAM
+PRAGMA mmap_size = 536870912;       -- ~500MB para 8GB RAM
+```
+
+**Fórmulas de cálculo:**
+```typescript
+// src/db/knex.ts
+const cacheBytes = totalMem * 0.05;        // 5% da RAM
+const cachePages = cacheBytes / 4096;      // Páginas de 4KB
+const mmapBytes = totalMem * 0.08;         // 8% da RAM
+```
+
+**Override via variáveis de ambiente:**
+```bash
+SQLITE_CACHE_SIZE=-250000           # Força 250MB de cache
+SQLITE_MMAP_SIZE=1073741824         # Força 1GB de MMAP
+```
 
 ### Tabelas Principais
 
@@ -353,11 +458,45 @@ GET /health
 
 ## ⚙️ Workers Assíncronos
 
+### Polling Workers
+
 | Worker | Arquivo | Descrição |
 |--------|---------|-----------|
-| Conciliação | \`conciliacaoWorker.ts\` | Processa jobs PENDING |
-| Ingestão | \`ingestWorker.ts\` | Processa uploads para SQLite |
-| Exportação | \`exportRunner.ts\` | Gera ZIPs em background |
+| Conciliação | `conciliacaoWorker.ts` | Processa jobs PENDING |
+| Ingestão | `ingestWorker.ts` | Processa uploads para SQLite |
+| Exportação | `exportRunner.ts` | Gera ZIPs em background |
+
+### Worker Thread Pools (Multithreading)
+
+O sistema usa pools de worker threads para processamento paralelo com **configuração dinâmica baseada na RAM**:
+
+| Pool | Propósito | Threshold |
+|------|-----------|-----------|
+| `ingest` | Importação de arquivos | 2.000 rows |
+| `conciliacao` | Matching A×B | 1.000 rows |
+| `estorno` | Matching A×A | 10.000 rows |
+| `atribuicao` | Atribuição de resultados | 100 rows |
+
+**Sizing automático:**
+- Pool size = `(RAM Total - 3.5GB) × 0.5`
+- Máximo: `CPUs - 1` ou `6` (o menor)
+- Exemplo 8GB: `(8 - 3.5) × 0.5 = 2.25` → **2-4 workers**
+
+```typescript
+// src/workers/config.ts
+export function getMaxPoolSize(): number {
+  const tier = getMemoryTier();
+  return tier === 'low' ? 2 : tier === 'standard' ? 4 : 6;
+}
+```
+
+**Variáveis de controle:**
+```bash
+WORKER_THREADS_ENABLED=true    # Habilita multithreading
+WORKER_POOL_SIZE=4             # Override do pool size
+WORKER_DEBUG_LOGGING=false     # Logs detalhados
+WORKER_TASK_TIMEOUT=300000     # 5 minutos por tarefa
+```
 
 ---
 

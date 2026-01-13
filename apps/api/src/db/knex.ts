@@ -1,15 +1,58 @@
 import { knex as createKnex, Knex } from 'knex';
+import { totalmem, freemem } from 'os';
 import { DB_PATH } from '../config/paths';
 
 // Environment - always treated as production for performance
 const NODE_ENV = process.env.NODE_ENV || 'production';
 
+/**
+ * Calculate optimal SQLite cache size based on available RAM.
+ * Target: ~5% of total RAM for cache (balanced for 8GB machines).
+ * Returns negative value (pages, each ~4KB).
+ */
+function calculateOptimalCacheSize(): number {
+    const totalRamMB = Math.floor(totalmem() / 1024 / 1024);
+
+    // For 8GB RAM: target ~400MB cache (5% of 8GB)
+    // For lower RAM: scale down proportionally
+    // For higher RAM: cap at 800MB to leave room for other processes
+    const targetPercentage = 0.05;
+    const maxCacheMB = 800;
+    const minCacheMB = 100;
+
+    const targetCacheMB = Math.min(maxCacheMB, Math.max(minCacheMB, Math.floor(totalRamMB * targetPercentage)));
+
+    // Convert MB to pages (4KB per page, negative value for pages)
+    const pages = Math.floor(targetCacheMB * 1024 / 4);
+    return -pages;
+}
+
+/**
+ * Calculate optimal MMAP size based on available RAM.
+ * Memory-mapped I/O significantly speeds up read-heavy workloads.
+ * Target: ~8% of total RAM for mmap (balanced for 8GB machines).
+ */
+function calculateOptimalMmapSize(): number {
+    const totalRamMB = Math.floor(totalmem() / 1024 / 1024);
+
+    // For 8GB RAM: target ~640MB mmap
+    // For lower RAM: scale down, minimum 256MB
+    // For higher RAM: cap at 1GB
+    const targetPercentage = 0.08;
+    const maxMmapMB = 1024;
+    const minMmapMB = 256;
+
+    const targetMmapMB = Math.min(maxMmapMB, Math.max(minMmapMB, Math.floor(totalRamMB * targetPercentage)));
+
+    // Convert MB to bytes
+    return targetMmapMB * 1024 * 1024;
+}
+
 const DEFAULTS = Object.freeze({
     JOURNAL: 'WAL',
     SYNCHRONOUS: 'NORMAL',
-    // Negative values = pages in memory. Each page is typically 4KB.
-    // -100000 = ~400MB cache (balanced for 8GB RAM machines)
-    CACHE_PAGES: -100000,
+    // Dynamic cache based on RAM (balanced for 8GB machines)
+    CACHE_PAGES: calculateOptimalCacheSize(),
     // For tests only - smaller cache
     CACHE_PAGES_TEST: -10000,
     TEMP_STORE: 'MEMORY',
@@ -17,8 +60,8 @@ const DEFAULTS = Object.freeze({
     BUSY_TIMEOUT: 60000,
     BUSY_TIMEOUT_TEST: 5000,
     FOREIGN_KEYS: 'ON',
-    // Memory-mapped I/O size in bytes (512MB - balanced for 8GB RAM)
-    MMAP_SIZE: 536870912,
+    // Dynamic mmap based on RAM (balanced for 8GB machines)
+    MMAP_SIZE: calculateOptimalMmapSize(),
     MMAP_SIZE_TEST: 0,
     // Page size (4KB is default)
     PAGE_SIZE: 4096,

@@ -47,9 +47,49 @@
  * ```
  */
 
-import { cpus } from 'os';
+import { cpus, totalmem, freemem } from 'os';
 
 const LOG_PREFIX = '[WorkerConfig]';
+
+// ============================================================================
+// Hardware Limits for 8GB RAM / i5 8th Gen / Windows 11 target machines
+// ============================================================================
+
+/**
+ * Maximum workers based on available RAM (conservative for 8GB target)
+ * Each worker uses ~50-100MB depending on workload
+ */
+const MAX_WORKERS_PER_POOL = 4;  // Maximum workers per pool (8GB RAM)
+const MIN_WORKERS_PER_POOL = 1;  // Minimum for parallelism
+const RECOMMENDED_RAM_PER_WORKER_MB = 256; // Conservative estimate
+
+/**
+ * Calculate safe pool size based on available memory
+ */
+function calculateOptimalPoolSize(numCpus: number): number {
+    const totalRamMB = Math.floor(totalmem() / 1024 / 1024);
+    const freeRamMB = Math.floor(freemem() / 1024 / 1024);
+
+    // Reserve 2GB for OS + 1GB for main Node process + 500MB for SQLite cache
+    const reservedMB = 3500;
+    const availableForWorkersMB = Math.max(0, Math.min(totalRamMB, freeRamMB + 1000) - reservedMB);
+
+    // Calculate workers based on RAM (considering all pools share the same resources)
+    // Assume 4 potential pools, so divide available RAM by 4
+    const maxWorkersFromRam = Math.floor(availableForWorkersMB / 4 / RECOMMENDED_RAM_PER_WORKER_MB);
+
+    // Also consider CPU cores (i5 8th gen = 4 cores / 8 threads typically)
+    const maxWorkersFromCpu = Math.max(1, numCpus - 1);
+
+    // Take the minimum to avoid overloading
+    const optimal = Math.min(
+        maxWorkersFromRam,
+        maxWorkersFromCpu,
+        MAX_WORKERS_PER_POOL
+    );
+
+    return Math.max(MIN_WORKERS_PER_POOL, optimal);
+}
 
 /**
  * Configuração de worker threads
@@ -105,6 +145,7 @@ export interface WorkerConfig {
  */
 function loadConfig(): WorkerConfig {
     const numCpus = cpus().length;
+    const totalRamMB = Math.floor(totalmem() / 1024 / 1024);
 
     // Parse boolean env var
     const parseBoolean = (val: string | undefined, defaultVal: boolean): boolean => {
@@ -126,7 +167,13 @@ function loadConfig(): WorkerConfig {
         return Number.isNaN(num) ? undefined : num;
     };
 
-    const defaultPoolSize = Math.max(1, numCpus - 1);
+    // Use optimal pool size based on hardware detection
+    const defaultPoolSize = calculateOptimalPoolSize(numCpus);
+
+    // Adjust batch sizes based on available RAM (larger batches = fewer I/O operations)
+    // For 8GB machines, use moderate batch sizes to balance memory and throughput
+    const isLowMemory = totalRamMB < 6000; // Less than 6GB available
+    const batchMultiplier = isLowMemory ? 0.5 : 1.0;
 
     const config: WorkerConfig = {
         // Desabilita workers se tiver <= 2 CPUs ou se explicitamente desabilitado
@@ -134,10 +181,10 @@ function loadConfig(): WorkerConfig {
 
         poolSize: parseNumber(process.env.WORKER_POOL_SIZE, defaultPoolSize),
 
-        // Thresholds
-        ingestThreshold: parseNumber(process.env.WORKER_INGEST_THRESHOLD, 1000),
-        conciliacaoThreshold: parseNumber(process.env.WORKER_CONCILIACAO_THRESHOLD, 500),
-        estornoThreshold: parseNumber(process.env.WORKER_ESTORNO_THRESHOLD, 5000),
+        // Thresholds - increased slightly to avoid worker overhead for small datasets
+        ingestThreshold: parseNumber(process.env.WORKER_INGEST_THRESHOLD, 2000),
+        conciliacaoThreshold: parseNumber(process.env.WORKER_CONCILIACAO_THRESHOLD, 1000),
+        estornoThreshold: parseNumber(process.env.WORKER_ESTORNO_THRESHOLD, 10000),
         atribuicaoThreshold: parseNumber(process.env.WORKER_ATRIBUICAO_THRESHOLD, 100),
 
         taskTimeout: parseNumber(process.env.WORKER_TASK_TIMEOUT, 300000), // 5 min
@@ -150,15 +197,15 @@ function loadConfig(): WorkerConfig {
         estornoPoolSize: parseOptionalNumber(process.env.WORKER_ESTORNO_POOL_SIZE),
         atribuicaoPoolSize: parseOptionalNumber(process.env.WORKER_ATRIBUICAO_POOL_SIZE),
 
-        // Batch sizes
-        ingestBatchSize: parseNumber(process.env.WORKER_INGEST_BATCH_SIZE, 5000),
-        conciliacaoBatchSize: parseNumber(process.env.WORKER_CONCILIACAO_BATCH_SIZE, 1000),
-        estornoBatchSize: parseNumber(process.env.WORKER_ESTORNO_BATCH_SIZE, 10000),
-        atribuicaoBatchSize: parseNumber(process.env.WORKER_ATRIBUICAO_BATCH_SIZE, 500),
+        // Batch sizes - adjusted based on RAM availability
+        ingestBatchSize: parseNumber(process.env.WORKER_INGEST_BATCH_SIZE, Math.round(5000 * batchMultiplier)),
+        conciliacaoBatchSize: parseNumber(process.env.WORKER_CONCILIACAO_BATCH_SIZE, Math.round(1000 * batchMultiplier)),
+        estornoBatchSize: parseNumber(process.env.WORKER_ESTORNO_BATCH_SIZE, Math.round(10000 * batchMultiplier)),
+        atribuicaoBatchSize: parseNumber(process.env.WORKER_ATRIBUICAO_BATCH_SIZE, Math.round(500 * batchMultiplier)),
     };
 
-    // Log inicial ao carregar configuração
-    console.log(`${LOG_PREFIX} Workers ${config.enabled ? 'ENABLED' : 'DISABLED'}, poolSize=${config.poolSize}, CPUs=${numCpus}`);
+    // Log inicial ao carregar configuração com hardware info
+    console.log(`${LOG_PREFIX} Workers ${config.enabled ? 'ENABLED' : 'DISABLED'}, poolSize=${config.poolSize}, CPUs=${numCpus}, RAM=${totalRamMB}MB, lowMemMode=${isLowMemory}`);
 
     if (config.debugLogging) {
         console.log(`${LOG_PREFIX} Full configuration:`, JSON.stringify(config, null, 2));

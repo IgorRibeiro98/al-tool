@@ -1,6 +1,7 @@
 import db from '../db/knex';
 // removed SheetJS in favor of ExcelJS streaming for styled exports
 import ExcelJS from 'exceljs';
+import { totalmem, freemem } from 'os';
 import { fileStorage } from '../infra/storage/FileStorage';
 import * as jobsRepo from '../repos/jobsRepository';
 import path from 'path';
@@ -66,16 +67,52 @@ const BASE_B_STYLES = {
 const LOG_PREFIX = '[conciliacao-export]';
 
 // ============================================================================
-// Configuration - optimized for 8GB RAM Windows machines with i5 8th gen
+// Configuration - dynamically adjusted based on available RAM
+// Optimized for 8GB RAM Windows machines with i5 8th gen
 // ============================================================================
-// Compression level 6 offers good balance between speed and size (level 9 is much slower)
-const ZIP_COMPRESSION_LEVEL = parseInt(process.env.EXPORT_ZIP_COMPRESSION_LEVEL || '6', 10);
+
+/**
+ * Calculate optimal export settings based on available RAM.
+ */
+function getExportConfig() {
+    const totalRamMB = Math.floor(totalmem() / 1024 / 1024);
+    const freeRamMB = Math.floor(freemem() / 1024 / 1024);
+
+    // Determine available RAM for export (considering other processes)
+    const availableRamMB = Math.min(totalRamMB * 0.3, freeRamMB * 0.6); // Use at most 30% of total or 60% of free
+
+    // Chunk size calculation: larger chunks = fewer I/O ops but more memory
+    // Each row in memory is approximately 1-5KB depending on columns
+    const avgRowSizeKB = 3;
+    const chunkSize = Math.max(5000, Math.min(50000, Math.floor(availableRamMB * 1024 / avgRowSizeKB / 4)));
+
+    // Temp index threshold: create indexes for tables larger than this
+    const tempIndexThreshold = Math.max(25000, chunkSize);
+
+    // Parallel export: only if we have enough RAM (at least 4GB available)
+    const parallelExport = availableRamMB > 2000;
+
+    // Compression level: 6 is balanced, lower for low RAM
+    const compressionLevel = availableRamMB < 1500 ? 4 : 6;
+
+    return {
+        chunkSize,
+        tempIndexThreshold,
+        parallelExport,
+        compressionLevel
+    };
+}
+
+const EXPORT_CONFIG = getExportConfig();
+
+// Compression level (level 6 offers good balance between speed and size)
+const ZIP_COMPRESSION_LEVEL = parseInt(process.env.EXPORT_ZIP_COMPRESSION_LEVEL || String(EXPORT_CONFIG.compressionLevel), 10);
 const WORKBOOK_OPTIONS = { useStyles: true, useSharedStrings: true } as const;
-// Increased batch sizes for better throughput on large tables
-const EXPORT_CHUNK_SIZE = parseInt(process.env.EXPORT_CHUNK_SIZE || '25000', 10);
-const TEMP_INDEX_THRESHOLD = parseInt(process.env.EXPORT_TEMP_INDEX_THRESHOLD || '50000', 10);
+// Dynamically calculated batch sizes for better throughput on large tables
+const EXPORT_CHUNK_SIZE = parseInt(process.env.EXPORT_CHUNK_SIZE || String(EXPORT_CONFIG.chunkSize), 10);
+const TEMP_INDEX_THRESHOLD = parseInt(process.env.EXPORT_TEMP_INDEX_THRESHOLD || String(EXPORT_CONFIG.tempIndexThreshold), 10);
 // Enable parallel export of Base A and B (requires more memory but faster)
-const PARALLEL_BASE_EXPORT = process.env.EXPORT_PARALLEL_BASES !== 'false';
+const PARALLEL_BASE_EXPORT = process.env.EXPORT_PARALLEL_BASES !== 'false' && EXPORT_CONFIG.parallelExport;
 
 function createWorkbookWriter(filePath: string) {
     return new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, ...WORKBOOK_OPTIONS });

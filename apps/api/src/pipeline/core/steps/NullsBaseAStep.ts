@@ -1,5 +1,6 @@
 import { PipelineStep, PipelineContext } from '../index';
 import { Knex } from 'knex';
+import { totalmem } from 'os';
 import baseColumnsRepo from '../../../repos/baseColumnsRepository';
 
 /*
@@ -15,11 +16,24 @@ import baseColumnsRepo from '../../../repos/baseColumnsRepository';
     - Groups columns by type (monetary vs non-monetary) to minimize queries
     - Processes in batches of columns rather than batches of rows
     - Single transaction for all updates
+    - Dynamic batch sizes based on available RAM
 */
 
 const IGNORED_COLUMNS = Object.freeze(new Set(['id', 'created_at', 'updated_at']));
 const COLUMNS_PER_BATCH = 10; // Number of columns to update in a single query
-const ROWS_BATCH_SIZE = 50000; // For very large tables, process in row batches
+
+/**
+ * Calculate optimal row batch size based on available RAM.
+ */
+function getOptimalRowBatchSize(): number {
+    const totalRamMB = Math.floor(totalmem() / 1024 / 1024);
+
+    if (totalRamMB < 6000) return 25000;
+    if (totalRamMB < 10000) return 50000;
+    return 100000;
+}
+
+const ROWS_BATCH_SIZE = getOptimalRowBatchSize(); // For very large tables, process in row batches
 const LOG_PREFIX = '[NullsBaseA]';
 
 interface BaseRow {

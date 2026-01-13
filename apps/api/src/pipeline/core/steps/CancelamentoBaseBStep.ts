@@ -1,19 +1,33 @@
 import { PipelineStep, PipelineContext } from '../index';
 import { Knex } from 'knex';
+import { totalmem } from 'os';
 
 /*
     Cancelamento step for Base B (fiscal).
     Marks rows where indicator column matches canceled value as 'NF Cancelada'.
     
-    OPTIMIZED v2:
+    OPTIMIZED v3:
     - Uses INSERT ... SELECT to avoid loading all IDs into memory
     - Single query for finding and inserting marks
     - Batch processing for very large result sets
+    - Dynamic batch sizes based on available RAM
 */
 
 const GROUP_NF_CANCELADA = 'NF Cancelada' as const;
 const STATUS_NAO_AVALIADO = '04_Não Avaliado' as const;
-const BATCH_SIZE = 10000;
+
+/**
+ * Calculate optimal batch size based on available RAM.
+ */
+function getOptimalBatchSize(): number {
+    const totalRamMB = Math.floor(totalmem() / 1024 / 1024);
+
+    if (totalRamMB < 6000) return 5000;
+    if (totalRamMB < 10000) return 10000;
+    return 20000;
+}
+
+const BATCH_SIZE = getOptimalBatchSize();
 const LOG_PREFIX = '[CancelamentoBaseB]';
 
 interface ConfigCancelamentoRow {

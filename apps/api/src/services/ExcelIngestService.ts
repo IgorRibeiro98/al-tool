@@ -1,21 +1,50 @@
 import path from 'path';
 import fs from 'fs/promises';
+import { totalmem } from 'os';
 import ExcelJS from 'exceljs';
 import db from '../db/knex';
 import baseColumnsService from './baseColumnsService';
 import { Knex } from 'knex';
 
+// ============================================================================
+// Performance Configuration - Dynamically adjusted based on available RAM
+// Optimized for target: 8GB RAM, i5 8th gen, Windows 11
+// ============================================================================
+
+/**
+ * Calculate optimal batch sizes based on available RAM.
+ */
+function getOptimalBatchSizes(): { jsonlBatch: number; xlsxBatch: number; maxRowsTx: number } {
+    const totalRamMB = Math.floor(totalmem() / 1024 / 1024);
+
+    // For 8GB machines: use balanced sizes
+    // For lower RAM: reduce to prevent OOM
+    // For higher RAM: increase for better throughput
+    if (totalRamMB < 6000) {
+        // Low memory mode (< 6GB)
+        return { jsonlBatch: 2500, xlsxBatch: 1500, maxRowsTx: 50000 };
+    } else if (totalRamMB < 10000) {
+        // Standard mode (6-10GB) - target 8GB
+        return { jsonlBatch: 5000, xlsxBatch: 3000, maxRowsTx: 100000 };
+    } else {
+        // High performance mode (> 10GB)
+        return { jsonlBatch: 10000, xlsxBatch: 5000, maxRowsTx: 200000 };
+    }
+}
+
+const BATCH_CONFIG = getOptimalBatchSizes();
+
 // Constants for sensible defaults - optimized for SQLite WAL mode
 // Larger batches significantly reduce transaction overhead
-// PERFORMANCE OPTIMIZED: Increased for faster processing on capable machines
-const DEFAULT_SAMPLE_ROWS_JSONL = 1000;  // Increased from 500
-const DEFAULT_BATCH_SIZE_JSONL = 5000;   // Increased from 2000 - SQLite handles this well with WAL
-const DEFAULT_SAMPLE_ROWS_XLSX = 500;    // Increased from 300
-const DEFAULT_BATCH_SIZE_XLSX = 3000;    // Increased from 1500 - reduces transaction commits
+// PERFORMANCE OPTIMIZED: Dynamically adjusted based on RAM
+const DEFAULT_SAMPLE_ROWS_JSONL = 1000;
+const DEFAULT_BATCH_SIZE_JSONL = BATCH_CONFIG.jsonlBatch;
+const DEFAULT_SAMPLE_ROWS_XLSX = 500;
+const DEFAULT_BATCH_SIZE_XLSX = BATCH_CONFIG.xlsxBatch;
 
 // Maximum rows per transaction to prevent long locks
-// Increased for better throughput on modern SSDs
-const MAX_ROWS_PER_TRANSACTION = 100000;  // Increased from 50000
+// Dynamically adjusted based on RAM
+const MAX_ROWS_PER_TRANSACTION = BATCH_CONFIG.maxRowsTx;
 
 // SQLite has a limit of ~999 SQL variables per statement
 // We calculate chunk size dynamically based on column count
