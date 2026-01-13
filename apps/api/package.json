@@ -4,7 +4,7 @@
     "private": true,
     "main": "dist/server.js",
     "scripts": {
-        "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+        "dev": "ts-node-dev --respawn --transpile-only --no-notify --exit-child src/server.ts",
         "build": "tsc -p .",
         "start": "node dist/server.js",
         "migrate": "knex --knexfile knexfile.js migrate:latest",

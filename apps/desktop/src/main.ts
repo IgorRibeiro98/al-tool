@@ -31,8 +31,8 @@ const DEFAULT_HEALTH_DELAY_MS = 500;
 const HEALTH_TIMEOUT_MS = 2000;
 
 function loadEnvFiles(): void {
-    // Load .env from both dev (repo root) and packaged (resources) locations so licensing variables exist in prod
-    const rootEnvPath = path.resolve(__dirname, '../../.env');
+    // Load .env from monorepo root (single source of truth) and packaged location for prod
+    const rootEnvPath = path.resolve(__dirname, '../../../.env');
     const packagedEnvPath = path.join(process.resourcesPath || '', '.env');
     const envCandidates = [packagedEnvPath, rootEnvPath];
     envCandidates.forEach((envPath) => {

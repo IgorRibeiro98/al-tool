@@ -182,13 +182,15 @@ apps/api/
 
 ### Como Funciona o Carregamento
 
-1. \`src/env.ts\` executa \`dotenv.config({ path: 'apps/api/.env' })\` no bootstrap
-2. \`src/server.ts\` importa \`./env\` como primeira instrução
-3. Variáveis ficam disponíveis para \`paths.ts\` e demais módulos
+1. `src/env.ts` executa `dotenv.config({ path: '../../../.env' })` carregando o `.env` da **raiz do monorepo**
+2. `src/server.ts` importa `./env` como primeira instrução
+3. Variáveis ficam disponíveis para `paths.ts` e demais módulos
 
-### Arquivo \`.env\`
+> **Nota**: Existe apenas UM arquivo `.env` na raiz do projeto. Todas as aplicações (API, Desktop, Client) leem dele.
 
-Crie \`apps/api/.env\` com as variáveis necessárias:
+### Arquivo `.env`
+
+Configure o arquivo `.env` na **raiz do monorepo**:
 
 \`\`\`bash
 # ============================================

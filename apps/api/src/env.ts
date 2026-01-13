@@ -1,8 +1,9 @@
 import path from 'path';
 import dotenv from 'dotenv';
 
-// Load apps/api/.env to ensure API-specific variables are available regardless of CWD
-dotenv.config({ path: path.resolve(__dirname, '../.env') });
+// Load .env from monorepo root to ensure all variables are available regardless of CWD
+// Priority: monorepo root .env (single source of truth)
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 // Constants - always use production as default
 const DEFAULT_PORT = 3000;
