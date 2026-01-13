@@ -4,9 +4,9 @@ import dotenv from 'dotenv';
 // Load apps/api/.env to ensure API-specific variables are available regardless of CWD
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
-// Constants
+// Constants - always use production as default
 const DEFAULT_PORT = 3000;
-const DEFAULT_NODE_ENV = 'development';
+const DEFAULT_NODE_ENV = 'production';
 
 // Helper parsers and mappers
 function parseIntEnv(name: string, fallback: number): number {

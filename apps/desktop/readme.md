@@ -1,211 +1,603 @@
-# AL-Tool Desktop (Electron)
+# AL-Tool Desktop
 
-Este app Electron encapsula a UI e a API local, iniciando o backend como processo filho e abrindo a interface somente após o health-check responder.
+<p align="center">
+  <img src="https://img.shields.io/badge/Electron-39-47848F?logo=electron&logoColor=white" alt="Electron 39"/>
+  <img src="https://img.shields.io/badge/Node.js-18+-339933?logo=node.js&logoColor=white" alt="Node.js"/>
+  <img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white" alt="TypeScript"/>
+  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white" alt="Python"/>
+</p>
 
-## Requisitos
+Aplicação desktop do AL-Tool construída com **Electron**, que encapsula a API backend, o frontend React e o Python Worker em um executável distribuível para Windows, macOS e Linux.
 
-- Node.js 18+
-- Dependências instaladas no monorepo (`npm install` na raiz)
+---
 
-## Desenvolvimento (dev)
+## 📑 Índice
 
-1) Compile a API para gerar `apps/api/dist/server.js`:
+- [Visão Geral](#-visão-geral)
+- [Arquitetura](#-arquitetura)
+- [Estrutura de Diretórios](#-estrutura-de-diretórios)
+- [Configuração](#-configuração)
+- [Desenvolvimento](#-desenvolvimento)
+- [Build de Produção](#-build-de-produção)
+- [Python Worker](#-python-worker)
+- [Licenciamento](#-licenciamento)
+- [Diretórios de Dados](#-diretórios-de-dados)
+- [Troubleshooting](#-troubleshooting)
 
-```bash
-npm run api:build
+---
+
+## 🔎 Visão Geral
+
+O desktop wrapper do AL-Tool oferece:
+
+| Recurso | Descrição |
+|---------|-----------|
+| 📦 **Distribuível** | Executável único para cada plataforma |
+| 🔌 **API Embarcada** | API Express roda dentro do Electron |
+| 🎨 **Frontend Integrado** | React carregado como static files |
+| 🐍 **Python Bundled** | Worker Python embutido (Windows/Linux) |
+| 🔐 **Licenciamento** | Integração com serviço de licenças Revaleon |
+| 💾 **Auto-contido** | Todos os dados em diretório local do usuário |
+
+### Diferenças entre Modos
+
+| Aspecto | Desenvolvimento | Produção |
+|---------|-----------------|----------|
+| Frontend | Vite dev server (:5173) | Static files bundled |
+| API | Hot reload | Bundled em main.js |
+| Python | Sistema (conda/venv) | Bundled runtime |
+| Dados | `storage/` do projeto | `userData/` do sistema |
+| Debug | DevTools aberto | DevTools fechado |
+
+---
+
+## 🏗️ Arquitetura
+
+### Fluxo de Inicialização
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                    Electron Main Process                    │
+│                                                              │
+│  1. Startup                                                  │
+│     ├── Verifica/cria diretórios (DATA_DIR)                 │
+│     ├── Inicializa Python Worker (spawn)                    │
+│     └── Inicia API Express (spawn ou inline)                │
+│                                                              │
+│  2. API Ready                                                │
+│     ├── Roda migrations (Knex)                              │
+│     ├── Serve static files (React build)                    │
+│     └── Escuta em APP_PORT                                  │
+│                                                              │
+│  3. Window                                                   │
+│     └── BrowserWindow carrega http://localhost:APP_PORT     │
+└────────────────────────────────────────────────────────────┘
 ```
 
-2) Rode o Electron em modo dev:
+### Comunicação entre Processos
+
+```
+┌─────────────┐     IPC      ┌─────────────┐
+│   Main      │◄────────────►│  Renderer   │
+│  Process    │              │  (React)    │
+└──────┬──────┘              └─────────────┘
+       │
+       ├──────► API (Express via spawn/inline)
+       │        └── SQLite (better-sqlite3)
+       │
+       └──────► Python Worker (spawn)
+                └── Converte XLSB/PDF/TXT → JSONL
+```
+
+---
+
+## �� Estrutura de Diretórios
+
+```
+apps/desktop/
+├── src/
+│   ├── main.ts                 # Entry point Electron
+│   ├── preload.ts              # Preload script (IPC)
+│   ├── paths.ts                # Resolução de caminhos
+│   ├── pythonWorker.ts         # Gerenciamento do worker
+│   └── license.ts              # Integração licenciamento
+├── python-runtime/             # Runtime Python bundled
+│   ├── python/                 # Binários Python
+│   ├── Lib/                    # Site-packages
+│   └── Scripts/                # Executáveis pip, etc.
+├── storage/                    # Dados em desenvolvimento
+│   ├── db/                     # SQLite database
+│   ├── uploads/                # Arquivos enviados
+│   ├── ingests/                # JSONL processados
+│   └── exports/                # ZIPs exportados
+├── package.json
+└── tsconfig.json
+```
+
+### Estrutura do Build
+
+```
+dist/
+├── main.js                     # Main process bundled
+├── preload.js                  # Preload bundled
+├── renderer/                   # React build
+│   ├── index.html
+│   └── assets/
+├── python-runtime/             # Python bundled (se aplicável)
+└── package.json
+```
+
+---
+
+## ⚙️ Configuração
+
+### Variáveis de Ambiente
+
+Em desenvolvimento, crie um arquivo `.env` na raiz do desktop:
 
 ```bash
+# apps/desktop/.env
+
+# Porta da API embarcada
+APP_PORT=3132
+
+# Diretório raiz de dados (desenvolvimento)
+DATA_DIR=./storage
+
+# URL do serviço de licenças
+LICENSE_API_BASE_URL=https://licenses.revaleon.com.br
+
+# Modo de execução
+NODE_ENV=development
+```
+
+### Variáveis Disponíveis
+
+| Variável | Descrição | Default (Dev) | Default (Prod) |
+|----------|-----------|---------------|----------------|
+| `APP_PORT` | Porta da API | `3132` | `3132` |
+| `DATA_DIR` | Diretório raiz de dados | `./storage` | `app.getPath('userData')` |
+| `LICENSE_API_BASE_URL` | URL do serviço de licenças | `http://localhost:3100` | `https://licenses.revaleon.com.br` |
+| `NODE_ENV` | Ambiente de execução | `development` | `production` |
+
+### Caminhos em Produção
+
+Em produção, os dados são armazenados no diretório do usuário:
+
+| Plataforma | Caminho |
+|------------|---------|
+| Windows | `%APPDATA%/al-tool/` |
+| macOS | `~/Library/Application Support/al-tool/` |
+| Linux | `~/.config/al-tool/` |
+
+---
+
+## 🚀 Desenvolvimento
+
+### Pré-requisitos
+
+- Node.js 18+
+- npm 10+
+- Python 3.11+ (com pip)
+- Conda recomendado (para ambiente isolado)
+
+### Instalação
+
+```bash
+# Na raiz do monorepo
+npm install
+
+# Configurar Python Worker
+npm run python:setup
+```
+
+### Scripts Disponíveis
+
+| Script | Comando | Descrição |
+|--------|---------|-----------|
+| `dev` | `npm run dev` | Inicia Electron em modo dev |
+| `build` | `npm run build` | Compila TypeScript |
+| `python:setup` | `npm run python:setup` | Configura ambiente Python |
+
+### Iniciando Desenvolvimento
+
+#### Opção 1: Desenvolvimento Completo
+
+```bash
+# Terminal 1: API em modo watch
+npm run api:dev
+
+# Terminal 2: Frontend em modo watch
+npm run client:dev
+
+# Terminal 3: Electron
 npm run desktop:dev
 ```
 
-Fluxo em dev:
-- O Electron calcula `DATA_DIR` usando `app.getPath('userData')`.
-- Spawna `apps/api/dist/server.js` com envs:
-  - `APP_PORT` (default `3000`)
-  - `DATA_DIR` (pasta de dados do usuário)
-- Aguarda `http://localhost:APP_PORT/health` ficar ativo.
-- Abre a janela carregando `http://localhost:APP_PORT`.
-- Em caso de falha no health-check (timeout), mostra uma página de erro amigável.
-
-Verificações úteis:
+#### Opção 2: Desktop Standalone
 
 ```bash
-curl http://localhost:3000/health
-# Abra http://localhost:3000 no navegador
+# Compila frontend para produção
+npm run client:build
+
+# Inicia desktop com API embarcada
+npm run desktop:dev
 ```
 
-Logs:
-- O stdout/stderr do backend é encaminhado para o console do Electron com prefixo `[api]`.
-- O app encerra o backend (SIGINT) ao fechar a janela.
-- Em dev a janela do Electron abre diretamente o `apps/client` dev server (`http://localhost:8080`). Não é necessário que o Electron suba a API nem use os builds.
+### DevTools
 
-Fluxo dev completo:
+Em desenvolvimento, o DevTools abre automaticamente. Para debug:
 
-- `npm --workspace=apps/api run dev` (API em http://localhost:3000)
-- `npm --workspace=apps/client run dev` (UI em http://localhost:8080)
-- `npm --workspace=apps/desktop run dev` (Electron carrega o dev server do client)
+```typescript
+// No main.ts
+mainWindow.webContents.openDevTools();
+```
 
-Variáveis de ambiente (opcionais):
-- `APP_PORT` — porta da API (padrão: `3000`).
-- `DATA_DIR` — pode ser definido manualmente; quando ausente, o Electron usa `userData/data`.
-- A API também aceita `DB_PATH`, `UPLOAD_DIR`, `EXPORT_DIR` (por padrão derivadas de `DATA_DIR`).
+---
 
-## Build de produção (installer)
+## 📦 Build de Produção
 
-Gerar instalador com Electron Builder (inclui backend compilado):
+### Preparação
+
+1. **Build do Frontend:**
+   ```bash
+   npm run client:build
+   ```
+
+2. **Setup Python Runtime:**
+   ```bash
+   npm run python:setup
+   ```
+
+3. **Compile TypeScript:**
+   ```bash
+   npm run desktop:build
+   ```
+
+### Build Electron
 
 ```bash
-npm run app:dist
+# Windows
+npm run desktop:build:win
+
+# macOS
+npm run desktop:build:mac
+
+# Linux
+npm run desktop:build:linux
 ```
 
-Este comando:
-- `npm run api:build` — compila a API para `apps/api/dist`.
-- `npm run client:build` — gera `apps/client/dist` que será servido pela API.
-- `npm --workspace=apps/desktop run build` — compila o main do Electron para `apps/desktop/dist`.
-- `npm --workspace=apps/desktop run dist` — empacota com `electron-builder`, copiando `apps/api/dist` para `resources/api/dist`.
+### Configuração electron-builder
 
-- Execução empacotada:
-- O Electron usa `process.resourcesPath/api/server.js` para iniciar o backend.
-- Paths de dados são resolvidos via `app.getPath('userData')` (`DATA_DIR = <userData>/data`).
-- O app aguarda o `/health` antes de abrir a UI.
-
-Nota sobre .env da API:
-- A API agora carrega automaticamente `apps/api/.env` na inicialização (via `src/env.ts`).
-- Valores passados pelo Electron (ex.: `DATA_DIR`, `APP_PORT`) têm precedência sobre o `.env`.
-
-## Troubleshooting
-
-- Health-check não responde:
-  - Aguarde até ~20s. Se falhar, verifique os logs `[api]` no console do app.
-  - Cheque se `apps/api/dist/server.js` existe (rode `npm run api:build`).
-- Porta ocupada:
-  - Defina `APP_PORT` antes de rodar (`APP_PORT=3132 npm run desktop:dev`).
-- Dados corrompidos/migrations:
-  - Remova o conteúdo do `DATA_DIR` (pasta `userData/data`) e reinicie. A API recria a base.
-
-## DATA_DIR no Electron
-
-- Padrão em runtime: o Electron define `DATA_DIR = path.join(app.getPath('userData'), 'data')`.
-  - Em Linux geralmente: `/home/<usuario>/.config/Electron/data`
-  - Isso garante permissões de escrita, isolamento por usuário e compatibilidade com o instalador.
-
-- Como descobrir o `DATA_DIR` efetivo:
-```bash
-curl http://localhost:3000/health
-# Resposta inclui { dataDir: "..." }
-```
-
-- Rodar migrations para o mesmo `DATA_DIR` usado pelo Electron:
-```bash
-DATA_DIR=/home/<usuario>/.config/Electron/data \
-npm --workspace=apps/api run migrate
-```
-
-- Opcional (copiar DB do repo para o DATA_DIR):
-```bash
-mkdir -p /home/<usuario>/.config/Electron/data/db
-cp apps/api/db/dev.sqlite3 /home/<usuario>/.config/Electron/data/db/dev.sqlite3
-```
-
-- Observações importantes:
-  - A API carrega `apps/api/.env`, mas valores enviados pelo Electron têm precedência.
-  - Por padrão, o Electron sempre injeta `DATA_DIR` do `userData` em dev e produção.
-  - Se precisar forçar outro caminho em desenvolvimento, altere `apps/desktop/src/main.ts` para respeitar `process.env.DATA_DIR` quando definido (ex.: `DATA_DIR: process.env.DATA_DIR || dataDir`).
-
-  ## Worker de conversão em Python
-
-  Desde a migração mais recente o Electron volta a usar o `scripts/conversion_worker.py` para gerar arquivos JSONL antes da ingestão. O fluxo funciona assim:
-
-  1. Antes de subir o backend, o `main.ts` carrega o `.env` da raiz (`dotenv.config({ path: '../../.env' })`). Qualquer variável definida ali (ex.: `PYTHON_EXECUTABLE`) fica disponível automaticamente.
-  2. Após concluir migrations/backend, o Electron chama `startPythonConversionWorker`, que localiza `conversion_worker.py` em `resources/scripts` (build) ou na pasta `scripts/` do repo (dev).
-  3. O worker é spawnado via `spawn(<python>, conversion_worker.py)` com o mesmo conjunto de envs do backend: `DATA_DIR`, `DB_PATH`, `UPLOAD_DIR`, `EXPORT_DIR`, além de `INGESTS_DIR`, `POLL_INTERVAL` (default 5 segundos) e `PYTHONUNBUFFERED=1`.
-  4. Logs do worker são enviados para o console com prefixo `[py-conversion]` e gravados em `<userData>/logs/conversion-worker.log`. Ao fechar o app, o Electron envia `kill()` e encerra o processo.
-
-  ### Dependências do Python
-
-  - Existe um runtime Python gerenciado dentro do repositório (`apps/desktop/python-runtime`). Para criá-lo/atualizá-lo execute:
-
-  ```bash
-  npm run python:setup
-  ```
-
-  Esse comando cria um virtualenv em `apps/desktop/python-runtime` e instala os pacotes de `scripts/requirements.txt`. Ele deve ser executado sempre que atualizarmos os requisitos ou antes de rodar `npm run desktop:dev`/`npm run app:dist` em uma máquina nova.
-
-  - Em desenvolvimento, o Electron usa automaticamente `apps/desktop/python-runtime` (não é necessário exportar variáveis). Se preferir usar outro Python, defina `PYTHON_EXECUTABLE` no `.env` da raiz.
-
-  - Novo utilitário (Windows): `scripts/prepare_python_runtime_win.py`
-
-    - Prepara um runtime Python embeddable pronto para empacotar (download, instala pip e as dependências de `scripts/requirements.txt`).
-    - Exemplo (na máquina de build Windows):
-
-    ```powershell
-    # prepara o runtime embeddable e o sincroniza para apps/desktop/python-runtime
-    python scripts/prepare_python_runtime_win.py --version 3.12.3
-
-    # então gere o instalador
-    npm run app:dist
-    ```
-
-    - O script cria `apps/desktop/python-runtime-win` e, quando executado em Windows, também copia para `apps/desktop/python-runtime` para manter a lógica atual de empacotamento.
-
-  **Aviso sobre `PYTHON_EXECUTABLE` em builds empacotados**
-
-  - Quando o aplicativo é empacotado (installer), valores de `PYTHON_EXECUTABLE` absolutos definidos no `.env` do repositório (por exemplo caminhos do seu computador de build) serão ignorados automaticamente pelo Electron. Isso evita que o app tente executar um Python que não existe na máquina do usuário.
-  - Para apontar para o runtime Python embutido, defina `PYTHON_EXECUTABLE` relativo dentro de `resources` (por exemplo `python/bin/python3`) ou apenas execute `npm run python:setup` durante o processo de build para incluir o runtime embutido em `resources/python` (recomendado).
-  - Como alternativa, em desenvolvimento, os usuários podem ativar `ALLOW_SYSTEM_PYTHON=1` e garantir que `pyxlsb` e `openpyxl` estejam instalados no Python do sistema.
-  - Em builds empacotados o app NÃO utilizará o Python do sistema por design; apenas o runtime embutido (quando incluído via `npm run python:setup`) é suportado. Isso evita tentativas de executar caminhos do computador de build que não existem no sistema do usuário.
-
-  - Em produção, o conteúdo de `apps/desktop/python-runtime` é empacotado para `resources/python`. Certifique-se de rodar `npm run python:setup` antes de `npm run app:dist` (local ou em CI) para garantir que o instalador leve o runtime atualizado.
-
-  ### Empacotamento dos scripts
-
-  - `apps/desktop/package.json` copia `conversion_worker.py`, `xlsb_to_xlsx.py`, `xlsx_to_jsonl.js` e `requirements.txt` para `resources/scripts/` através de `extraResources`.
-  - Caso você inclua um runtime Python portátil (por exemplo, `resources/python/bin/python3`), o `main.ts` detecta automaticamente em produção.
-  - O trabalhador utiliza `INGESTS_DIR = <DATA_DIR>/ingests`, então garanta que esse diretório esteja presente ao distribuir builds customizados.
-
-### Módulo nativo `better-sqlite3` (erro NODE_MODULE_VERSION)
-
-Em produção o backend é iniciado pelo executável do Electron, que embute uma versão de Node diferente da versão usada no seu terminal. Módulos nativos precisam ser recompilados para o ABI do Electron.
-
-Sintoma: `ERR_DLOPEN_FAILED` / `Module did not self-register` / versão esperada de `NODE_MODULE_VERSION` diferente.
-
-Dev (solução rápida): usamos o Node do sistema para spawn do backend — isso evita rebuild.
-
-Produção / Rebuild necessário:
-```bash
-npm install --save-dev electron-rebuild
-npx electron-rebuild -w better-sqlite3
-```
-
-Script opcional pós-install no `package.json` raiz:
 ```json
-"scripts": { "postinstall": "electron-rebuild -w better-sqlite3 || true" }
+// package.json do desktop
+{
+  "build": {
+    "appId": "com.revaleon.al-tool",
+    "productName": "AL-Tool",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "python-runtime/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../client/dist",
+        "to": "renderer"
+      },
+      {
+        "from": "python-runtime",
+        "to": "python-runtime"
+      }
+    ],
+    "win": {
+      "target": ["nsis"],
+      "icon": "icons/icon.ico"
+    },
+    "mac": {
+      "target": ["dmg"],
+      "icon": "icons/icon.icns"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "icon": "icons/icon.png"
+    }
+  }
+}
 ```
 
-Se persistir:
+### Artefatos Gerados
+
+| Plataforma | Artefato | Localização |
+|------------|----------|-------------|
+| Windows | `AL-Tool Setup.exe` | `release/` |
+| macOS | `AL-Tool.dmg` | `release/` |
+| Linux | `AL-Tool.AppImage` | `release/` |
+
+---
+
+## 🐍 Python Worker
+
+O Python Worker é responsável por converter arquivos para JSONL:
+
+| Formato | Suporte |
+|---------|---------|
+| XLSB | ✅ Planilhas binárias Excel |
+| XLSX | ✅ Planilhas Excel |
+| PDF | ✅ PDFs com tabelas |
+| TXT | ✅ Arquivos texto delimitados |
+
+### Setup do Worker
+
+#### Desenvolvimento (Conda)
+
 ```bash
-rm -rf node_modules
-npm install
-npx electron-rebuild -w better-sqlite3 -f
+# Criar ambiente
+conda create -n al-tool-python python=3.11 -y
+conda activate al-tool-python
+
+# Instalar dependências
+pip install -r scripts/requirements.txt
 ```
 
-Verifique ABI:
+#### Desenvolvimento (venv)
+
 ```bash
-node -p "process.versions.modules"
-electron -p "process.versions.modules"
+# Na raiz do projeto
+python -m venv .venv
+source .venv/bin/activate  # Linux/macOS
+# ou
+.venv\Scripts\activate     # Windows
+
+pip install -r scripts/requirements.txt
 ```
 
-## Estrutura relevante
+#### Produção (Runtime Bundled)
 
-- `apps/desktop/src/main.ts` — main process do Electron (spawn do backend, health-check, janela).
-- `apps/desktop/package.json` — scripts `dev`, `build`, `dist` e config do `electron-builder`.
-- `apps/api/src/server.ts` — entrypoint único da API (serve `/api` e UI buildada em produção).
-- `apps/api/src/config/paths.ts` — centraliza `DATA_DIR`, `DB_PATH`, `UPLOAD_DIR`, `EXPORT_DIR`.
+O script `python:setup` prepara o runtime:
 
-## Próximos passos
+```bash
+# Windows
+node scripts/windows/prepare_python_runtime_win.py
 
-- Adicionar ícones em `apps/desktop/build/` e configurar no `electron-builder`.
-- (Opcional) Persistir logs do backend em arquivo dentro de `<userData>/logs`.
+# Linux
+node scripts/unix/bootstrap_conversion_runtime.py
+```
+
+Isso cria `apps/desktop/python-runtime/` com:
+- Binários Python embeddable
+- Dependências instaladas
+- Scripts de conversão
+
+### Comunicação com Worker
+
+```typescript
+// pythonWorker.ts
+import { spawn } from 'child_process';
+
+function runConversion(inputPath: string, outputPath: string) {
+  const pythonPath = getPythonPath(); // Resolve caminho do Python
+  const scriptPath = getScriptPath('conversion_worker.py');
+  
+  const proc = spawn(pythonPath, [scriptPath, inputPath, outputPath]);
+  
+  proc.stdout.on('data', (data) => {
+    // Progresso reportado via stdout
+  });
+  
+  proc.on('close', (code) => {
+    // Conversão finalizada
+  });
+}
+```
+
+### Troubleshooting Python
+
+```bash
+# Verificar instalação
+python --version
+pip list | grep -E "openpyxl|pandas|camelot"
+
+# Testar conversão manual
+python scripts/conversion_worker.py input.xlsb output.jsonl
+```
+
+---
+
+## 🔐 Licenciamento
+
+O AL-Tool usa o serviço de licenças Revaleon:
+
+### Fluxo de Licenciamento
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  1. Startup                                                  │
+│     └── Verifica licença local (db/license.json)            │
+│                                                              │
+│  2. Se não existe ou expirada                               │
+│     └── Abre modal de ativação no frontend                  │
+│                                                              │
+│  3. Usuário insere chave                                    │
+│     └── Frontend envia para API → Serviço Revaleon          │
+│                                                              │
+│  4. Validação OK                                            │
+│     └── Salva licença localmente                            │
+│     └── Libera funcionalidades                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Verificação de Licença
+
+```typescript
+// license.ts
+interface License {
+  key: string;
+  expiresAt: Date;
+  features: string[];
+  machineId: string;
+}
+
+async function checkLicense(): Promise<boolean> {
+  const license = loadLocalLicense();
+  
+  if (!license) return false;
+  if (isExpired(license)) return false;
+  if (!matchesMachine(license)) return false;
+  
+  // Validação online periódica
+  return await validateOnline(license);
+}
+```
+
+### Configuração
+
+```bash
+# URL do serviço (produção)
+LICENSE_API_BASE_URL=https://licenses.revaleon.com.br
+
+# URL do serviço (desenvolvimento/staging)
+LICENSE_API_BASE_URL=http://localhost:3100
+```
+
+---
+
+## 💾 Diretórios de Dados
+
+### Estrutura de Dados
+
+```
+DATA_DIR/
+├── db/
+│   └── al-tool.sqlite3         # Banco de dados
+├── uploads/
+│   └── <uuid>/                 # Arquivos originais por upload
+│       └── arquivo.xlsb
+├── ingests/
+│   └── <base_id>/              # JSONL convertidos
+│       └── data.jsonl
+└── exports/
+    └── <job_id>/               # Exportações por job
+        └── evidencias.zip
+```
+
+### Limpeza de Dados
+
+```bash
+# Remover uploads antigos (> 30 dias)
+find $DATA_DIR/uploads -type f -mtime +30 -delete
+
+# Remover exports processados
+find $DATA_DIR/exports -type f -mtime +7 -delete
+```
+
+### Backup
+
+```bash
+# Backup completo
+tar -czf backup-$(date +%Y%m%d).tar.gz $DATA_DIR
+
+# Backup apenas banco
+cp $DATA_DIR/db/al-tool.sqlite3 backup-db.sqlite3
+```
+
+---
+
+## �� Troubleshooting
+
+### Problemas Comuns
+
+#### API não inicia
+
+```bash
+# Verificar porta ocupada
+lsof -i :3132          # Linux/macOS
+netstat -ano | findstr :3132  # Windows
+
+# Verificar logs
+cat ~/.config/al-tool/logs/api.log
+```
+
+#### Python Worker não funciona
+
+```bash
+# Verificar Python
+which python
+python --version
+
+# Testar manualmente
+python scripts/conversion_worker.py --help
+
+# Verificar dependências
+pip show openpyxl pandas
+```
+
+#### Erro de permissão (Windows)
+
+```
+Executar como Administrador (primeira vez para instalar)
+```
+
+#### Banco corrompido
+
+```bash
+# Backup do banco atual
+mv $DATA_DIR/db/al-tool.sqlite3 al-tool.sqlite3.bak
+
+# O app recriará o banco na próxima execução
+# Depois, importe dados se necessário
+```
+
+#### Tela branca no Electron
+
+```bash
+# Verificar se o frontend foi compilado
+ls apps/client/dist/
+
+# Recompilar se necessário
+npm run client:build
+```
+
+### Logs
+
+| Log | Localização |
+|-----|-------------|
+| Electron | Console do DevTools |
+| API | `DATA_DIR/logs/api.log` |
+| Python | `DATA_DIR/logs/python-worker.log` |
+
+### Debug Mode
+
+Para debug avançado:
+
+```bash
+# Iniciar com debug
+DEBUG=* npm run desktop:dev
+
+# Electron verbose
+ELECTRON_ENABLE_LOGGING=1 npm run desktop:dev
+```
+
+---
+
+## 📚 Documentação Relacionada
+
+- [README principal](../../README.md) - Visão geral do projeto
+- [API README](../api/readme.md) - Documentação da API
+- [Client README](../client/readme.md) - Documentação do Frontend
+
+---
+
+## 🔗 Links Úteis
+
+- [Electron Documentation](https://www.electronjs.org/docs)
+- [electron-builder](https://www.electron.build/)
+- [Revaleon Licensing](https://revaleon.com.br)
+
+---
+
+<p align="center">
+  <sub>AL-Tool Desktop - <a href="https://revaleon.com.br">Revaleon</a></sub>
+</p>

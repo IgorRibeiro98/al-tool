@@ -1,20 +1,27 @@
 import { knex as createKnex, Knex } from 'knex';
 import { DB_PATH } from '../config/paths';
 
-// Environment and default constants
-const NODE_ENV = process.env.NODE_ENV || 'development';
+// Environment - always treated as production for performance
+const NODE_ENV = process.env.NODE_ENV || 'production';
 
 const DEFAULTS = Object.freeze({
     JOURNAL: 'WAL',
     SYNCHRONOUS: 'NORMAL',
-    CACHE_PAGES_PROD: -8000,
-    CACHE_PAGES_TEST: -1000,
-    CACHE_PAGES_DEV: -4000,
+    // Negative values = pages in memory. Each page is typically 4KB.
+    // -100000 = ~400MB cache (balanced for 8GB RAM machines)
+    CACHE_PAGES: -100000,
+    // For tests only - smaller cache
+    CACHE_PAGES_TEST: -10000,
     TEMP_STORE: 'MEMORY',
-    BUSY_TIMEOUT_PROD: 30000,
+    // 60s timeout for large operations
+    BUSY_TIMEOUT: 60000,
     BUSY_TIMEOUT_TEST: 5000,
-    BUSY_TIMEOUT_DEV: 30000,
     FOREIGN_KEYS: 'ON',
+    // Memory-mapped I/O size in bytes (512MB - balanced for 8GB RAM)
+    MMAP_SIZE: 536870912,
+    MMAP_SIZE_TEST: 0,
+    // Page size (4KB is default)
+    PAGE_SIZE: 4096,
 });
 
 const dbPath = DB_PATH;
@@ -36,6 +43,7 @@ interface Pragmas {
     readonly tempStore: string;
     readonly busyTimeoutMs: number;
     readonly foreignKeys: string;
+    readonly mmapSize: number; // memory-mapped I/O size in bytes
 }
 
 function resolveDefaultPragmas(): Pragmas {
@@ -45,13 +53,12 @@ function resolveDefaultPragmas(): Pragmas {
     const cacheSizeEnv = process.env.SQLITE_CACHE_SIZE;
     let cacheSize: number;
     if (cacheSizeEnv) {
-        cacheSize = parseInt(cacheSizeEnv, 10) || DEFAULTS.CACHE_PAGES_DEV;
-    } else if (NODE_ENV === 'production') {
-        cacheSize = DEFAULTS.CACHE_PAGES_PROD;
+        cacheSize = parseInt(cacheSizeEnv, 10) || DEFAULTS.CACHE_PAGES;
     } else if (NODE_ENV === 'test') {
         cacheSize = DEFAULTS.CACHE_PAGES_TEST;
     } else {
-        cacheSize = DEFAULTS.CACHE_PAGES_DEV;
+        // Always use production-level cache (no dev/prod distinction)
+        cacheSize = DEFAULTS.CACHE_PAGES;
     }
 
     const tempStore = process.env.SQLITE_TEMP_STORE || DEFAULTS.TEMP_STORE;
@@ -59,16 +66,27 @@ function resolveDefaultPragmas(): Pragmas {
     const busyTimeoutEnv = process.env.SQLITE_BUSY_TIMEOUT;
     let busyTimeoutMs: number;
     if (busyTimeoutEnv) {
-        busyTimeoutMs = parseInt(busyTimeoutEnv, 10) || DEFAULTS.BUSY_TIMEOUT_DEV;
-    } else if (NODE_ENV === 'production') {
-        busyTimeoutMs = DEFAULTS.BUSY_TIMEOUT_PROD;
+        busyTimeoutMs = parseInt(busyTimeoutEnv, 10) || DEFAULTS.BUSY_TIMEOUT;
     } else if (NODE_ENV === 'test') {
         busyTimeoutMs = DEFAULTS.BUSY_TIMEOUT_TEST;
     } else {
-        busyTimeoutMs = DEFAULTS.BUSY_TIMEOUT_DEV;
+        // Always use production-level timeout (no dev/prod distinction)
+        busyTimeoutMs = DEFAULTS.BUSY_TIMEOUT;
     }
 
     const foreignKeys = process.env.SQLITE_FOREIGN_KEYS || DEFAULTS.FOREIGN_KEYS;
+
+    // Memory-mapped I/O - significantly speeds up read-heavy workloads
+    const mmapSizeEnv = process.env.SQLITE_MMAP_SIZE;
+    let mmapSize: number;
+    if (mmapSizeEnv) {
+        mmapSize = parseInt(mmapSizeEnv, 10) || DEFAULTS.MMAP_SIZE;
+    } else if (NODE_ENV === 'test') {
+        mmapSize = DEFAULTS.MMAP_SIZE_TEST;
+    } else {
+        // Always use production-level mmap (no dev/prod distinction)
+        mmapSize = DEFAULTS.MMAP_SIZE;
+    }
 
     return Object.freeze({
         journal,
@@ -77,6 +95,7 @@ function resolveDefaultPragmas(): Pragmas {
         tempStore,
         busyTimeoutMs,
         foreignKeys,
+        mmapSize,
     });
 }
 
@@ -93,6 +112,10 @@ async function applyPragmas(pragmas: Pragmas): Promise<void> {
     await applyPragmaRaw(`PRAGMA synchronous = ${pragmas.synchronous}`);
     await applyPragmaRaw(`PRAGMA cache_size = ${pragmas.cacheSize}`);
     await applyPragmaRaw(`PRAGMA temp_store = ${pragmas.tempStore}`);
+    // Memory-mapped I/O for faster reads (especially beneficial on Windows/SSDs)
+    if (pragmas.mmapSize > 0) {
+        await applyPragmaRaw(`PRAGMA mmap_size = ${pragmas.mmapSize}`);
+    }
 }
 
 // Initialize PRAGMAs asynchronously at startup. Failures are logged but do not crash.
@@ -106,9 +129,12 @@ async function applyPragmas(pragmas: Pragmas): Promise<void> {
             journal_mode: pragmas.journal,
             synchronous: pragmas.synchronous,
             cache_size: pragmas.cacheSize,
+            cache_size_mb: Math.abs(pragmas.cacheSize) * 4 / 1024, // Approx MB
             temp_store: pragmas.tempStore,
             busy_timeout_ms: pragmas.busyTimeoutMs,
             foreign_keys: pragmas.foreignKeys,
+            mmap_size: pragmas.mmapSize,
+            mmap_size_mb: Math.round(pragmas.mmapSize / 1024 / 1024),
             node_env: NODE_ENV,
             db_path: dbPath,
         });

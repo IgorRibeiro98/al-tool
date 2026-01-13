@@ -7,6 +7,22 @@ import { spawn, ChildProcess, execFileSync } from 'child_process';
 import Module from 'module';
 import { createLicensingService } from './main/services/licensingService';
 
+// ============================================================================
+// PERFORMANCE OPTIMIZATIONS - V8/Chromium flags for better memory handling
+// ============================================================================
+// Increase V8 heap size for handling large datasets (default is ~512MB, we want 4GB+)
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
+// Disable GPU acceleration if it causes issues (uncomment if needed)
+// app.commandLine.appendSwitch('disable-gpu');
+// Reduce renderer process overhead
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+// Allow more memory for large file processing
+app.commandLine.appendSwitch('max-active-webgl-contexts', '16');
+// Disable throttling of background tabs (important for long operations)
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+// ============================================================================
+
 // Constants
 const DEFAULT_WINDOW_WIDTH = 1024;
 const DEFAULT_WINDOW_HEIGHT = 768;
@@ -538,7 +554,7 @@ function validateEmbeddedRuntime(isPackaged: boolean): boolean {
         for (const c of exeCandidates) {
             try {
                 if (fs.existsSync(c)) { foundExe = c; break; }
-            } catch {}
+            } catch { }
         }
         if (!foundExe) {
             missing.push(`python executable not found under ${base} (expected ${exeCandidates.join(', ')})`);

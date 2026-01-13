@@ -64,11 +64,18 @@ const BASE_B_STYLES = {
 };
 
 const LOG_PREFIX = '[conciliacao-export]';
-const ZIP_COMPRESSION_LEVEL = 9;
+
+// ============================================================================
+// Configuration - optimized for 8GB RAM Windows machines with i5 8th gen
+// ============================================================================
+// Compression level 6 offers good balance between speed and size (level 9 is much slower)
+const ZIP_COMPRESSION_LEVEL = parseInt(process.env.EXPORT_ZIP_COMPRESSION_LEVEL || '6', 10);
 const WORKBOOK_OPTIONS = { useStyles: true, useSharedStrings: true } as const;
-const EXPORT_CHUNK_SIZE = 10000; // rows per DB fetch when chunking exports (increased for 800k+ tables)
-const STREAM_BATCH_SIZE = 5000; // rows to buffer before writing to Excel
-const TEMP_INDEX_THRESHOLD = 50000; // create temp indexes for tables larger than this
+// Increased batch sizes for better throughput on large tables
+const EXPORT_CHUNK_SIZE = parseInt(process.env.EXPORT_CHUNK_SIZE || '25000', 10);
+const TEMP_INDEX_THRESHOLD = parseInt(process.env.EXPORT_TEMP_INDEX_THRESHOLD || '50000', 10);
+// Enable parallel export of Base A and B (requires more memory but faster)
+const PARALLEL_BASE_EXPORT = process.env.EXPORT_PARALLEL_BASES !== 'false';
 
 function createWorkbookWriter(filePath: string) {
     return new ExcelJS.stream.xlsx.WorkbookWriter({ filename: filePath, ...WORKBOOK_OPTIONS });
@@ -280,13 +287,32 @@ export async function exportJobResultToZip(jobId: number) {
         }
     }
 
-    try { await jobsRepo.setJobExportProgress(jobId, 5, 'EXPORT_BUILDING_A'); } catch (e) { }
-    const fileA = await buildSheetFileForBase({ jobId, side: 'A', meta: metaA, resultTable, keyIds, keyHeaders });
-    try { await jobsRepo.setJobExportProgress(jobId, 40, 'EXPORT_BUILT_A'); } catch (e) { }
+    let fileA: string;
+    let fileB: string;
 
-    try { await jobsRepo.setJobExportProgress(jobId, 45, 'EXPORT_BUILDING_B'); } catch (e) { }
-    const fileB = await buildSheetFileForBase({ jobId, side: 'B', meta: metaB, resultTable, keyIds, keyHeaders });
-    try { await jobsRepo.setJobExportProgress(jobId, 70, 'EXPORT_BUILT_B'); } catch (e) { }
+    if (PARALLEL_BASE_EXPORT) {
+        // Parallel export of Base A and B - faster but uses more memory
+        console.log(`${LOG_PREFIX} Building Base A and B in parallel...`);
+        try { await jobsRepo.setJobExportProgress(jobId, 5, 'EXPORT_BUILDING_A_B_PARALLEL'); } catch (e) { }
+
+        const [resultA, resultB] = await Promise.all([
+            buildSheetFileForBase({ jobId, side: 'A', meta: metaA, resultTable, keyIds, keyHeaders }),
+            buildSheetFileForBase({ jobId, side: 'B', meta: metaB, resultTable, keyIds, keyHeaders })
+        ]);
+        fileA = resultA;
+        fileB = resultB;
+
+        try { await jobsRepo.setJobExportProgress(jobId, 70, 'EXPORT_BUILT_A_B'); } catch (e) { }
+    } else {
+        // Sequential export - lower memory usage
+        try { await jobsRepo.setJobExportProgress(jobId, 5, 'EXPORT_BUILDING_A'); } catch (e) { }
+        fileA = await buildSheetFileForBase({ jobId, side: 'A', meta: metaA, resultTable, keyIds, keyHeaders });
+        try { await jobsRepo.setJobExportProgress(jobId, 40, 'EXPORT_BUILT_A'); } catch (e) { }
+
+        try { await jobsRepo.setJobExportProgress(jobId, 45, 'EXPORT_BUILDING_B'); } catch (e) { }
+        fileB = await buildSheetFileForBase({ jobId, side: 'B', meta: metaB, resultTable, keyIds, keyHeaders });
+        try { await jobsRepo.setJobExportProgress(jobId, 70, 'EXPORT_BUILT_B'); } catch (e) { }
+    }
 
     try { await jobsRepo.setJobExportProgress(jobId, 75, 'EXPORT_BUILDING_COMBINED'); } catch (e) { }
     const fileCombined = await buildCombinedWorkbook({ jobId, metaA, metaB, resultTable, keyIds, keyHeaders, mappingPairs });
@@ -313,7 +339,7 @@ export async function exportJobResultToZip(jobId: number) {
     // create zip using archiver and write to disk
     await new Promise<void>((resolve, reject) => {
         const output = fsSync.createWriteStream(zipAbs);
-        const archive = archiver('zip', { zlib: { level: 9 } });
+        const archive = archiver('zip', { zlib: { level: ZIP_COMPRESSION_LEVEL } });
 
         output.on('close', () => resolve());
         output.on('end', () => resolve());

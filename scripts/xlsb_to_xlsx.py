@@ -5,6 +5,7 @@ Improvements in this refactor:
 - Use pathlib for path handling and ensure output directories exist before writing.
 - Add logging and proper exit codes on failure.
 - Add type hints and clearer JSON normalization for numeric/date types.
+- PERFORMANCE: Buffered I/O for faster writes, batch processing for memory efficiency.
 """
 
 from __future__ import annotations
@@ -13,10 +14,12 @@ import argparse
 import json
 import logging
 import sys
+import io
+import gc
 from decimal import Decimal
 import datetime as _dt
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, List
 
 from pyxlsb import open_workbook
 from openpyxl import Workbook
@@ -25,6 +28,16 @@ from openpyxl import load_workbook
 
 logger = logging.getLogger("xlsb_to_xlsx")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+# ============================================================================
+# PERFORMANCE CONSTANTS - Optimized for 8GB RAM Windows machines
+# ============================================================================
+# Buffer size for file I/O (larger = fewer syscalls = faster)
+WRITE_BUFFER_SIZE = 8 * 1024 * 1024  # 8MB buffer
+# Rows to accumulate before flushing to disk
+FLUSH_INTERVAL = 10000  # Flush every 10k rows
+# Progress logging interval
+PROGRESS_LOG_INTERVAL = 50000  # Log every 50k rows
 
 
 def _normalize_value_for_json(v: Any) -> Any:
@@ -89,16 +102,21 @@ def convert_xlsb_to_xlsx(inpath: str, outpath: str, sheet_index: int = 1) -> Non
 
 
 def convert_xlsb_to_jsonl(inpath: str, outpath: str, sheet_index: int = 1) -> None:
+    """Convert XLSB to JSONL with buffered I/O for better performance."""
     in_path = Path(inpath)
     out_path = Path(outpath)
     _ensure_parent_dir(out_path)
 
-    with open(str(out_path), "w", encoding="utf-8") as fout:
+    rows_written = 0
+    # Use buffered writer for much faster I/O
+    with open(str(out_path), "w", encoding="utf-8", buffering=WRITE_BUFFER_SIZE) as fout:
         with open_workbook(str(in_path)) as wb:
             sheet_names = list(wb.sheets)
             if sheet_index < 1 or sheet_index > len(sheet_names):
                 raise ValueError(f"sheet_index {sheet_index} out of range (1..{len(sheet_names)})")
             sheet_name = sheet_names[sheet_index - 1]
+            logger.info(f"Converting sheet '{sheet_name}' from {in_path.name}")
+            
             with wb.get_sheet(sheet_name) as sheet:
                 for row in sheet.rows():
                     out_row = []
@@ -108,24 +126,59 @@ def convert_xlsb_to_jsonl(inpath: str, outpath: str, sheet_index: int = 1) -> No
                             continue
                         out_row.append(_normalize_value_for_json(cell.v))
                     fout.write(json.dumps(out_row, ensure_ascii=False) + "\n")
+                    rows_written += 1
+                    
+                    # Progress logging for large files
+                    if rows_written % PROGRESS_LOG_INTERVAL == 0:
+                        logger.info(f"Processed {rows_written:,} rows...")
+                    
+                    # Periodic flush to prevent memory buildup
+                    if rows_written % FLUSH_INTERVAL == 0:
+                        fout.flush()
+    
+    # Force garbage collection after large conversion
+    gc.collect()
+    logger.info(f"Conversion complete: {rows_written:,} rows written to {out_path.name}")
 
 
 def convert_xlsx_to_jsonl(inpath: str, outpath: str, sheet_index: int = 1) -> None:
+    """Convert XLSX to JSONL with buffered I/O and optimized memory usage."""
     in_path = Path(inpath)
     out_path = Path(outpath)
     _ensure_parent_dir(out_path)
 
-    with open(str(out_path), "w", encoding="utf-8") as fout:
+    rows_written = 0
+    # Use buffered writer for much faster I/O
+    with open(str(out_path), "w", encoding="utf-8", buffering=WRITE_BUFFER_SIZE) as fout:
+        # read_only=True and data_only=True are critical for memory efficiency
         wb = load_workbook(filename=str(in_path), read_only=True, data_only=True)
         sheets = wb.sheetnames
         if sheet_index < 1 or sheet_index > len(sheets):
             raise ValueError(f"sheet_index {sheet_index} out of range (1..{len(sheets)})")
         sheet = wb[sheets[sheet_index - 1]]
+        logger.info(f"Converting sheet '{sheets[sheet_index - 1]}' from {in_path.name}")
+        
         for row in sheet.iter_rows(values_only=True):
             out_row = []
             for v in row:
                 out_row.append(_normalize_value_for_json(v))
             fout.write(json.dumps(out_row, ensure_ascii=False) + "\n")
+            rows_written += 1
+            
+            # Progress logging for large files
+            if rows_written % PROGRESS_LOG_INTERVAL == 0:
+                logger.info(f"Processed {rows_written:,} rows...")
+            
+            # Periodic flush to prevent memory buildup
+            if rows_written % FLUSH_INTERVAL == 0:
+                fout.flush()
+        
+        # Close workbook to release memory
+        wb.close()
+    
+    # Force garbage collection after large conversion
+    gc.collect()
+    logger.info(f"Conversion complete: {rows_written:,} rows written to {out_path.name}")
 
 
 def main(argv: list[str] | None = None) -> int:

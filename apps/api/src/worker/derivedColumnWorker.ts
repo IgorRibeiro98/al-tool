@@ -1,304 +1,290 @@
 /**
- * Derived Column Worker
- * Processes derived column creation in background for large bases
- * Usage: npx ts-node src/worker/derivedColumnWorker.ts <jobId>
+ * derivedColumnWorker.ts
+ *
+ * Worker that processes derived column jobs. It polls the derived_column_jobs
+ * table for pending jobs and executes the SQL expression to populate the
+ * target column.
+ *
+ * OPTIMIZATIONS:
+ * - FAST mode: Single UPDATE for tables <= threshold (default 500K rows)
+ * - BATCH mode: Direct UPDATE with WHERE for larger tables
+ * - Configurable batch sizes and thresholds via ENV
+ * - Progress tracking with minimal overhead
  */
 
 import db from '../db/knex';
 
-const LOG_PREFIX = '[derivedColumnWorker]';
-const BATCH_SIZE = parseInt(process.env.DERIVED_COLUMN_BATCH_SIZE || '2000', 10);
-const EXIT_SUCCESS = 0;
-const EXIT_FAILURE = 1;
-const EXIT_INVALID_ARG = 2;
-const EXIT_JOB_NOT_FOUND = 3;
-const EXIT_INVALID_BASE = 4;
-const EXIT_COLUMN_NOT_FOUND = 5;
+// Configuration via ENV
+const POLL_INTERVAL_MS = parseInt(process.env.DERIVED_COLUMN_POLL_INTERVAL || '3000', 10);
+const FAST_MODE_THRESHOLD = parseInt(process.env.DERIVED_COLUMN_FAST_THRESHOLD || '500000', 10);
+const BATCH_SIZE = parseInt(process.env.DERIVED_COLUMN_BATCH_SIZE || '50000', 10);
+const DEBUG = process.env.DERIVED_COLUMN_DEBUG === 'true';
 
+// Type definitions
 interface DerivedColumnJob {
     id: number;
     base_id: number;
     source_column: string;
-    target_column: string | null;
-    operation: string;
+    target_column: string;
+    operation: 'ABS' | 'INVERTER';
     status: string;
-    total_rows: number | null;
-    processed_rows: number;
     progress: number;
-    error: string | null;
-    started_at: string | null;
-    completed_at: string | null;
+    error_message?: string;
+    started_at?: string;
+    completed_at?: string;
     created_at: string;
-    updated_at: string;
 }
 
-async function updateJobProgress(jobId: number, processedRows: number, totalRows: number, status = 'RUNNING'): Promise<void> {
-    const progress = totalRows > 0 ? Math.min(100, Math.round((processedRows / totalRows) * 100)) : 0;
-    await db('derived_column_jobs')
-        .where({ id: jobId })
-        .update({
-            processed_rows: processedRows,
-            progress,
-            status,
-            updated_at: db.fn.now()
-        });
-}
-
-async function updateJobStatus(jobId: number, status: string, error?: string): Promise<void> {
-    const updates: Record<string, unknown> = {
-        status,
-        updated_at: db.fn.now()
-    };
-    if (error !== undefined) {
-        updates.error = error;
+const log = (msg: string, data?: unknown) => {
+    if (DEBUG) {
+        console.log(`[derivedColumnWorker] ${msg}`, data ?? '');
     }
-    if (status === 'DONE' || status === 'FAILED') {
-        updates.completed_at = db.fn.now();
-    }
-    await db('derived_column_jobs').where({ id: jobId }).update(updates);
-}
+};
 
-async function handleFatal(jobId: number | null, err: unknown): Promise<never> {
-    console.error(`${LOG_PREFIX} fatal error`, err);
-    if (jobId) {
-        const message = err instanceof Error ? err.message : String(err);
-        try {
-            await updateJobStatus(jobId, 'FAILED', message);
-        } catch { /* ignore */ }
-    }
-    process.exit(EXIT_FAILURE);
-}
+/**
+ * Build the SQL expression for a given operation
+ */
+function buildExpression(operation: string, sourceColumn: string): string {
+    const escapedCol = `"${sourceColumn}"`;
 
-function getOperationExpression(op: string, sourceColumn: string): any {
-    const opUpper = String(op).toUpperCase();
-    switch (opUpper) {
+    switch (operation.toUpperCase()) {
         case 'ABS':
-            return db.raw('abs(??)', [sourceColumn]);
+            return `ABS(CAST(${escapedCol} AS REAL))`;
         case 'INVERTER':
-            return db.raw('(-1) * ??', [sourceColumn]);
+            return `(CAST(${escapedCol} AS REAL) * -1)`;
         default:
-            throw new Error(`Unsupported derived operation: ${op}`);
+            throw new Error(`Unknown operation: ${operation}`);
     }
 }
 
-function generateTargetColumnName(op: string, sourceColumn: string): string {
-    const prefix = String(op).toLowerCase();
-    let targetCol = `${prefix}_${sourceColumn}`.toLowerCase();
-    return targetCol.replace(/[^a-z0-9_]/g, '_');
+/**
+ * Get the table name for a base
+ */
+function getTableName(baseId: number): string {
+    return `base_${baseId}`;
 }
 
-async function main(): Promise<void> {
-    const argv = process.argv || [];
-    const jobId = parseInt(argv[2] || '', 10);
+/**
+ * Count total rows in a table
+ */
+async function countRows(tableName: string): Promise<number> {
+    const result = await db(tableName).count('* as cnt').first();
+    return parseInt(String(result?.cnt ?? 0), 10);
+}
 
-    if (!jobId || Number.isNaN(jobId)) {
-        console.error(`${LOG_PREFIX} requires a numeric jobId argument`);
-        process.exit(EXIT_INVALID_ARG);
+/**
+ * Count rows where target column is NULL
+ */
+async function countPendingRows(
+    tableName: string,
+    targetColumn: string
+): Promise<number> {
+    const result = await db(tableName)
+        .whereNull(targetColumn)
+        .count('* as cnt')
+        .first();
+    return parseInt(String(result?.cnt ?? 0), 10);
+}
+
+/**
+ * Update job progress
+ */
+async function updateProgress(
+    jobId: number,
+    progress: number
+): Promise<void> {
+    await db('derived_column_jobs')
+        .where('id', jobId)
+        .update({ progress: Math.min(100, Math.round(progress)) });
+}
+
+/**
+ * Execute derived column calculation - FAST mode
+ * Single UPDATE statement for entire table
+ */
+async function executeFastMode(
+    tableName: string,
+    targetColumn: string,
+    expression: string
+): Promise<number> {
+    const sql = `UPDATE "${tableName}" SET "${targetColumn}" = ${expression} WHERE "${targetColumn}" IS NULL`;
+    const result = await db.raw(sql);
+    return result?.changes ?? 0;
+}
+
+/**
+ * Execute derived column calculation - BATCH mode
+ * Uses ROWID-based batching for efficiency
+ */
+async function executeBatchMode(
+    tableName: string,
+    targetColumn: string,
+    expression: string,
+    totalRows: number,
+    jobId: number
+): Promise<number> {
+    let processedTotal = 0;
+    let lastReportedProgress = 0;
+
+    // Get min and max rowid
+    const minMaxResult = await db.raw(
+        `SELECT MIN(rowid) as minId, MAX(rowid) as maxId FROM "${tableName}" WHERE "${targetColumn}" IS NULL`
+    );
+
+    let minId = minMaxResult?.[0]?.minId ?? 0;
+    const maxId = minMaxResult?.[0]?.maxId ?? 0;
+
+    if (minId === null || maxId === null) {
+        log('No pending rows found');
+        return 0;
     }
 
-    console.log(`${LOG_PREFIX} starting job ${jobId}`);
+    // Process in batches using rowid ranges
+    while (minId <= maxId) {
+        const batchEnd = minId + BATCH_SIZE - 1;
+
+        // Direct UPDATE with rowid range - much faster than SELECT + UPDATE
+        const sql = `
+            UPDATE "${tableName}" 
+            SET "${targetColumn}" = ${expression} 
+            WHERE rowid >= ${minId} 
+              AND rowid <= ${batchEnd}
+              AND "${targetColumn}" IS NULL
+        `;
+
+        const result = await db.raw(sql);
+        const affected = result?.changes ?? 0;
+        processedTotal += affected;
+
+        // Update progress (limit updates to reduce DB writes)
+        const progress = Math.min(99, (processedTotal / totalRows) * 100);
+        if (progress - lastReportedProgress >= 5) {
+            await updateProgress(jobId, progress);
+            lastReportedProgress = progress;
+            log(`Progress: ${progress.toFixed(1)}% (${processedTotal}/${totalRows})`);
+        }
+
+        minId = batchEnd + 1;
+    }
+
+    return processedTotal;
+}
+
+/**
+ * Process a single derived column job
+ */
+async function processJob(job: DerivedColumnJob): Promise<void> {
+    const tableName = getTableName(job.base_id);
+    const targetCol = job.target_column;
+    const sourceCol = job.source_column;
+
+    log(`Processing job ${job.id}`, { tableName, sourceCol, targetCol, operation: job.operation });
 
     try {
-        const job = await db('derived_column_jobs').where({ id: jobId }).first() as DerivedColumnJob | undefined;
-        if (!job) {
-            console.error(`${LOG_PREFIX} job not found`, jobId);
-            process.exit(EXIT_JOB_NOT_FOUND);
-        }
+        // Mark as running
+        await db('derived_column_jobs')
+            .where('id', job.id)
+            .update({
+                status: 'running',
+                started_at: new Date().toISOString(),
+                progress: 0
+            });
 
-        // Check if already done
-        if (job.status === 'DONE') {
-            console.log(`${LOG_PREFIX} job already completed, exiting`);
-            process.exit(EXIT_SUCCESS);
-        }
+        // Build expression
+        const expression = buildExpression(job.operation, sourceCol);
+        log(`Expression: ${expression}`);
 
-        // If job is RUNNING with progress=100, it likely crashed before finalizing
-        // We should finalize it (persist metadata and mark as DONE)
-        if (job.status === 'RUNNING' && job.progress >= 100) {
-            console.log(`${LOG_PREFIX} job was RUNNING with 100% progress, finalizing...`);
-            const base = await db('bases').where({ id: job.base_id }).first();
-            if (base && base.tabela_sqlite && job.target_column) {
-                await persistMetadata(job.base_id, job.target_column, job.operation, job.source_column);
-                await db('derived_column_jobs').where({ id: jobId }).update({
-                    status: 'DONE',
-                    completed_at: db.fn.now(),
-                    updated_at: db.fn.now()
+        // Count rows to process
+        const totalRows = await countRows(tableName);
+        const pendingRows = await countPendingRows(tableName, targetCol);
+
+        log(`Table stats`, { totalRows, pendingRows });
+
+        if (pendingRows === 0) {
+            // Nothing to do
+            await db('derived_column_jobs')
+                .where('id', job.id)
+                .update({
+                    status: 'completed',
+                    progress: 100,
+                    completed_at: new Date().toISOString()
                 });
-                console.log(`${LOG_PREFIX} job ${jobId} finalized successfully`);
-            }
-            process.exit(0);
+            return;
         }
 
-        // If job is RUNNING but not at 100%, allow it to continue (recover from crash)
-        // The loop will skip already-processed rows since they have non-null target column values
+        const startTime = Date.now();
+        let processedRows = 0;
 
-        // Get base
-        const base = await db('bases').where({ id: job.base_id }).first();
-        if (!base?.tabela_sqlite) {
-            await updateJobStatus(jobId, 'FAILED', 'Base inválida ou não ingerida');
-            process.exit(EXIT_INVALID_BASE);
+        // Choose mode based on table size
+        if (totalRows <= FAST_MODE_THRESHOLD) {
+            log(`Using FAST mode (table has ${totalRows} rows, threshold is ${FAST_MODE_THRESHOLD})`);
+            processedRows = await executeFastMode(tableName, targetCol, expression);
+        } else {
+            log(`Using BATCH mode (table has ${totalRows} rows, batch size ${BATCH_SIZE})`);
+            processedRows = await executeBatchMode(tableName, targetCol, expression, pendingRows, job.id);
         }
 
-        const tableName = base.tabela_sqlite as string;
-        const sourceColumn = job.source_column;
-        const operation = job.operation;
+        const elapsed = Date.now() - startTime;
+        const rowsPerSecond = processedRows > 0 ? Math.round(processedRows / (elapsed / 1000)) : 0;
 
-        // Validate source column exists
-        const colInfo = await db(tableName).columnInfo();
-        const columns = Object.keys(colInfo || {});
-        if (!columns.includes(sourceColumn)) {
-            await updateJobStatus(jobId, 'FAILED', `Coluna origem '${sourceColumn}' não encontrada na tabela ${tableName}`);
-            process.exit(EXIT_COLUMN_NOT_FOUND);
-        }
+        log(`Job ${job.id} completed`, { processedRows, elapsedMs: elapsed, rowsPerSecond });
 
-        // Generate or use target column name
-        const targetCol = job.target_column || generateTargetColumnName(operation, sourceColumn);
-
-        // Add column if it doesn't exist
-        if (!columns.includes(targetCol)) {
-            console.log(`${LOG_PREFIX} adding column ${targetCol} to ${tableName}`);
-            await db.schema.alterTable(tableName, (t) => {
-                t.decimal(targetCol, 30, 10).nullable();
+        // Mark as completed
+        await db('derived_column_jobs')
+            .where('id', job.id)
+            .update({
+                status: 'completed',
+                progress: 100,
+                completed_at: new Date().toISOString()
             });
-        }
 
-        // Update job with target column if it wasn't set
-        if (!job.target_column) {
-            await db('derived_column_jobs').where({ id: jobId }).update({
-                target_column: targetCol,
-                updated_at: db.fn.now()
+    } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`[derivedColumnWorker] Job ${job.id} failed:`, errorMessage);
+
+        await db('derived_column_jobs')
+            .where('id', job.id)
+            .update({
+                status: 'failed',
+                error_message: errorMessage.slice(0, 1000),
+                completed_at: new Date().toISOString()
             });
-        }
-
-        // Get remaining rows to process (NULL target column)
-        const countResult = await db(tableName).whereNull(targetCol).count('* as cnt').first();
-        const remainingRows = Number(countResult?.cnt) || 0;
-
-        // Get total rows in table for progress calculation
-        const totalCountResult = await db(tableName).count('* as cnt').first();
-        const totalTableRows = Number(totalCountResult?.cnt) || 0;
-
-        // Determine if this is a recovery (job was already running)
-        const isRecovery = job.status === 'RUNNING';
-        const alreadyProcessed = totalTableRows - remainingRows;
-
-        console.log(`${LOG_PREFIX} remaining rows to process: ${remainingRows}${isRecovery ? ` (recovery mode, already processed: ${alreadyProcessed})` : ''}`);
-
-        await db('derived_column_jobs').where({ id: jobId }).update({
-            total_rows: totalTableRows,
-            processed_rows: alreadyProcessed,
-            status: 'RUNNING',
-            started_at: isRecovery ? job.started_at : db.fn.now(),
-            updated_at: db.fn.now()
-        });
-
-        if (remainingRows === 0) {
-            console.log(`${LOG_PREFIX} no rows to process, marking as done`);
-            await updateJobStatus(jobId, 'DONE');
-            await persistMetadata(job.base_id, targetCol, operation, sourceColumn);
-            process.exit(0);
-        }
-
-        // Get operation expression
-        const opExpression = getOperationExpression(operation, sourceColumn);
-
-        // Process in batches
-        let processedRows = alreadyProcessed;
-        let lastProgressLog = 0;
-
-        while (true) {
-            // Get batch of IDs where target column is null
-            const ids: number[] = await db(tableName)
-                .whereNull(targetCol)
-                .limit(BATCH_SIZE)
-                .pluck('id');
-
-            if (!ids || ids.length === 0) {
-                break;
-            }
-
-            // Update in batches (SQLite has limit of ~999 variables)
-            const CHUNK_SIZE = 500;
-            for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
-                const chunk = ids.slice(i, i + CHUNK_SIZE);
-                await db(tableName)
-                    .whereIn('id', chunk)
-                    .update({ [targetCol]: opExpression });
-            }
-
-            processedRows += ids.length;
-
-            // Update progress every 5%
-            const currentProgress = Math.round((processedRows / totalTableRows) * 100);
-            if (currentProgress >= lastProgressLog + 5 || currentProgress === 100) {
-                console.log(`${LOG_PREFIX} progress: ${processedRows}/${totalTableRows} (${currentProgress}%)`);
-                await updateJobProgress(jobId, processedRows, totalTableRows);
-                lastProgressLog = currentProgress;
-            }
-
-            // Allow GC between batches for very large datasets
-            if (processedRows % (BATCH_SIZE * 10) === 0 && global.gc) {
-                global.gc();
-            }
-        }
-
-        // Persist metadata
-        await persistMetadata(job.base_id, targetCol, operation, sourceColumn);
-
-        // Mark as done
-        await db('derived_column_jobs').where({ id: jobId }).update({
-            processed_rows: processedRows,
-            progress: 100,
-            status: 'DONE',
-            completed_at: db.fn.now(),
-            updated_at: db.fn.now()
-        });
-
-        console.log(`${LOG_PREFIX} job ${jobId} completed: ${processedRows} rows processed`);
-        process.exit(0);
-
-    } catch (err) {
-        await handleFatal(jobId, err);
     }
 }
 
-async function persistMetadata(baseId: number, targetCol: string, operation: string, sourceColumn: string) {
+/**
+ * Poll for pending jobs and process them
+ */
+async function poll(): Promise<void> {
     try {
-        // Check if column already exists in base_columns
-        const existingCol = await db('base_columns')
-            .where({ base_id: baseId, sqlite_name: targetCol })
-            .first();
+        // Get next pending job (FIFO)
+        const job = await db('derived_column_jobs')
+            .where('status', 'pending')
+            .orderBy('created_at', 'asc')
+            .first() as DerivedColumnJob | undefined;
 
-        if (!existingCol) {
-            const maxIdxRow = await db('base_columns')
-                .where({ base_id: baseId })
-                .max('col_index as mx')
-                .first();
-            const nextIndex = (maxIdxRow && (maxIdxRow.mx || 0)) + 1;
-            // Use descriptive name: OP(source_column)
-            const excelName = `${String(operation).toUpperCase()}`;
-
-            await db('base_columns').insert({
-                base_id: baseId,
-                col_index: nextIndex,
-                excel_name: excelName,
-                sqlite_name: targetCol
-            });
-            console.log(`${LOG_PREFIX} added base_columns metadata for ${targetCol}`);
+        if (job) {
+            await processJob(job);
         }
-    } catch (e) {
-        console.error(`${LOG_PREFIX} failed to save base_columns metadata`, e);
+    } catch (error) {
+        console.error('[derivedColumnWorker] Poll error:', error);
     }
-
-    // Clear cache
-    try {
-        const baseColsRepo = require('../repos/baseColumnsRepository').default;
-        if (baseColsRepo && typeof baseColsRepo.clearColumnsCache === 'function') {
-            baseColsRepo.clearColumnsCache(baseId);
-        }
-    } catch (_) { /* ignore */ }
 }
 
-main().catch((err) => {
-    console.error(`${LOG_PREFIX} unhandled error`, err);
-    process.exit(1);
-});
+/**
+ * Main worker loop
+ */
+export async function derivedColumnWorkerLoop(): Promise<void> {
+    console.log(`[derivedColumnWorkerLoop] started (poll interval: ${POLL_INTERVAL_MS / 1000}s, fast threshold: ${FAST_MODE_THRESHOLD}, batch size: ${BATCH_SIZE})`);
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+        await poll();
+        await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+}
+
+// Start worker if running directly
+if (require.main === module) {
+    derivedColumnWorkerLoop().catch(console.error);
+}

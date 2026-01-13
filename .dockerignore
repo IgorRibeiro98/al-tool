@@ -1,0 +1,79 @@
+# Arquivos de build
+dist/
+build/
+*.tsbuildinfo
+
+# Dependências
+node_modules/
+apps/*/node_modules/
+packages/*/node_modules/
+
+# Dados locais (não enviar para produção)
+storage/
+apps/api/storage/
+apps/desktop/storage/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Logs
+logs/
+*.log
+apps/api/logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+.venv/
+venv/
+ENV/
+apps/desktop/python-runtime/
+apps/desktop/python-runtime-win/
+
+# Electron (não necessário para cloud)
+apps/desktop/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Ambiente
+.env
+.env.local
+.env.*.local
+!.env.example
+!.env.production
+
+# Temporários
+tmp/
+temp/
+*.tmp
+
+# Testes
+coverage/
+.nyc_output/
+
+# Git
+.git/
+.gitignore
+
+# Documentação de build
+README.md
+docs/
+*.md
+
+# Arquivos de configuração de desenvolvimento
+tsconfig*.json
+eslint.config.js
+prettier.config.js
+jest.config.js
+vitest.config.ts

@@ -204,14 +204,20 @@ def run_conversion(abs_input: str, abs_output: str) -> Tuple[int, str, str]:
 
 def connect_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=BUSY_TIMEOUT_MS / 1000.0)
-    try:
-        conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-    except Exception:
-        pass
-    try:
-        conn.execute(f"PRAGMA journal_mode = {JOURNAL_MODE}")
-    except Exception:
-        pass
+    # Apply performance PRAGMAs
+    pragmas = [
+        f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}",
+        f"PRAGMA journal_mode = {JOURNAL_MODE}",
+        "PRAGMA synchronous = NORMAL",
+        "PRAGMA temp_store = MEMORY",
+        "PRAGMA cache_size = -100000",  # ~400MB cache
+        "PRAGMA mmap_size = 536870912",  # 512MB mmap
+    ]
+    for pragma in pragmas:
+        try:
+            conn.execute(pragma)
+        except Exception:
+            pass
     return conn
 
 

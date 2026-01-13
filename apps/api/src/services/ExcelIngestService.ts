@@ -7,13 +7,15 @@ import { Knex } from 'knex';
 
 // Constants for sensible defaults - optimized for SQLite WAL mode
 // Larger batches significantly reduce transaction overhead
-const DEFAULT_SAMPLE_ROWS_JSONL = 500;
-const DEFAULT_BATCH_SIZE_JSONL = 2000;  // Increased from 200 - SQLite handles this well with WAL
-const DEFAULT_SAMPLE_ROWS_XLSX = 300;
-const DEFAULT_BATCH_SIZE_XLSX = 1500;   // Increased from 100 - reduces transaction commits
+// PERFORMANCE OPTIMIZED: Increased for faster processing on capable machines
+const DEFAULT_SAMPLE_ROWS_JSONL = 1000;  // Increased from 500
+const DEFAULT_BATCH_SIZE_JSONL = 5000;   // Increased from 2000 - SQLite handles this well with WAL
+const DEFAULT_SAMPLE_ROWS_XLSX = 500;    // Increased from 300
+const DEFAULT_BATCH_SIZE_XLSX = 3000;    // Increased from 1500 - reduces transaction commits
 
 // Maximum rows per transaction to prevent long locks
-const MAX_ROWS_PER_TRANSACTION = 50000;
+// Increased for better throughput on modern SSDs
+const MAX_ROWS_PER_TRANSACTION = 100000;  // Increased from 50000
 
 // SQLite has a limit of ~999 SQL variables per statement
 // We calculate chunk size dynamically based on column count
@@ -53,19 +55,25 @@ export class ExcelIngestService {
     // Apply PRAGMA optimizations; safe to call inside/outside transactions
     private async applyPragmas(conn: Knex | Knex.Transaction) {
         const env = process.env;
-        const envName = env.NODE_ENV || 'development';
+        const envName = env.NODE_ENV || 'production';
 
         const isTransaction = Boolean((conn as any).isTransaction || (conn as any).client?.isTransaction);
 
-        const defaultCacheSize = envName === 'production' ? '-400000' : envName === 'test' ? '-50000' : '-200000';
-        const defaultBusyTimeout = envName === 'production' ? '12000' : envName === 'test' ? '4000' : '8000';
+        // PERFORMANCE: No dev/prod distinction - always use optimized values
+        // For tests only, use smaller values
+        const isTest = envName === 'test';
+        // -200000 pages = ~800MB cache (balanced for 8GB RAM machines)
+        const defaultCacheSize = isTest ? '-50000' : '-200000';
+        const defaultBusyTimeout = isTest ? '4000' : '60000';
+        // 512MB mmap for faster I/O during ingest (balanced for 8GB RAM)
+        const defaultMmapSize = isTest ? '0' : '536870912';
 
         const pragmas: Array<{ key: string; value: string | number }> = [];
         if (!isTransaction) pragmas.push({ key: 'journal_mode', value: env.INGEST_PRAGMA_JOURNAL_MODE || env.SQLITE_JOURNAL_MODE || 'WAL' });
         if (!isTransaction) pragmas.push({ key: 'synchronous', value: env.INGEST_PRAGMA_SYNCHRONOUS || env.SQLITE_SYNCHRONOUS || 'NORMAL' });
         if (!isTransaction) pragmas.push({ key: 'temp_store', value: env.INGEST_PRAGMA_TEMP_STORE || env.SQLITE_TEMP_STORE || 'MEMORY' });
         if (!isTransaction) pragmas.push({ key: 'cache_size', value: env.INGEST_PRAGMA_CACHE_SIZE ?? env.SQLITE_CACHE_SIZE ?? defaultCacheSize });
-        if (!isTransaction) pragmas.push({ key: 'mmap_size', value: env.INGEST_PRAGMA_MMAP_SIZE || env.SQLITE_MMAP_SIZE || '' });
+        if (!isTransaction) pragmas.push({ key: 'mmap_size', value: env.INGEST_PRAGMA_MMAP_SIZE || env.SQLITE_MMAP_SIZE || defaultMmapSize });
         pragmas.push({ key: 'busy_timeout', value: env.INGEST_PRAGMA_BUSY_TIMEOUT ?? env.SQLITE_BUSY_TIMEOUT ?? defaultBusyTimeout });
         if (!isTransaction) pragmas.push({ key: 'foreign_keys', value: env.INGEST_PRAGMA_FOREIGN_KEYS ?? env.SQLITE_FOREIGN_KEYS ?? 'ON' });
 

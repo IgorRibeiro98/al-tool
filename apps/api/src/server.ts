@@ -12,6 +12,7 @@ import keysRouter from './routes/keys';
 import keysPairsRouter from './routes/keysPairs';
 import maintenanceRouter from './routes/maintenance';
 import licenseRouter from './routes/license';
+import debugRouter from './routes/debug';
 import './pipeline/integration';
 import { startConciliacaoWorker } from './worker/conciliacaoWorker';
 import { startIngestWorker } from './worker/ingestWorker';
@@ -57,6 +58,7 @@ function createApiRouter() {
     router.use('/atribuicoes', atribuicoesRouter);
     router.use('/maintenance', maintenanceRouter);
     router.use('/license', licenseRouter);
+    router.use('/debug', debugRouter);
     return router;
 }
 

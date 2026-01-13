@@ -144,10 +144,57 @@ export async function ensureIndicesForBaseFromConfigs(baseId: number) {
   }
 }
 
+/**
+ * Create essential indexes for a base table immediately after ingest.
+ * This speeds up subsequent operations like conciliação and export.
+ * @param baseId - The base ID
+ * @param columnNames - Optional list of column names to index (for key columns)
+ */
+export async function createEssentialIndices(baseId: number, columnNames?: string[]) {
+  if (!baseId || Number.isNaN(baseId)) return;
+  const tableName = `base_${baseId}`;
+
+  try {
+    // The 'id' column is auto-indexed as PRIMARY KEY, but we ensure it exists
+    // Create indexes on commonly queried columns if provided
+    if (columnNames && columnNames.length > 0) {
+      const batchSize = 5; // Create indexes in batches to avoid long locks
+      for (let i = 0; i < columnNames.length; i += batchSize) {
+        const batch = columnNames.slice(i, i + batchSize);
+        await Promise.all(batch.map(col => ensureIndexForTableColumn(tableName, col, baseId)));
+      }
+    }
+
+    // Run ANALYZE to update query planner statistics
+    try {
+      await db.raw(`ANALYZE "${tableName}"`);
+    } catch (_) {
+      // Best-effort
+    }
+  } catch (err) {
+    logError('createEssentialIndices', err);
+  }
+}
+
+/**
+ * Pre-warm the SQLite cache by reading table statistics.
+ * This can speed up subsequent queries on cold starts.
+ */
+export async function warmTableCache(tableName: string) {
+  try {
+    // Simple count query to warm the cache
+    await db.raw(`SELECT COUNT(*) FROM "${tableName}"`);
+  } catch (_) {
+    // Best-effort, ignore errors
+  }
+}
+
 export default {
   createIndexIfNotExists,
   ensureIndicesForConfigConciliacao,
   ensureIndicesForConfigEstorno,
   ensureIndicesForConfigCancelamento,
   ensureIndicesForBaseFromConfigs,
+  createEssentialIndices,
+  warmTableCache,
 };
