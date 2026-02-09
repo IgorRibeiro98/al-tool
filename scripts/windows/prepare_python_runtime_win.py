@@ -112,6 +112,33 @@ def install_pip_best_effort(python_exe: Path, tmp_dir: Path) -> None:
         log(f"Failed to bootstrap pip into embedded runtime; continuing without pip: {exc}")
 
 
+def download_windows_wheels(host_python: str, requirements: Path, wheel_dir: Path) -> None:
+    """Download pre-compiled Windows wheels instead of building locally.
+    
+    This is critical for packages like PyArrow that have C/C++ extensions.
+    Using --platform and --only-binary ensures we get Windows binaries
+    even when running this script on Linux (e.g., in CI).
+    """
+    wheel_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Use pip download with Windows platform specifier
+    # This downloads pre-compiled wheels from PyPI for Windows
+    # Include dependencies to ensure all native extensions are downloaded
+    cmd = [
+        host_python, "-m", "pip", "download",
+        "-r", str(requirements),
+        "-d", str(wheel_dir),
+        "--platform", "win_amd64",
+        "--python-version", "3.12",
+        "--only-binary", ":all:",
+        "--implementation", "cp",  # CPython
+        "--abi", "cp312",  # Match Python 3.12
+    ]
+    
+    log(f"Downloading Windows wheels: {' '.join(cmd)}")
+    safe_run(cmd)
+
+
 def build_wheels_with_host(host_python: str, requirements: Path, wheel_dir: Path) -> None:
     wheel_dir.mkdir(parents=True, exist_ok=True)
     cmd = [host_python, "-m", "pip", "wheel", "-r", str(requirements), "-w", str(wheel_dir)]
@@ -231,7 +258,7 @@ def main() -> int:
         tmp = Path(td)
         install_pip_best_effort(python_exe, tmp)
 
-    # Install requirements into embedded runtime using host Python (sys.executable)
+    # Install requirements into embedded runtime by downloading pre-compiled Windows wheels
     site_packages = target_win / "Lib" / "site-packages"
     scripts_dir = target_win / "Scripts"
 
@@ -239,11 +266,11 @@ def main() -> int:
         wheel_dir = Path(td) / "wheels"
         try:
             host_python = sys.executable
-            log(f"Building wheels using host python: {host_python}")
-            build_wheels_with_host(host_python, requirements, wheel_dir)
+            log(f"Downloading Windows wheels using host python: {host_python}")
+            download_windows_wheels(host_python, requirements, wheel_dir)
             install_wheels_by_extracting(wheel_dir, site_packages, scripts_dir)
         except Exception as exc:
-            print(f"Failed to build/extract wheels with host Python: {exc}", file=sys.stderr)
+            print(f"Failed to download/extract Windows wheels: {exc}", file=sys.stderr)
             return 3
 
     # For compatibility with current packaging (extraResources maps python-runtime -> resources/python)
