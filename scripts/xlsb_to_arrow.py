@@ -40,6 +40,30 @@ PROGRESS_LOG_INTERVAL = 50000  # Log every 50k rows
 SCHEMA_SAMPLE_ROWS = 1000
 
 
+def _normalize_numeric_precision(value: float) -> float:
+    """Normaliza números float para evitar artefatos de precisão Float64.
+    
+    Exemplo: 80.93999999999999 -> 80.94
+    
+    Isso é necessário porque valores decimais em Excel podem ser
+    representados com pequenos erros de precisão em float.
+    Para conciliação, precisamos que os números sejam representados
+    de forma consistente para que as chaves compostas correspondam.
+    """
+    if not isinstance(value, float):
+        return value
+    if not value or value != value:  # handle NaN
+        return value
+    if value == int(value):  # inteiro exato
+        return value
+    
+    # Arredonda para 10 casas decimais para eliminar artefatos Float64
+    rounded = round(value, 10)
+    
+    # Remove zeros à direita convertendo para string e de volta
+    return float(f"{rounded:g}")
+
+
 def _normalize_value(v: Any) -> Any:
     """Normalize cell values to Python primitives.
     
@@ -50,12 +74,14 @@ def _normalize_value(v: Any) -> Any:
         return None
     if isinstance(v, bool):
         return v
-    if isinstance(v, (int, float)):
-        # Keep as number - Arrow will use appropriate type
+    if isinstance(v, float):
+        # Normaliza precisão para evitar artefatos Float64
+        return _normalize_numeric_precision(v)
+    if isinstance(v, int):
         return v
     if isinstance(v, Decimal):
-        # Convert Decimal to float for Arrow
-        return float(v)
+        # Convert Decimal to float for Arrow with precision normalization
+        return _normalize_numeric_precision(float(v))
     if isinstance(v, (_dt.datetime, _dt.date)):
         # Keep datetime objects - Arrow handles them natively
         return v
@@ -242,8 +268,10 @@ def convert_xlsb_to_arrow(
                         header_found = True
                         continue
                     
-                    # Collect sample rows for schema inference
-                    if len(sample_rows) < SCHEMA_SAMPLE_ROWS:
+                    # Collect sample rows for schema inference (only before schema is created)
+                    # BUG FIX: Added "schema is None" check to prevent collecting samples
+                    # after schema creation, which caused 1000 rows to be lost.
+                    if schema is None and len(sample_rows) < SCHEMA_SAMPLE_ROWS:
                         sample_rows.append(row_values)
                         continue
                     
@@ -363,8 +391,10 @@ def convert_xlsx_to_arrow(
                 header_found = True
                 continue
             
-            # Collect sample rows for schema inference
-            if len(sample_rows) < SCHEMA_SAMPLE_ROWS:
+            # Collect sample rows for schema inference (only before schema is created)
+            # BUG FIX: Added "schema is None" check to prevent collecting samples
+            # after schema creation, which caused 1000 rows to be lost.
+            if schema is None and len(sample_rows) < SCHEMA_SAMPLE_ROWS:
                 sample_rows.append(row_values)
                 continue
             

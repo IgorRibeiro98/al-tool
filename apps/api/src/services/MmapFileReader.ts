@@ -45,6 +45,33 @@ import fs from 'fs';
 import * as Arrow from 'apache-arrow';
 
 // ============================================================================
+// Numeric Precision Utilities
+// ============================================================================
+
+/**
+ * Normaliza números Float64 para evitar artefatos de precisão.
+ * Exemplo: 80.93999999999999 -> 80.94
+ * 
+ * Isso é necessário porque o Arrow usa Float64 que pode introduzir
+ * pequenos erros de precisão em números decimais. Para conciliação,
+ * precisamos que os números sejam representados de forma consistente
+ * para que as chaves compostas correspondam corretamente.
+ */
+function normalizeNumericPrecision(value: number): number {
+    if (!Number.isFinite(value)) return value;
+    if (Number.isInteger(value)) return value;
+
+    // Arredonda para 10 casas decimais para eliminar artefatos Float64
+    // mantendo precisão suficiente para valores monetários
+    const rounded = Math.round(value * 1e10) / 1e10;
+
+    // Remove zeros à direita convertendo para string e de volta
+    // Ex: 80.940000000 -> 80.94
+    const str = rounded.toString();
+    return parseFloat(str);
+}
+
+// ============================================================================
 // Types
 // ============================================================================
 
@@ -172,10 +199,14 @@ export async function* streamArrowWithMmap(
                 const column = columns[colIdx];
                 let value = column ? column.get(rowIdx) : null;
 
-                // Convert Arrow values to JS primitives
+                // Convert Arrow values to JS primitives with precision normalization
                 if (value !== null && value !== undefined) {
                     if (typeof value === 'bigint') {
                         value = Number(value);
+                    } else if (typeof value === 'number') {
+                        // Normaliza precisão para evitar artefatos Float64
+                        // Ex: 80.93999999999999 -> 80.94
+                        value = normalizeNumericPrecision(value);
                     } else if (value instanceof Date) {
                         value = value.toISOString();
                     } else if (typeof value === 'object') {
@@ -247,10 +278,13 @@ export async function* streamArrowBatchesWithMmap(
                     const column = columns[colIdx];
                     let value = column ? column.get(rowIdx) : null;
 
-                    // Convert Arrow values to JS primitives
+                    // Convert Arrow values to JS primitives with precision normalization
                     if (value !== null && value !== undefined) {
                         if (typeof value === 'bigint') {
                             value = Number(value);
+                        } else if (typeof value === 'number') {
+                            // Normaliza precisão para evitar artefatos Float64
+                            value = normalizeNumericPrecision(value);
                         } else if (value instanceof Date) {
                             value = value.toISOString();
                         } else if (typeof value === 'object') {

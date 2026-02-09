@@ -70,6 +70,25 @@ function parseArgsOrExit() {
     return { input, output, sheetIndex, maxRows, headerRow, startCol };
 }
 
+/**
+ * Normaliza números float para evitar artefatos de precisão Float64.
+ * Exemplo: 80.93999999999999 -> 80.94
+ * 
+ * Isso é necessário porque valores decimais em Excel podem ser
+ * representados com pequenos erros de precisão em float.
+ */
+function normalizeNumericPrecision(value) {
+    if (typeof value !== 'number') return value;
+    if (!Number.isFinite(value)) return value;
+    if (Number.isInteger(value)) return value;
+
+    // Arredonda para 10 casas decimais para eliminar artefatos Float64
+    const rounded = Math.round(value * 1e10) / 1e10;
+
+    // Remove zeros à direita convertendo para string e de volta
+    return parseFloat(rounded.toString());
+}
+
 /** Normalize a single cell value into a primitive. */
 function normalizeCellValue(cell) {
     if (!cell || cell.value == null) return null;
@@ -83,9 +102,9 @@ function normalizeCellValue(cell) {
         return v.result;
     }
 
-    // Handle numbers - keep as numbers for Arrow
+    // Handle numbers - normalize precision to avoid Float64 artifacts
     if (typeof v === 'number') {
-        return v;
+        return normalizeNumericPrecision(v);
     }
 
     // Handle formula results
@@ -95,7 +114,7 @@ function normalizeCellValue(cell) {
         }
         if ('result' in v) {
             if (v.result instanceof Date) return v.result;
-            if (typeof v.result === 'number') return v.result;
+            if (typeof v.result === 'number') return normalizeNumericPrecision(v.result);
             if (typeof v.result === 'string') return v.result;
         }
         try {
