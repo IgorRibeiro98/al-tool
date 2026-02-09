@@ -180,7 +180,7 @@ export interface RowTransformOutput {
 }
 
 // ============================================================================
-// Conversion Worker Types (xlsx_to_jsonl)
+// Conversion Worker Types (xlsx_to_arrow)
 // ============================================================================
 
 export interface CellNormalizerInput {

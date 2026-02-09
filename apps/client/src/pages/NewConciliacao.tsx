@@ -1,21 +1,28 @@
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import type { FC } from 'react';
+import { useNavigate } from "react-router-dom";
+import { z } from 'zod';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { toast } from "sonner";
+import { ArrowLeft, Loader2 } from "lucide-react";
+import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowLeft } from "lucide-react";
-import { useNavigate } from "react-router-dom";
-import { toast } from "sonner";
-import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
-import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
 import { fetchBases } from '@/services/baseService';
 import { fetchConfigsConciliacao, fetchConfigsEstorno, fetchConfigsCancelamento, fetchConfigsMapeamento } from '@/services/configsService';
 import { createConciliacao } from '@/services/conciliacaoService';
 
-const NewConciliacao = () => {
+const MESSAGES = {
+    LOAD_FAIL: 'Falha ao carregar dados iniciais',
+    CREATE_SUCCESS: 'Conciliação criada com sucesso!',
+    CREATE_FAIL: 'Falha ao criar conciliação',
+} as const;
+
+const NewConciliacao: FC = () => {
     const navigate = useNavigate();
 
     const [bases, setBases] = useState<Base[]>([]);
@@ -25,18 +32,13 @@ const NewConciliacao = () => {
     const [mapConfigs, setMapConfigs] = useState<ConfigMapeamento[]>([]);
 
     const [loading, setLoading] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
     const mountedRef = useRef(true);
 
     useEffect(() => {
         mountedRef.current = true;
         return () => { mountedRef.current = false; };
     }, []);
-
-    const MSG = useMemo(() => ({
-        LOAD_FAIL: 'Falha ao carregar dados iniciais',
-        CREATE_SUCCESS: 'Conciliação criada',
-        CREATE_FAIL: 'Falha ao criar conciliação',
-    }), []);
 
     const schema = z.object({
         nome: z.string().min(1, { message: 'Nome é obrigatório' }),
@@ -122,7 +124,7 @@ const NewConciliacao = () => {
             if (mountedRef.current) setMapConfigs(mapRes.data || []);
         } catch (err) {
             console.error('initial load failed', err);
-            toast.error(MSG.LOAD_FAIL);
+            toast.error(MESSAGES.LOAD_FAIL);
             if (mountedRef.current) {
                 setBases([]);
                 setConfigs([]);
@@ -133,7 +135,7 @@ const NewConciliacao = () => {
         } finally {
             if (mountedRef.current) setLoading(false);
         }
-    }, [MSG]);
+    }, []);
 
     useEffect(() => { void loadInitialData(); }, [loadInitialData]);
 
@@ -144,7 +146,7 @@ const NewConciliacao = () => {
     }, []);
 
     const onSubmit = useCallback(async (data: FormValues) => {
-        setLoading(true);
+        setSubmitting(true);
         try {
             await createConciliacao({
                 nome: data.nome,
@@ -156,15 +158,16 @@ const NewConciliacao = () => {
                 baseFiscalId: data.baseFiscalId ? Number(data.baseFiscalId) : null,
             });
             if (!mountedRef.current) return;
-            toast.success(MSG.CREATE_SUCCESS);
+            toast.success(MESSAGES.CREATE_SUCCESS);
             navigate('/conciliacoes');
-        } catch (err: any) {
+        } catch (err: unknown) {
+            const e = err as { response?: { data?: { error?: string } }; message?: string };
             console.error('create conciliacao failed', err);
-            toast.error(err?.response?.data?.error || MSG.CREATE_FAIL);
+            toast.error(e?.response?.data?.error || MESSAGES.CREATE_FAIL);
         } finally {
-            if (mountedRef.current) setLoading(false);
+            if (mountedRef.current) setSubmitting(false);
         }
-    }, [navigate, MSG]);
+    }, [navigate]);
 
     return (
         <PageSkeletonWrapper loading={loading}>
@@ -353,8 +356,15 @@ const NewConciliacao = () => {
                                     <Button type="button" variant="outline" onClick={() => navigate("/conciliacoes")}>
                                         Cancelar
                                     </Button>
-                                    <Button type="submit">
-                                        Criar Conciliação
+                                    <Button type="submit" disabled={submitting}>
+                                        {submitting ? (
+                                            <>
+                                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                Criando...
+                                            </>
+                                        ) : (
+                                            'Criar Conciliação'
+                                        )}
                                     </Button>
                                 </div>
                             </form>

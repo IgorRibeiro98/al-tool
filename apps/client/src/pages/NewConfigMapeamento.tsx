@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import type { FC } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { z } from 'zod';
 import { useForm } from 'react-hook-form';
@@ -26,7 +27,7 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 
-const NewConfigMapeamento = () => {
+const NewConfigMapeamento: FC = () => {
     const navigate = useNavigate();
     const [bases, setBases] = useState<Base[]>([]);
     const [baseAColumns, setBaseAColumns] = useState<BaseColumn[]>([]);

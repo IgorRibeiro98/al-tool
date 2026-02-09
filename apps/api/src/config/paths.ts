@@ -58,7 +58,7 @@ export const UPLOAD_DIR = (() => {
     return resolveDir(process.env.UPLOAD_DIR, fallback, 'UPLOAD_DIR');
 })();
 
-// Ingest artifacts directory (JSONL files generated from uploads)
+// Ingest artifacts directory (Arrow IPC files generated from uploads)
 export const INGESTS_DIR = (() => {
     const fallback = path.join(DATA_DIR, SUBDIR_INGESTS);
     return resolveDir(process.env.INGESTS_DIR, fallback, 'INGESTS_DIR');

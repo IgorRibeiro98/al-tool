@@ -1,16 +1,22 @@
+import { useMemo, useState, useCallback, useRef, useEffect } from "react";
+import type { FC } from "react";
+import { useNavigate } from "react-router-dom";
+import { z } from 'zod';
+import { useForm, useFieldArray } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { toast } from "sonner";
+import { ArrowLeft, Plus, Trash2, Upload, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowLeft, Plus, Trash2, Upload } from "lucide-react";
-import { useNavigate } from "react-router-dom";
-import { useMemo, useState, useCallback, useRef, useEffect } from "react";
-import { toast } from "sonner";
 import { createBases, fetchBaseSubtypes, fetchBases as fetchBasesApi } from '@/services/baseService';
-import { useForm, useFieldArray } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
+
+const MESSAGES = {
+    CREATE_SUCCESS: (count: number) => `${count} base(s) cadastrada(s) com sucesso!`,
+    CREATE_FAIL: 'Erro ao cadastrar base',
+} as const;
 
 const baseSchema = z.object({
     tipo: z.enum(['CONTABIL', 'FISCAL'], { required_error: 'Tipo é obrigatório' }),
@@ -37,7 +43,9 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 
-const NewBase = () => {
+const ACCEPTED_FORMATS = ['.xlsx', '.xls', '.csv', '.xlsb'] as const;
+
+const NewBase: FC = () => {
     const navigate = useNavigate();
     const [submitting, setSubmitting] = useState(false);
     const [subtypesList, setSubtypesList] = useState<Array<{ id?: number; name: string }>>([]);
@@ -64,7 +72,7 @@ const NewBase = () => {
 
     const selectedFiles = baseValues?.map((base) => base?.arquivo) ?? [];
 
-    const acceptMime = useMemo(() => ['.xlsx', '.xls', '.csv', '.xlsb'], []);
+    const acceptMime = useMemo(() => ACCEPTED_FORMATS, []);
 
     const renderFileInfo = useCallback((index: number) => {
         const currentFile = selectedFiles[index] as File | undefined;
@@ -130,12 +138,12 @@ const NewBase = () => {
             const resp = await createBases(fd);
             const createdList: Base[] = resp?.data?.data ?? resp?.data ?? [];
             const total = Array.isArray(createdList) ? createdList.length : 1;
-            toast.success(`${total} base(s) cadastrada(s) com sucesso!`);
+            toast.success(MESSAGES.CREATE_SUCCESS(total));
             if (mountedRef.current) navigate('/bases');
-        } catch (err: any) {
+        } catch (err: unknown) {
+            const e = err as { response?: { data?: { error?: string } }; message?: string };
             console.error('create base failed', err);
-            const msg = err?.response?.data?.error || err?.message || 'Erro ao cadastrar base';
-            toast.error(msg);
+            toast.error(e?.response?.data?.error || e?.message || MESSAGES.CREATE_FAIL);
         } finally {
             if (mountedRef.current) setSubmitting(false);
         }
@@ -147,7 +155,7 @@ const NewBase = () => {
         fetchBaseSubtypes().then(r => {
             const items = r?.data?.data || [];
             if (mounted) setSubtypesList(items);
-        }).catch(() => {});
+        }).catch(() => { });
         return () => { mounted = false; };
     }, []);
 
@@ -159,7 +167,7 @@ const NewBase = () => {
         fetchBasesApi({ tipo, subtype, pageSize: 200 }).then(r => {
             const items = r?.data?.data || [];
             setReferenceBasesMap(prev => ({ ...prev, [key]: items }));
-        }).catch(() => {});
+        }).catch(() => { });
     }, [referenceBasesMap]);
 
     // load candidate reference bases for each row when both tipo and subtype are set
@@ -171,7 +179,7 @@ const NewBase = () => {
                     fetchBasesApi({ tipo: b.tipo, subtype: b.subtype, pageSize: 200 }).then(r => {
                         const items = r?.data?.data || [];
                         setReferenceBasesMap(prev => ({ ...prev, [key]: items }));
-                    }).catch(() => {});
+                    }).catch(() => { });
                 }
             }
         });
@@ -460,7 +468,14 @@ const NewBase = () => {
                                     Cancelar
                                 </Button>
                                 <Button type="submit" disabled={submitting}>
-                                    {submitting ? 'Enviando...' : 'Salvar Bases'}
+                                    {submitting ? (
+                                        <>
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                            Enviando...
+                                        </>
+                                    ) : (
+                                        'Salvar Bases'
+                                    )}
                                 </Button>
                             </div>
                         </form>

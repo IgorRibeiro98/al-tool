@@ -10,6 +10,7 @@ import { useForm } from "react-hook-form";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { useCallback, useEffect, useState } from 'react';
+import type { FC } from 'react';
 import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import {
     AlertDialog,
@@ -60,7 +61,7 @@ const loadColumnsForBase = async (baseId: number) => {
     }
 };
 
-const EditConfigCancelamento: React.FC = () => {
+const EditConfigCancelamento: FC = () => {
     const { id } = useParams();
     const navigate = useNavigate();
 

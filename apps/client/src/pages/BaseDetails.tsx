@@ -4,6 +4,7 @@ import { Progress } from "@/components/ui/progress";
 import { ArrowLeft, Trash, Loader2 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { FC } from 'react';
 import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import {
     getBase,
@@ -57,7 +58,7 @@ function formatDateOrDash(date?: string | null): string {
     }
 }
 
-const BaseDetails = () => {
+const BaseDetails: FC = () => {
     const navigate = useNavigate();
     const { id } = useParams();
     const [base, setBase] = useState<any | null>(null);

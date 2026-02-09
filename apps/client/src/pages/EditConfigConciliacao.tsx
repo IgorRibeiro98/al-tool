@@ -1,4 +1,5 @@
-import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import type { FC } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -44,7 +45,7 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 
-const EditConfigConciliacao: React.FC = () => {
+const EditConfigConciliacao: FC = () => {
     const navigate = useNavigate();
     const { id } = useParams<{ id: string }>();
 
@@ -333,300 +334,300 @@ const EditConfigConciliacao: React.FC = () => {
 
     return (
         <PageSkeletonWrapper loading={basesLoading || configLoading}>
-        <div className="p-4">
-            <Card>
-                <CardHeader>
-                    <CardTitle>Editar Configuração de Conciliação</CardTitle>
-                </CardHeader>
-                <CardContent>
-                    <Form {...form}>
-                        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-                            <FormField
-                                control={form.control}
-                                name="nome"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Nome da Configuração</FormLabel>
-                                        <FormControl>
-                                            <Input placeholder="Ex: Conciliação Principal" {...field} />
-                                        </FormControl>
-                                        <FormDescription>Nome identificador da configuração</FormDescription>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="p-4">
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Editar Configuração de Conciliação</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <Form {...form}>
+                            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
                                 <FormField
                                     control={form.control}
-                                    name="baseContabilId"
+                                    name="nome"
                                     render={({ field }) => (
                                         <FormItem>
-                                            <FormLabel>Base Contábil</FormLabel>
+                                            <FormLabel>Nome da Configuração</FormLabel>
                                             <FormControl>
-                                                <Select onValueChange={field.onChange} value={field.value ?? ''}>
-                                                    <SelectTrigger>
-                                                        <SelectValue placeholder="Selecione a base contábil" />
-                                                    </SelectTrigger>
-                                                    <SelectContent>
-                                                        {bases.filter((b: any) => b.tipo === 'CONTABIL').map((base: any) => (
-                                                            <SelectItem key={String(base.id)} value={String(base.id)}>
-                                                                {base.nome}
-                                                            </SelectItem>
-                                                        ))}
-                                                    </SelectContent>
-                                                </Select>
+                                                <Input placeholder="Ex: Conciliação Principal" {...field} />
                                             </FormControl>
+                                            <FormDescription>Nome identificador da configuração</FormDescription>
                                             <FormMessage />
                                         </FormItem>
                                     )}
                                 />
 
-                                <FormField
-                                    control={form.control}
-                                    name="baseFiscalId"
-                                    render={({ field }) => (
-                                        <FormItem>
-                                            <FormLabel>Base Fiscal</FormLabel>
-                                            <FormControl>
-                                                <Select onValueChange={field.onChange} value={field.value ?? ''}>
-                                                    <SelectTrigger>
-                                                        <SelectValue placeholder="Selecione a base fiscal" />
-                                                    </SelectTrigger>
-                                                    <SelectContent>
-                                                        {bases.filter((b: any) => b.tipo === 'FISCAL').map((base: any) => (
-                                                            <SelectItem key={String(base.id)} value={String(base.id)}>
-                                                                {base.nome}
-                                                            </SelectItem>
-                                                        ))}
-                                                    </SelectContent>
-                                                </Select>
-                                            </FormControl>
-                                            <FormMessage />
-                                        </FormItem>
-                                    )}
-                                />
-                            </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <FormField
+                                        control={form.control}
+                                        name="baseContabilId"
+                                        render={({ field }) => (
+                                            <FormItem>
+                                                <FormLabel>Base Contábil</FormLabel>
+                                                <FormControl>
+                                                    <Select onValueChange={field.onChange} value={field.value ?? ''}>
+                                                        <SelectTrigger>
+                                                            <SelectValue placeholder="Selecione a base contábil" />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {bases.filter((b: any) => b.tipo === 'CONTABIL').map((base: any) => (
+                                                                <SelectItem key={String(base.id)} value={String(base.id)}>
+                                                                    {base.nome}
+                                                                </SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                </FormControl>
+                                                <FormMessage />
+                                            </FormItem>
+                                        )}
+                                    />
 
-                            {/* Chaves da Conciliação (seleção de chaves centrais ou pares) */}
-                            <div>
-                                <div className="mb-2 flex items-center justify-between">
-                                    <div>
-                                        <FormLabel className="text-base">Chaves da Conciliação</FormLabel>
-                                        <FormDescription>Selecione chaves centrais ou pares de chaves para usar na conciliação</FormDescription>
-                                    </div>
-                                    <div>
-                                        <Button type="button" onClick={addChave}>Adicionar chave</Button>
-                                    </div>
+                                    <FormField
+                                        control={form.control}
+                                        name="baseFiscalId"
+                                        render={({ field }) => (
+                                            <FormItem>
+                                                <FormLabel>Base Fiscal</FormLabel>
+                                                <FormControl>
+                                                    <Select onValueChange={field.onChange} value={field.value ?? ''}>
+                                                        <SelectTrigger>
+                                                            <SelectValue placeholder="Selecione a base fiscal" />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {bases.filter((b: any) => b.tipo === 'FISCAL').map((base: any) => (
+                                                                <SelectItem key={String(base.id)} value={String(base.id)}>
+                                                                    {base.nome}
+                                                                </SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                </FormControl>
+                                                <FormMessage />
+                                            </FormItem>
+                                        )}
+                                    />
                                 </div>
 
-                                <div className="space-y-4">
-                                    {chaves.map((c, idx) => (
-                                        <Card key={c.id}>
-                                            <CardHeader>
-                                                <div className="flex items-center justify-between w-full">
-                                                    <CardTitle>{c.key_identifier || `CHAVE_${idx + 1}`}</CardTitle>
-                                                    <div className="flex gap-2">
-                                                        <Input value={c.ordem ?? idx + 1} onChange={(e) => updateChave(c.id, { ordem: Number(e.target.value) })} className="w-20" />
-                                                        {chaves.length > 1 && (
-                                                            <Button variant="destructive" size="sm" onClick={() => removeChave(c.id)}>Remover</Button>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            </CardHeader>
-                                            <CardContent>
-                                                <div className="grid md:grid-cols-3 gap-4">
-                                                    <div>
-                                                        <FormLabel>Identificador</FormLabel>
-                                                        <Input disabled value={c.key_identifier} onChange={(e) => updateChave(c.id, { key_identifier: e.target.value })} />
-                                                    </div>
-
-                                                    <div>
-                                                        <FormLabel>Modo</FormLabel>
-                                                        <Select onValueChange={(val) => updateChave(c.id, { mode: val as any })} value={c.mode}>
-                                                            <SelectTrigger>
-                                                                <SelectValue />
-                                                            </SelectTrigger>
-                                                            <SelectContent>
-                                                                <SelectItem value="pair">Par de chaves</SelectItem>
-                                                                <SelectItem value="separate">Chaves separadas</SelectItem>
-                                                            </SelectContent>
-                                                        </Select>
-                                                    </div>
-
-                                                    <div>
-                                                        <FormLabel>Seleção</FormLabel>
-                                                        {c.mode === 'pair' ? (
-                                                            <div className="space-y-2">
-                                                                <Select onValueChange={(val) => updateChave(c.id, { keys_pair_id: val ? Number(val) : null })} value={c.keys_pair_id ? String(c.keys_pair_id) : ''}>
-                                                                    <SelectTrigger>
-                                                                        <SelectValue placeholder="Selecione um par de chaves" />
-                                                                    </SelectTrigger>
-                                                                    <SelectContent>
-                                                                        {keysPairs.map((kp: any) => (
-                                                                            <SelectItem key={String(kp.id)} value={String(kp.id)}>{kp.nome || `Par ${kp.id}`}</SelectItem>
-                                                                        ))}
-                                                                    </SelectContent>
-                                                                </Select>
-                                                                {/* Show summary of columns for the selected pair, read-only */}
-                                                                {c.keys_pair_id && (() => {
-                                                                    const pair = keysPairs.find((p: any) => Number(p.id) === Number(c.keys_pair_id));
-                                                                    const contDef = keysDefs.find(k => Number(k.id) === Number(pair?.contabil_key_id));
-                                                                    const fiscDef = keysDefs.find(k => Number(k.id) === Number(pair?.fiscal_key_id));
-                                                                    const contCols = getKeyDefColumns(contDef);
-                                                                    const fiscCols = getKeyDefColumns(fiscDef);
-                                                                    return (
-                                                                        <div>
-                                                                            <div className="text-xs text-muted-foreground">Contábil: {contCols.join(', ') || '—'}</div>
-                                                                            <div className="text-xs text-muted-foreground">Fiscal: {fiscCols.join(', ') || '—'}</div>
-                                                                        </div>
-                                                                    );
-                                                                })()}
-                                                            </div>
-                                                        ) : (
-                                                            <div className="space-y-2">
-                                                                <Select onValueChange={(val) => updateChave(c.id, { contabil_key_id: val ? Number(val) : null })} value={c.contabil_key_id ? String(c.contabil_key_id) : ''}>
-                                                                    <SelectTrigger>
-                                                                        <SelectValue placeholder="Selecione chave contábil" />
-                                                                    </SelectTrigger>
-                                                                    <SelectContent>
-                                                                        {keysDefs.filter(k => (k.base_tipo || '').toUpperCase() === 'CONTABIL').map((k: any) => (
-                                                                            <SelectItem key={String(k.id)} value={String(k.id)}>{k.key_identifier || k.nome || `Key ${k.id}`}</SelectItem>
-                                                                        ))}
-                                                                    </SelectContent>
-                                                                </Select>
-
-                                                                <Select onValueChange={(val) => updateChave(c.id, { fiscal_key_id: val ? Number(val) : null })} value={c.fiscal_key_id ? String(c.fiscal_key_id) : ''}>
-                                                                    <SelectTrigger>
-                                                                        <SelectValue placeholder="Selecione chave fiscal" />
-                                                                    </SelectTrigger>
-                                                                    <SelectContent>
-                                                                        {keysDefs.filter(k => (k.base_tipo || '').toUpperCase() === 'FISCAL').map((k: any) => (
-                                                                            <SelectItem key={String(k.id)} value={String(k.id)}>{k.key_identifier || k.nome || `Key ${k.id}`}</SelectItem>
-                                                                        ))}
-                                                                    </SelectContent>
-                                                                </Select>
-
-                                                                {/* show readonly summaries */}
-                                                                {(() => {
-                                                                    const contDef = keysDefs.find(k => Number(k.id) === Number(c.contabil_key_id));
-                                                                    const fiscDef = keysDefs.find(k => Number(k.id) === Number(c.fiscal_key_id));
-                                                                    const contCols = getKeyDefColumns(contDef);
-                                                                    const fiscCols = getKeyDefColumns(fiscDef);
-                                                                    return (
-                                                                        <div>
-                                                                            <div className="text-xs text-muted-foreground">Contábil: {contCols.join(', ') || '—'}</div>
-                                                                            <div className="text-xs text-muted-foreground">Fiscal: {fiscCols.join(', ') || '—'}</div>
-                                                                        </div>
-                                                                    );
-                                                                })()}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            </CardContent>
-                                        </Card>
-                                    ))}
-                                </div>
-                            </div>
-
-                            <FormField
-                                control={form.control}
-                                name="colunaConciliacaoContabil"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Coluna de Conciliação (Contábil)</FormLabel>
-                                        <FormDescription>Coluna usada para comparar valores na base contábil</FormDescription>
-                                        <FormControl>
-                                            {colsContabeis.length > 0 ? (
-                                                <Select onValueChange={field.onChange} value={field.value ?? ''}>
-                                                    <SelectTrigger>
-                                                        <SelectValue placeholder="Selecione a coluna contábil" />
-                                                    </SelectTrigger>
-                                                    <SelectContent>
-                                                        {colsContabeis.map((c: any) => (
-                                                            <SelectItem key={c.index} value={c.sqlite || c.excel || c.index}>{c.excel || c.sqlite || c.index}</SelectItem>
-                                                        ))}
-                                                    </SelectContent>
-                                                </Select>
-                                            ) : (
-                                                <Input placeholder="Escolha uma base contábil para carregar colunas" />
-                                            )}
-                                        </FormControl>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-
-                            <FormField
-                                control={form.control}
-                                name="colunaConciliacaoFiscal"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Coluna de Conciliação (Fiscal)</FormLabel>
-                                        <FormDescription>Coluna usada para comparar valores na base fiscal</FormDescription>
-                                        <FormControl>
-                                            {colsFiscais.length > 0 ? (
-                                                <Select onValueChange={field.onChange} value={field.value ?? ''}>
-                                                    <SelectTrigger>
-                                                        <SelectValue placeholder="Selecione a coluna fiscal" />
-                                                    </SelectTrigger>
-                                                    <SelectContent>
-                                                        {colsFiscais.map((c: any) => (
-                                                            <SelectItem key={c.index} value={c.sqlite || c.excel || c.index}>{c.excel || c.sqlite || c.index}</SelectItem>
-                                                        ))}
-                                                    </SelectContent>
-                                                </Select>
-                                            ) : (
-                                                <Input placeholder="Escolha uma base fiscal para carregar colunas" />
-                                            )}
-                                        </FormControl>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-
-                            <FormField
-                                control={form.control}
-                                name="diferencaImaterial"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Diferença Imaterial (opcional)</FormLabel>
-                                        <FormControl>
-                                            <Input type="number" step="0.01" placeholder="Ex: 0.01" value={field.value === null || field.value === undefined ? '' : String(field.value)} onChange={(e) => field.onChange(e.target.value === '' ? null : Number(e.target.value))} />
-                                        </FormControl>
-                                        <FormDescription>Diferenças abaixo deste valor serão consideradas imateriais</FormDescription>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-
-                            <FormField
-                                control={form.control}
-                                name="inverterSinal"
-                                render={({ field }) => (
-                                    <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                                        <div className="space-y-0.5">
-                                            <FormLabel className="text-base">Inverter Sinal</FormLabel>
-                                            <FormDescription>Inverter o sinal dos valores da base fiscal durante a conciliação</FormDescription>
+                                {/* Chaves da Conciliação (seleção de chaves centrais ou pares) */}
+                                <div>
+                                    <div className="mb-2 flex items-center justify-between">
+                                        <div>
+                                            <FormLabel className="text-base">Chaves da Conciliação</FormLabel>
+                                            <FormDescription>Selecione chaves centrais ou pares de chaves para usar na conciliação</FormDescription>
                                         </div>
-                                        <FormControl>
-                                            <Switch checked={!!field.value} onCheckedChange={field.onChange as any} />
-                                        </FormControl>
-                                    </FormItem>
-                                )}
-                            />
+                                        <div>
+                                            <Button type="button" onClick={addChave}>Adicionar chave</Button>
+                                        </div>
+                                    </div>
 
-                            <div className="flex gap-4">
-                                <Button type="submit" disabled={saving}>{saving ? 'Salvando...' : 'Salvar Alterações'}</Button>
-                                <Button type="button" variant="destructive" onClick={handleDelete}><Trash2 className="mr-2 h-4 w-4" />Excluir</Button>
-                                <Button type="button" variant="outline" onClick={() => navigate('/configs/conciliacao')}>Cancelar</Button>
-                            </div>
-                        </form>
-                    </Form>
-                </CardContent>
-            </Card>
-        </div>
+                                    <div className="space-y-4">
+                                        {chaves.map((c, idx) => (
+                                            <Card key={c.id}>
+                                                <CardHeader>
+                                                    <div className="flex items-center justify-between w-full">
+                                                        <CardTitle>{c.key_identifier || `CHAVE_${idx + 1}`}</CardTitle>
+                                                        <div className="flex gap-2">
+                                                            <Input value={c.ordem ?? idx + 1} onChange={(e) => updateChave(c.id, { ordem: Number(e.target.value) })} className="w-20" />
+                                                            {chaves.length > 1 && (
+                                                                <Button variant="destructive" size="sm" onClick={() => removeChave(c.id)}>Remover</Button>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </CardHeader>
+                                                <CardContent>
+                                                    <div className="grid md:grid-cols-3 gap-4">
+                                                        <div>
+                                                            <FormLabel>Identificador</FormLabel>
+                                                            <Input disabled value={c.key_identifier} onChange={(e) => updateChave(c.id, { key_identifier: e.target.value })} />
+                                                        </div>
+
+                                                        <div>
+                                                            <FormLabel>Modo</FormLabel>
+                                                            <Select onValueChange={(val) => updateChave(c.id, { mode: val as any })} value={c.mode}>
+                                                                <SelectTrigger>
+                                                                    <SelectValue />
+                                                                </SelectTrigger>
+                                                                <SelectContent>
+                                                                    <SelectItem value="pair">Par de chaves</SelectItem>
+                                                                    <SelectItem value="separate">Chaves separadas</SelectItem>
+                                                                </SelectContent>
+                                                            </Select>
+                                                        </div>
+
+                                                        <div>
+                                                            <FormLabel>Seleção</FormLabel>
+                                                            {c.mode === 'pair' ? (
+                                                                <div className="space-y-2">
+                                                                    <Select onValueChange={(val) => updateChave(c.id, { keys_pair_id: val ? Number(val) : null })} value={c.keys_pair_id ? String(c.keys_pair_id) : ''}>
+                                                                        <SelectTrigger>
+                                                                            <SelectValue placeholder="Selecione um par de chaves" />
+                                                                        </SelectTrigger>
+                                                                        <SelectContent>
+                                                                            {keysPairs.map((kp: any) => (
+                                                                                <SelectItem key={String(kp.id)} value={String(kp.id)}>{kp.nome || `Par ${kp.id}`}</SelectItem>
+                                                                            ))}
+                                                                        </SelectContent>
+                                                                    </Select>
+                                                                    {/* Show summary of columns for the selected pair, read-only */}
+                                                                    {c.keys_pair_id && (() => {
+                                                                        const pair = keysPairs.find((p: any) => Number(p.id) === Number(c.keys_pair_id));
+                                                                        const contDef = keysDefs.find(k => Number(k.id) === Number(pair?.contabil_key_id));
+                                                                        const fiscDef = keysDefs.find(k => Number(k.id) === Number(pair?.fiscal_key_id));
+                                                                        const contCols = getKeyDefColumns(contDef);
+                                                                        const fiscCols = getKeyDefColumns(fiscDef);
+                                                                        return (
+                                                                            <div>
+                                                                                <div className="text-xs text-muted-foreground">Contábil: {contCols.join(', ') || '—'}</div>
+                                                                                <div className="text-xs text-muted-foreground">Fiscal: {fiscCols.join(', ') || '—'}</div>
+                                                                            </div>
+                                                                        );
+                                                                    })()}
+                                                                </div>
+                                                            ) : (
+                                                                <div className="space-y-2">
+                                                                    <Select onValueChange={(val) => updateChave(c.id, { contabil_key_id: val ? Number(val) : null })} value={c.contabil_key_id ? String(c.contabil_key_id) : ''}>
+                                                                        <SelectTrigger>
+                                                                            <SelectValue placeholder="Selecione chave contábil" />
+                                                                        </SelectTrigger>
+                                                                        <SelectContent>
+                                                                            {keysDefs.filter(k => (k.base_tipo || '').toUpperCase() === 'CONTABIL').map((k: any) => (
+                                                                                <SelectItem key={String(k.id)} value={String(k.id)}>{k.key_identifier || k.nome || `Key ${k.id}`}</SelectItem>
+                                                                            ))}
+                                                                        </SelectContent>
+                                                                    </Select>
+
+                                                                    <Select onValueChange={(val) => updateChave(c.id, { fiscal_key_id: val ? Number(val) : null })} value={c.fiscal_key_id ? String(c.fiscal_key_id) : ''}>
+                                                                        <SelectTrigger>
+                                                                            <SelectValue placeholder="Selecione chave fiscal" />
+                                                                        </SelectTrigger>
+                                                                        <SelectContent>
+                                                                            {keysDefs.filter(k => (k.base_tipo || '').toUpperCase() === 'FISCAL').map((k: any) => (
+                                                                                <SelectItem key={String(k.id)} value={String(k.id)}>{k.key_identifier || k.nome || `Key ${k.id}`}</SelectItem>
+                                                                            ))}
+                                                                        </SelectContent>
+                                                                    </Select>
+
+                                                                    {/* show readonly summaries */}
+                                                                    {(() => {
+                                                                        const contDef = keysDefs.find(k => Number(k.id) === Number(c.contabil_key_id));
+                                                                        const fiscDef = keysDefs.find(k => Number(k.id) === Number(c.fiscal_key_id));
+                                                                        const contCols = getKeyDefColumns(contDef);
+                                                                        const fiscCols = getKeyDefColumns(fiscDef);
+                                                                        return (
+                                                                            <div>
+                                                                                <div className="text-xs text-muted-foreground">Contábil: {contCols.join(', ') || '—'}</div>
+                                                                                <div className="text-xs text-muted-foreground">Fiscal: {fiscCols.join(', ') || '—'}</div>
+                                                                            </div>
+                                                                        );
+                                                                    })()}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </CardContent>
+                                            </Card>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <FormField
+                                    control={form.control}
+                                    name="colunaConciliacaoContabil"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Coluna de Conciliação (Contábil)</FormLabel>
+                                            <FormDescription>Coluna usada para comparar valores na base contábil</FormDescription>
+                                            <FormControl>
+                                                {colsContabeis.length > 0 ? (
+                                                    <Select onValueChange={field.onChange} value={field.value ?? ''}>
+                                                        <SelectTrigger>
+                                                            <SelectValue placeholder="Selecione a coluna contábil" />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {colsContabeis.map((c: any) => (
+                                                                <SelectItem key={c.index} value={c.sqlite || c.excel || c.index}>{c.excel || c.sqlite || c.index}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                ) : (
+                                                    <Input placeholder="Escolha uma base contábil para carregar colunas" />
+                                                )}
+                                            </FormControl>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <FormField
+                                    control={form.control}
+                                    name="colunaConciliacaoFiscal"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Coluna de Conciliação (Fiscal)</FormLabel>
+                                            <FormDescription>Coluna usada para comparar valores na base fiscal</FormDescription>
+                                            <FormControl>
+                                                {colsFiscais.length > 0 ? (
+                                                    <Select onValueChange={field.onChange} value={field.value ?? ''}>
+                                                        <SelectTrigger>
+                                                            <SelectValue placeholder="Selecione a coluna fiscal" />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {colsFiscais.map((c: any) => (
+                                                                <SelectItem key={c.index} value={c.sqlite || c.excel || c.index}>{c.excel || c.sqlite || c.index}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                ) : (
+                                                    <Input placeholder="Escolha uma base fiscal para carregar colunas" />
+                                                )}
+                                            </FormControl>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <FormField
+                                    control={form.control}
+                                    name="diferencaImaterial"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Diferença Imaterial (opcional)</FormLabel>
+                                            <FormControl>
+                                                <Input type="number" step="0.01" placeholder="Ex: 0.01" value={field.value === null || field.value === undefined ? '' : String(field.value)} onChange={(e) => field.onChange(e.target.value === '' ? null : Number(e.target.value))} />
+                                            </FormControl>
+                                            <FormDescription>Diferenças abaixo deste valor serão consideradas imateriais</FormDescription>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <FormField
+                                    control={form.control}
+                                    name="inverterSinal"
+                                    render={({ field }) => (
+                                        <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                                            <div className="space-y-0.5">
+                                                <FormLabel className="text-base">Inverter Sinal</FormLabel>
+                                                <FormDescription>Inverter o sinal dos valores da base fiscal durante a conciliação</FormDescription>
+                                            </div>
+                                            <FormControl>
+                                                <Switch checked={!!field.value} onCheckedChange={field.onChange as any} />
+                                            </FormControl>
+                                        </FormItem>
+                                    )}
+                                />
+
+                                <div className="flex gap-4">
+                                    <Button type="submit" disabled={saving}>{saving ? 'Salvando...' : 'Salvar Alterações'}</Button>
+                                    <Button type="button" variant="destructive" onClick={handleDelete}><Trash2 className="mr-2 h-4 w-4" />Excluir</Button>
+                                    <Button type="button" variant="outline" onClick={() => navigate('/configs/conciliacao')}>Cancelar</Button>
+                                </div>
+                            </form>
+                        </Form>
+                    </CardContent>
+                </Card>
+            </div>
             <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
                 <AlertDialogContent>
                     <AlertDialogHeader>

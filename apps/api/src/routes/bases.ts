@@ -494,7 +494,7 @@ router.post('/', upload.array('arquivo'), async (req: Request, res: Response) =>
             });
 
             // marcar conversão como pendente para cada base criada
-            await db('bases').where({ id }).update({ conversion_status: 'PENDING', arquivo_jsonl_path: null });
+            await db('bases').where({ id }).update({ conversion_status: 'PENDING', arquivo_arrow_path: null });
 
             const created = await db('bases').where({ id }).first();
             createdRows.push(created);
@@ -545,14 +545,14 @@ router.delete('/:id', async (req: Request, res: Response) => {
         try { await db('base_columns').where({ base_id: id }).del(); } catch (e) { }
         try { await db('ingest_jobs').where({ base_id: id }).del(); } catch (e) { }
 
-        // attempt to delete stored files (arquivo_caminho, arquivo_jsonl_path)
+        // attempt to delete stored files (arquivo_caminho, arquivo_arrow_path)
         try {
             if (base.arquivo_caminho) {
                 const abs = path.resolve(process.cwd(), base.arquivo_caminho);
                 await fs.unlink(abs).catch(() => { /* ignore */ });
             }
-            if (base.arquivo_jsonl_path) {
-                const abs2 = path.resolve(process.cwd(), base.arquivo_jsonl_path);
+            if (base.arquivo_arrow_path) {
+                const abs2 = path.resolve(process.cwd(), base.arquivo_arrow_path);
                 await fs.unlink(abs2).catch(() => { /* ignore */ });
             }
         } catch (e) {

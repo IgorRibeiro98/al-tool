@@ -1,4 +1,5 @@
-import React, { FC, useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { FC } from 'react';
 import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';

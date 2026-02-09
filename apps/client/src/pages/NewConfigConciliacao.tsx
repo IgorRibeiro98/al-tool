@@ -18,6 +18,7 @@ import { createConfigConciliacao } from '@/services/configsService';
 import { fetchKeys } from '@/services/keysService';
 import { fetchKeysPairs } from '@/services/keysPairsService';
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import type { FC } from 'react';
 import { useWatch } from 'react-hook-form';
 import type { Base, Column, KeyPair, KeyRow, KeyDefinition } from '@/types/configs';
 
@@ -33,7 +34,7 @@ const formSchema = z.object({
 
 type FormValues = z.infer<typeof formSchema>;
 
-const NewConfigConciliacao = () => {
+const NewConfigConciliacao: FC = () => {
     const navigate = useNavigate();
 
     const [bases, setBases] = useState<Base[]>([]);
@@ -204,7 +205,7 @@ const NewConfigConciliacao = () => {
         }
     }, [chaves, navigate, MSG]);
 
-    
+
 
     return (
         <div className="space-y-6">

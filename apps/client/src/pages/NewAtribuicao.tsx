@@ -1,5 +1,8 @@
-import React, { FC, useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import type { FC } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
+import { ArrowLeft, ArrowRightLeft, ChevronUp, ChevronDown, X, Loader2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -7,11 +10,19 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, ArrowRightLeft, ChevronUp, ChevronDown, X } from 'lucide-react';
-import { useToast } from '@/hooks/use-toast';
+import { Checkbox } from '@/components/ui/checkbox';
 import * as atribuicaoService from '@/services/atribuicaoService';
 import * as baseService from '@/services/baseService';
 import api from '@/services/api';
+
+const MESSAGES = {
+    SELECT_ORIGEM_DESTINO: 'Selecione origem e destino',
+    DIFFERENT_TYPES: 'Origem e destino devem ser de tipos diferentes',
+    SELECT_KEY: 'Selecione pelo menos uma chave',
+    SELECT_COLUMN: 'Selecione pelo menos uma coluna para importar',
+    CREATE_SUCCESS: 'Atribuição criada com sucesso!',
+    CREATE_FAIL: 'Falha ao criar atribuição',
+} as const;
 
 type Base = {
     id: number;
@@ -36,7 +47,6 @@ type BaseColumn = {
 
 const NewAtribuicao: FC = () => {
     const navigate = useNavigate();
-    const { toast } = useToast();
 
     const [nome, setNome] = useState('');
     const [baseOrigemId, setBaseOrigemId] = useState<number | null>(null);
@@ -135,19 +145,19 @@ const NewAtribuicao: FC = () => {
 
     const handleSubmit = async () => {
         if (!baseOrigemId || !baseDestinoId) {
-            toast({ title: 'Erro', description: 'Selecione origem e destino', variant: 'destructive' });
+            toast.error(MESSAGES.SELECT_ORIGEM_DESTINO);
             return;
         }
         if (!isValidTypes) {
-            toast({ title: 'Erro', description: 'Origem e destino devem ser de tipos diferentes', variant: 'destructive' });
+            toast.error(MESSAGES.DIFFERENT_TYPES);
             return;
         }
         if (selectedKeys.length === 0) {
-            toast({ title: 'Erro', description: 'Selecione pelo menos uma chave', variant: 'destructive' });
+            toast.error(MESSAGES.SELECT_KEY);
             return;
         }
         if (selectedColumns.length === 0) {
-            toast({ title: 'Erro', description: 'Selecione pelo menos uma coluna para importar', variant: 'destructive' });
+            toast.error(MESSAGES.SELECT_COLUMN);
             return;
         }
 
@@ -166,15 +176,12 @@ const NewAtribuicao: FC = () => {
                     ordem: i,
                 })),
             });
-            toast({ title: 'Sucesso', description: 'Atribuição criada' });
+            toast.success(MESSAGES.CREATE_SUCCESS);
             navigate(`/atribuicoes/${res.data.id}`);
-        } catch (err: any) {
+        } catch (err: unknown) {
+            const e = err as { response?: { data?: { error?: string } }; message?: string };
             console.error('Failed to create run', err);
-            toast({
-                title: 'Erro',
-                description: err?.response?.data?.error || 'Falha ao criar atribuição',
-                variant: 'destructive',
-            });
+            toast.error(e?.response?.data?.error || MESSAGES.CREATE_FAIL);
         } finally {
             setSubmitting(false);
         }
@@ -196,7 +203,14 @@ const NewAtribuicao: FC = () => {
                         Cancelar
                     </Button>
                     <Button onClick={handleSubmit} disabled={submitting || !isValidTypes || selectedKeys.length === 0 || selectedColumns.length === 0}>
-                        {submitting ? 'Criando...' : 'Criar Atribuição'}
+                        {submitting ? (
+                            <>
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                Criando...
+                            </>
+                        ) : (
+                            'Criar Atribuição'
+                        )}
                     </Button>
                 </div>
             </div>

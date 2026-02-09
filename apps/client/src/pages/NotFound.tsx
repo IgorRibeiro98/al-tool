@@ -1,5 +1,6 @@
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useCallback, useEffect } from 'react';
+import type { FC } from 'react';
 import { Button } from '@/components/ui/button';
 
 const ROUTES = {
@@ -14,7 +15,7 @@ const MESSAGES = {
     LOG_PREFIX: '404 Error',
 } as const;
 
-const NotFound: React.FC = () => {
+const NotFound: FC = () => {
     const location = useLocation();
     const navigate = useNavigate();
 

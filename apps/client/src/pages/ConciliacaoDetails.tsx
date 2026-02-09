@@ -7,6 +7,7 @@ import { ArrowLeft, Download, Trash } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { useEffect, useState, useRef } from 'react';
+import type { FC } from 'react';
 import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import { getConciliacao, fetchConciliacaoResultado, exportConciliacao, deleteConciliacao, downloadConciliacaoFile } from '@/services/conciliacaoService';
 import { downloadFromResponse } from '@/lib/download';
@@ -62,7 +63,7 @@ function formatCurrency(value: unknown): string {
 
 
 
-const ConciliacaoDetails = () => {
+const ConciliacaoDetails: FC = () => {
     const navigate = useNavigate();
     const { id } = useParams();
 
@@ -85,70 +86,70 @@ const ConciliacaoDetails = () => {
     const [exportFile, setExportFile] = useState<string | null>(null);
     const pollRef = useRef<number | null>(null);
 
-        const loadResults = async (jobId: number, p = 1, search?: string, searchColumn?: string) => {
-            setLoading(true);
-            try {
+    const loadResults = async (jobId: number, p = 1, search?: string, searchColumn?: string) => {
+        setLoading(true);
+        try {
             const r = await fetchConciliacaoResultado(jobId, p, pageSize, statusFilter, search ?? (searchTerm || undefined), searchColumn ?? selectedSearchColumn ?? undefined);
-                const b = r.data;
-                const rows = b.data || [];
-                setResults(rows);
-                if (rows && rows.length > 0) {
-                    const first = rows[0];
-                    const keys = Object.keys(first).filter((k) => /^CHAVE_\d+/.test(k));
-                    setKeyIds(keys);
-                    // ensure selectedSearchColumn is valid; if not set, default to first key or 'chave'
-                    setSelectedSearchColumn(prev => {
-                        if (prev && prev.length > 0) return prev;
-                        return keys.length > 0 ? keys[0] : 'chave';
-                    });
-                } else {
-                    setKeyIds([]);
-                }
-                setPage(b.page || p);
-                setTotalPages(b.totalPages || 1);
-            } catch (err) {
-                console.error('fetchConciliacaoResultado failed', err);
-                toast.error('Falha ao carregar resultados');
-            } finally {
-                setLoading(false);
+            const b = r.data;
+            const rows = b.data || [];
+            setResults(rows);
+            if (rows && rows.length > 0) {
+                const first = rows[0];
+                const keys = Object.keys(first).filter((k) => /^CHAVE_\d+/.test(k));
+                setKeyIds(keys);
+                // ensure selectedSearchColumn is valid; if not set, default to first key or 'chave'
+                setSelectedSearchColumn(prev => {
+                    if (prev && prev.length > 0) return prev;
+                    return keys.length > 0 ? keys[0] : 'chave';
+                });
+            } else {
+                setKeyIds([]);
             }
-        };
+            setPage(b.page || p);
+            setTotalPages(b.totalPages || 1);
+        } catch (err) {
+            console.error('fetchConciliacaoResultado failed', err);
+            toast.error('Falha ao carregar resultados');
+        } finally {
+            setLoading(false);
+        }
+    };
 
-        const loadJobAndMetrics = async (jobId: number) => {
-            try {
-                const res = await getConciliacao(jobId);
-                const body = res.data;
-                const jb = body.job ?? null;
-                setJob(jb);
-                if (jb) {
-                    if ((jb as any).export_progress != null) setExportProgress(Number((jb as any).export_progress));
-                    if ((jb as any).export_status != null) setExportStatus(String((jb as any).export_status));
-                    if (jb.arquivo_exportado) setExportFile(String(jb.arquivo_exportado));
-                }
-                setMetrics(body.metrics ?? null);
-            } catch (err) {
-                console.error('getConciliacao failed', err);
-                toast.error('Falha ao obter dados da conciliação');
+    const loadJobAndMetrics = async (jobId: number) => {
+        try {
+            const res = await getConciliacao(jobId);
+            const body = res.data;
+            const jb = body.job ?? null;
+            setJob(jb);
+            if (jb) {
+                if ((jb as any).export_progress != null) setExportProgress(Number((jb as any).export_progress));
+                if ((jb as any).export_status != null) setExportStatus(String((jb as any).export_status));
+                if (jb.arquivo_exportado) setExportFile(String(jb.arquivo_exportado));
             }
-        };
+            setMetrics(body.metrics ?? null);
+        } catch (err) {
+            console.error('getConciliacao failed', err);
+            toast.error('Falha ao obter dados da conciliação');
+        }
+    };
 
-        useEffect(() => {
-            if (!id) return;
-            const jid = Number(id);
-            let mounted = true;
-            setLoading(true);
+    useEffect(() => {
+        if (!id) return;
+        const jid = Number(id);
+        let mounted = true;
+        setLoading(true);
 
-            // load job and first page of results
-            (async () => {
-                await loadJobAndMetrics(jid);
-                if (!mounted) return;
-                await loadResults(jid, 1, searchTerm || undefined);
-            })()
-                .catch(() => {})
-                .finally(() => { if (mounted) setLoading(false); });
+        // load job and first page of results
+        (async () => {
+            await loadJobAndMetrics(jid);
+            if (!mounted) return;
+            await loadResults(jid, 1, searchTerm || undefined);
+        })()
+            .catch(() => { })
+            .finally(() => { if (mounted) setLoading(false); });
 
-            return () => { mounted = false; };
-        }, [id, statusFilter]);
+        return () => { mounted = false; };
+    }, [id, statusFilter]);
 
     // cleanup polling on unmount
     useEffect(() => {
@@ -160,72 +161,72 @@ const ConciliacaoDetails = () => {
         };
     }, []);
 
-        const updateExportFromJob = (jb: any) => {
-            if (!jb) return;
-            if (jb.export_progress != null) setExportProgress(Number(jb.export_progress));
-            if (jb.export_status != null) setExportStatus(String(jb.export_status));
-            if (jb.arquivo_exportado) setExportFile(String(jb.arquivo_exportado));
-            setJob(jb);
-        };
+    const updateExportFromJob = (jb: any) => {
+        if (!jb) return;
+        if (jb.export_progress != null) setExportProgress(Number(jb.export_progress));
+        if (jb.export_status != null) setExportStatus(String(jb.export_status));
+        if (jb.arquivo_exportado) setExportFile(String(jb.arquivo_exportado));
+        setJob(jb);
+    };
 
-        const startExportPolling = (jobId: number) => {
-            if (pollRef.current) return;
-            const iv = window.setInterval(async () => {
-                try {
-                    const r = await getConciliacao(jobId);
-                    const jb = r.data.job ?? null;
-                    if (!jb) return;
-                    updateExportFromJob(jb);
-                    if (jb.arquivo_exportado) {
-                        setExporting(false);
-                        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-                        toast.success('Exportação concluída');
-                    }
-                } catch (e) {
-                    console.error('poll export status failed', e);
-                }
-            }, POLL_INTERVAL_MS);
-            pollRef.current = iv;
-        };
-
-        const handleExport = async () => {
-            if (!id) return;
-            const jobId = Number(id);
-            setExporting(true);
-            setExportProgress(null);
-            setExportStatus('STARTING');
-            setExportFile(null);
+    const startExportPolling = (jobId: number) => {
+        if (pollRef.current) return;
+        const iv = window.setInterval(async () => {
             try {
-                await exportConciliacao(jobId);
-                toast.success('Exportação iniciada em background');
-                setTimeout(() => startExportPolling(jobId), EXPORT_POLL_DELAY_MS);
-            } catch (err: any) {
-                console.error('export failed', err);
-                toast.error(err?.response?.data?.error || 'Falha ao iniciar exportação');
-                setExporting(false);
-                setExportStatus('FAILED');
+                const r = await getConciliacao(jobId);
+                const jb = r.data.job ?? null;
+                if (!jb) return;
+                updateExportFromJob(jb);
+                if (jb.arquivo_exportado) {
+                    setExporting(false);
+                    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+                    toast.success('Exportação concluída');
+                }
+            } catch (e) {
+                console.error('poll export status failed', e);
             }
-        };
+        }, POLL_INTERVAL_MS);
+        pollRef.current = iv;
+    };
 
-        const handlePageChange = async (newPage: number) => {
-            if (!id) return;
-            await loadResults(Number(id), newPage, searchTerm || undefined, selectedSearchColumn || undefined);
-        };
+    const handleExport = async () => {
+        if (!id) return;
+        const jobId = Number(id);
+        setExporting(true);
+        setExportProgress(null);
+        setExportStatus('STARTING');
+        setExportFile(null);
+        try {
+            await exportConciliacao(jobId);
+            toast.success('Exportação iniciada em background');
+            setTimeout(() => startExportPolling(jobId), EXPORT_POLL_DELAY_MS);
+        } catch (err: any) {
+            console.error('export failed', err);
+            toast.error(err?.response?.data?.error || 'Falha ao iniciar exportação');
+            setExporting(false);
+            setExportStatus('FAILED');
+        }
+    };
 
-        const handleSearch = async () => {
-            if (!id) return;
-            setPage(1);
-            await loadResults(Number(id), 1, searchTerm || undefined, selectedSearchColumn || undefined);
-        };
+    const handlePageChange = async (newPage: number) => {
+        if (!id) return;
+        await loadResults(Number(id), newPage, searchTerm || undefined, selectedSearchColumn || undefined);
+    };
 
-        const displayAccount = (values: any, rowId?: number) => {
-            if (!values) return rowId ? `#${rowId}` : '-';
-            if (typeof values === 'string') return values;
-            if (typeof values === 'number') return String(values);
-            const vals = Object.values(values);
-            if (vals.length === 0) return rowId ? `#${rowId}` : '-';
-            return String(vals[1] ?? vals[0]);
-        };
+    const handleSearch = async () => {
+        if (!id) return;
+        setPage(1);
+        await loadResults(Number(id), 1, searchTerm || undefined, selectedSearchColumn || undefined);
+    };
+
+    const displayAccount = (values: any, rowId?: number) => {
+        if (!values) return rowId ? `#${rowId}` : '-';
+        if (typeof values === 'string') return values;
+        if (typeof values === 'number') return String(values);
+        const vals = Object.values(values);
+        if (vals.length === 0) return rowId ? `#${rowId}` : '-';
+        return String(vals[1] ?? vals[0]);
+    };
 
     const getPageList = () => {
         const pages: Array<number | string> = [];
@@ -269,31 +270,31 @@ const ConciliacaoDetails = () => {
                         <p className="text-muted-foreground">Conciliação Janeiro 2024</p>
                     </div>
                     <div className="flex items-center gap-2">
-                                                                <div className="flex items-center gap-2">
-                                                            {!exportFile ? (
-                                                                job?.status === 'DONE' && (
-                                                                    <Button onClick={handleExport} disabled={exporting}>
-                                                                        <Download className="mr-2 h-4 w-4" />
-                                                                        {exporting ? 'Exportando...' : 'Exportar ZIP'}
-                                                                    </Button>
-                                                                )
-                                                            ) : (
-                                                                <Button
-                                                                    onClick={async () => {
-                                                                        if (!id) return;
-                                                                        try {
-                                                                            const res = await downloadConciliacaoFile(Number(id));
-                                                                            downloadFromResponse(res as any, job?.nome || 'conciliacao');
-                                                                        } catch (err) {
-                                                                            console.error('Falha ao baixar exportação', err);
-                                                                            toast.error('Falha ao baixar exportação');
-                                                                        }
-                                                                    }}
-                                                                >
-                                                                    <Download className="mr-2 h-4 w-4" />
-                                                                    Baixar ZIP
-                                                                </Button>
-                                                            )}
+                        <div className="flex items-center gap-2">
+                            {!exportFile ? (
+                                job?.status === 'DONE' && (
+                                    <Button onClick={handleExport} disabled={exporting}>
+                                        <Download className="mr-2 h-4 w-4" />
+                                        {exporting ? 'Exportando...' : 'Exportar ZIP'}
+                                    </Button>
+                                )
+                            ) : (
+                                <Button
+                                    onClick={async () => {
+                                        if (!id) return;
+                                        try {
+                                            const res = await downloadConciliacaoFile(Number(id));
+                                            downloadFromResponse(res as any, job?.nome || 'conciliacao');
+                                        } catch (err) {
+                                            console.error('Falha ao baixar exportação', err);
+                                            toast.error('Falha ao baixar exportação');
+                                        }
+                                    }}
+                                >
+                                    <Download className="mr-2 h-4 w-4" />
+                                    Baixar ZIP
+                                </Button>
+                            )}
 
                             {/* inline small progress indicator */}
                             {exporting && (
@@ -386,27 +387,27 @@ const ConciliacaoDetails = () => {
                             <CardTitle>Resultados da Conciliação</CardTitle>
                             <div>
                                 <div className="flex items-center gap-2">
-                                     <Select
-                                    onValueChange={(v) => {
-                                        if (v === '__ALL__') setStatusFilter(undefined);
-                                        else if (v === '__NULL__') setStatusFilter(null);
-                                        else setStatusFilter(v);
-                                        setPage(1);
-                                    }}
-                                    value={statusFilter === undefined ? '__ALL__' : (statusFilter === null ? '__NULL__' : statusFilter)}
-                                >
-                                    <SelectTrigger className="w-56">
-                                        <SelectValue placeholder="Todos" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="__ALL__">Todos</SelectItem>
-                                        {metrics?.byStatus && metrics.byStatus.map((s: any) => {
-                                            const val = s.status != null ? String(s.status) : '__NULL__';
-                                            const label = `${s.status ?? 'Sem status'} (${Number(s.count).toLocaleString('pt-BR')})`;
-                                            return <SelectItem key={String(val)} value={val}>{label}</SelectItem>;
-                                        })}
-                                    </SelectContent>
-                                </Select>
+                                    <Select
+                                        onValueChange={(v) => {
+                                            if (v === '__ALL__') setStatusFilter(undefined);
+                                            else if (v === '__NULL__') setStatusFilter(null);
+                                            else setStatusFilter(v);
+                                            setPage(1);
+                                        }}
+                                        value={statusFilter === undefined ? '__ALL__' : (statusFilter === null ? '__NULL__' : statusFilter)}
+                                    >
+                                        <SelectTrigger className="w-56">
+                                            <SelectValue placeholder="Todos" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="__ALL__">Todos</SelectItem>
+                                            {metrics?.byStatus && metrics.byStatus.map((s: any) => {
+                                                const val = s.status != null ? String(s.status) : '__NULL__';
+                                                const label = `${s.status ?? 'Sem status'} (${Number(s.count).toLocaleString('pt-BR')})`;
+                                                return <SelectItem key={String(val)} value={val}>{label}</SelectItem>;
+                                            })}
+                                        </SelectContent>
+                                    </Select>
                                     <Select
                                         onValueChange={(v) => setSelectedSearchColumn(v)}
                                         value={selectedSearchColumn}
@@ -431,7 +432,7 @@ const ConciliacaoDetails = () => {
                                     <Button size="sm" onClick={() => void handleSearch()}>Buscar</Button>
 
                                 </div>
-                               
+
                             </div>
                         </div>
                     </CardHeader>

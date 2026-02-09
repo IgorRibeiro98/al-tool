@@ -10,6 +10,7 @@ import { useForm } from "react-hook-form";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import type { FC } from 'react';
 import { useWatch } from 'react-hook-form';
 import { fetchBases, getBaseColumns } from '@/services/baseService';
 import { createConfigCancelamento } from '@/services/configsService';
@@ -28,7 +29,7 @@ type FormValues = z.infer<typeof formSchema>;
 
 
 
-const NewConfigCancelamento = () => {
+const NewConfigCancelamento: FC = () => {
     const navigate = useNavigate();
     const [bases, setBases] = useState<Array<{ id: string; nome?: string }>>([]);
 

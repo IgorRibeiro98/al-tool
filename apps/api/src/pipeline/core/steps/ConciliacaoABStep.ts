@@ -410,8 +410,14 @@ export class ConciliacaoABStep implements PipelineStep {
             return;
         }
 
-        const tableA = baseA.tabela_sqlite;
-        const tableB = baseB.tabela_sqlite;
+        // Use light tables if available (created by CreateLightTableStep), otherwise fall back to full tables
+        const tableA = ctx.lightTableContabil ?? baseA.tabela_sqlite;
+        const tableB = ctx.lightTableFiscal ?? baseB.tabela_sqlite;
+        const usingLightTables = !!(ctx.lightTableContabil && ctx.lightTableFiscal);
+
+        if (usingLightTables) {
+            console.log(`${LOG_PREFIX} Using light tables for optimized processing`);
+        }
 
         // Performance: Get row counts for logging
         const [countA, countB] = await Promise.all([

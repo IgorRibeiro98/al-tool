@@ -13,6 +13,7 @@ import * as z from "zod";
 import { fetchBases, getBaseColumns } from '@/services/baseService';
 import { createConfigEstorno } from '@/services/configsService';
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import type { FC } from 'react';
 
 const formSchema = z.object({
     nome: z.string().min(1, "Nome é obrigatório"),
@@ -26,7 +27,7 @@ const formSchema = z.object({
 
 type FormValues = z.infer<typeof formSchema>;
 
-const NewConfigEstorno = () => {
+const NewConfigEstorno: FC = () => {
     const navigate = useNavigate();
 
     // Using centralized `Base` and `Column` types from `src/types/global.d.ts`

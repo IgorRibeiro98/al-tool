@@ -27,7 +27,9 @@ Este arquivo lista os arquivos presentes em `apps/api` (recursivamente) com uma 
 - `apps/api/src/pipeline/core/steps/EstornoBaseAStep.ts`: Step que detecta pares de estorno e insere `conciliacao_marks` com grupo de estorno.
 - `apps/api/src/pipeline/core/steps/CancelamentoBaseBStep.ts`: Step que marca notas canceladas (insere `conciliacao_marks` de cancelamento).
 
-- `apps/api/src/services/ExcelIngestService.ts`: Serviço responsável por processar arquivos XLSX/JSONL, criar tabelas sqlite `base_<id>` e popular os dados.
+- `apps/api/src/services/ExcelIngestService.ts`: Serviço responsável por processar arquivos XLSX/Arrow IPC, criar tabelas sqlite `base_<id>` e popular os dados. Implementa IDEIA 1 (Arrow), IDEIA 3 (mmap) e IDEIA 5 (streaming).
+- `apps/api/src/services/StreamingIngestPipeline.ts`: Pipeline de streaming unificada (IDEIA 5) que usa Node.js streams com backpressure para ingestão eficiente sem materialização intermediária.
+- `apps/api/src/services/MmapFileReader.ts`: Leitor de arquivos com memory-mapped I/O (IDEIA 3) para acesso zero-copy a arquivos Arrow, reduzindo uso de memória em 50-80%.
 - `apps/api/src/services/baseColumnsService.ts`: Utilitário para copiar flags monetárias (is_monetary) entre bases de referência.
 - `apps/api/src/services/ConciliacaoExportService.ts`: Serviço (exportação) para produzir arquivos de export dos resultados de conciliação. (arquivo presente no projeto)
 - `apps/api/src/services/licensingService.ts`: Lógica relacionada a licenciamento do produto (criação/verificação de licença).

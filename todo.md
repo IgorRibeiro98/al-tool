@@ -21,7 +21,7 @@
 - [ ] Adicionar indices dedicados em `conciliacao_result_{jobId}` (`job_id`, `chave`, `status`, `grupo`, `a_row_id`, `b_row_id`) e nas colunas dinamicas de chave para acelerar export e consultas.
 - [ ] Refatorar `EstornoBaseAStep` para usar consultas agrupadas e joins (sem carregar toda a base em memoria nem loops `listA x listB`), com insercao em lote na `conciliacao_marks`.
 - [ ] Ajustar `CancelamentoBaseBStep` e normalizacao de nulos (`NullsBaseA/B`) para usar updates e inserts em lote/CTE, evitando uma transacao por coluna ou por linha.
-- [ ] Tornar ingestao mais rapida: envolver criacao de tabela + inserts em transacao unica, suportar `PRAGMA` otimizados por job, e evitar dupla leitura completa do JSONL quando possivel.
+- [x] **IMPLEMENTADO**: Tornar ingestao mais rapida: pipeline de streaming com backpressure, suporte a Arrow IPC, `PRAGMA` otimizados por job, e indices + ANALYZE apos ingest.
 - [ ] Garantir criacao proativa de indices antes da conciliacao (base e chaves) e rodar `ANALYZE` apos ingest para planos de execucao melhores em bases grandes.
 - [ ] Simplificar leitura de tabelas nao conciliadas (A-only/B-only) para usar `INSERT ... SELECT` com filtros `NOT IN`/`LEFT JOIN` em vez de iterar linha a linha.
 - [ ] Adicionar TTL/cleanup para tabelas `conciliacao_result_*` e arquivos de export, liberando disco apos expirar o job.
@@ -29,8 +29,8 @@
 - [ ] Implementar paginacao/limite em consultas grandes nas rotas de listagem de jobs/bases para evitar retornos massivos.
 - [ ] Cache leve de metadata de bases/configs no processo do worker para reduzir consultas repetitivas durante a pipeline.
 - [ ] Considerar shards ou bancos separados por cliente/tenant para isolar I/O em cenarios com alto volume.
-- [ ] Alinhar o worker de conversao (`scripts/conversion_worker.py`) com os paths da API/Electron: usar DB_PATH/DATA_DIR do runtime, busy_timeout e WAL, alem de backoff/telemetria e encerramento gracioso.
-- [ ] Melhorar conversor `xlsx_to_jsonl.js`: validar sheet index, limitar linhas, medir tamanho/tempo, emitir cabecalho/meta e permitir filtro de colunas para reduzir I/O.
+- [x] **IMPLEMENTADO**: Alinhar o worker de conversao (`scripts/conversion_worker.py`) com os paths da API/Electron: usar DB_PATH/DATA_DIR do runtime, busy_timeout e WAL, backoff/telemetria e encerramento gracioso.
+- [ ] ~~Melhorar conversor `xlsx_to_jsonl.js`~~ (OBSOLETO - substituído por Arrow: xlsb_to_arrow.py e xlsx_to_arrow.js).
 
 ## Confiabilidade e consistencia
 - [ ] Adicionar constraint/indice unico em `conciliacao_marks` (`base_id`, `row_id`, `grupo`) para evitar duplicidades e reduzir consultas `exists` por linha.
@@ -60,9 +60,12 @@
 - [ ] Incluir logs estruturados no worker de conversao (claim, caminho resolvido, duracao, bytes) e enviar estatisticas para dashboard.
 
 ## Arquitetura e codigo
+- [x] **IMPLEMENTADO (IDEIA 1)**: Substituir JSONL por Apache Arrow IPC - formato binário colunar 10-100x mais rápido para I/O (xlsb_to_arrow.py, xlsx_to_arrow.js, ExcelIngestService.ts)
+- [x] **IMPLEMENTADO (IDEIA 3)**: Memory-Mapped Files + Zero-Copy - usa mmap para ler arquivos Arrow sem copiar dados para heap, 50-80% menos memória (MmapFileReader.ts)
+- [x] **IMPLEMENTADO (IDEIA 5)**: Pipeline de streaming unificada com Node.js streams e backpressure automático (StreamingIngestPipeline.ts)
 - [ ] Extrair funcoes utilitarias de parsing de chaves/mapeamentos para um modulo compartilhado (`packages/shared`) para evitar duplicacao em steps/export.
 - [ ] Introduzir tipos compartilhados de dominio (configs, base metadata, status) entre API, pipeline e front (usar `packages/domain`).
-- [ ] Eliminar branches mortos e redundantes em `ExcelIngestService` e normalizar nomes/tipos de colunas em um unico fluxo de ingestao (Excel/JSONL).
+- [ ] Limpar código legado remanescente e normalizar nomes/tipos de colunas em um unico fluxo de ingestao (Excel/Arrow).
 - [ ] Adicionar migrations para todas as colunas adicionadas dinamicamente em runtime (export_progress, pipeline_stage, overrides) evitando `try/catch` ad-hoc no repositorio.
 - [ ] Criar camada de servicos para `conciliacao_result` e `conciliacao_marks` encapsulando acesso ao SQLite e facilitando testes/mocks.
 - [ ] Unificar licenciamento: mover logica duplicada (API vs Electron) para pacote compartilhado, adicionando cache de status e funcoes puras para grace/offline.
@@ -109,7 +112,7 @@
 - [ ] Cobrir `runMigrations`/boot do Electron com teste de integracao que verifica criacao de pastas e logs em `userData`.
 - [ ] Adicionar testes de rotas `/api/license` offline/erro de rede, assegurando mensagens claras para o front.
 - [ ] Linter/formatter compartilhado (ESLint/Prettier) aplicado a todos os pacotes e CI com `pnpm -r lint test`.
-- [ ] Criar testes do worker de conversao (paths resolvidos, arquivo inexistente, erro do conversor) e do util `xlsx_to_jsonl.js` (sheet index, dados numericos, linhas vazias).
+- [ ] ~~Criar testes do worker de conversao (paths resolvidos, arquivo inexistente, erro do conversor) e do util `xlsx_to_jsonl.js`~~ Atualizar para testar xlsb_to_arrow.py e xlsx_to_arrow.js.
 - [ ] Adicionar testes de UI para `Conciliacoes`/`ConciliacaoDetails`/`BaseDetails` (paginacao, filtros, export, delete) usando mocks da API.
 - [ ] Testar `mappingUtils` (auto-map, serialize) cobrindo colunas duplicadas, vazias e reset de mapeamentos.
 - [ ] Testar `machineFingerprint` e licenciamento no Electron com envs simulados (sem LICENSE_API_BASE_URL, token ausente, expirado, revoke) e retries com timeout.

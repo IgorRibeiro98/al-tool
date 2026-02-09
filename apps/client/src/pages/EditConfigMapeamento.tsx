@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
+import type { FC } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { z } from 'zod';
 import { useForm } from 'react-hook-form';
@@ -29,7 +30,7 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 
-const EditConfigMapeamento = () => {
+const EditConfigMapeamento: FC = () => {
     const navigate = useNavigate();
     const { id } = useParams();
     const numericId = id ? Number(id) : NaN;

@@ -6,6 +6,11 @@ export interface PipelineContext {
     configEstornoId?: number;
     configCancelamentoId?: number;
     reportStage?: (info: { stepName: string; stepIndex: number; totalSteps: number }) => Promise<void>;
+
+    // Light tables for optimized pipeline processing
+    // These are populated by CreateLightTableStep and used by subsequent steps
+    lightTableContabil?: string;
+    lightTableFiscal?: string;
 }
 
 export interface PipelineStep {
@@ -130,3 +135,5 @@ export { NullsBaseBStep } from './steps/NullsBaseBStep';
 export { EstornoBaseAStep } from './steps/EstornoBaseAStep';
 export { CancelamentoBaseBStep } from './steps/CancelamentoBaseBStep';
 export { ConciliacaoABStep } from './steps/ConciliacaoABStep';
+export { CreateLightTableStep } from './steps/CreateLightTableStep';
+export { CleanupLightTableStep } from './steps/CleanupLightTableStep';

@@ -2,12 +2,16 @@ import db from '../db/knex';
 import pipeline from '../pipeline/integration';
 import * as jobsRepo from '../repos/jobsRepository';
 import idxHelpers from '../db/indexHelpers';
+import { LightTableService } from '../services/LightTableService';
 
 const LOG_PREFIX = '[jobRunner]';
 const EXIT_MISSING_ARG = 2;
 const EXIT_JOB_NOT_FOUND = 3;
 const EXIT_CONFIG_NOT_FOUND = 4;
 const EXIT_BASES_NOT_DEFINED = 5;
+
+// Light table service for cleanup on failure
+const lightTableService = new LightTableService();
 
 interface StageReportParams {
     stepName: string;
@@ -43,7 +47,9 @@ function createStageReporter(jobId: number, totalSteps: number) {
         EstornoBaseA: { code: 'aplicando_estorno', label: 'Aplicando regras de estorno' },
         NullsBaseB: { code: 'normalizando_base_b', label: 'Normalizando campos da Base Fiscal' },
         CancelamentoBaseB: { code: 'aplicando_cancelamento', label: 'Aplicando regras de cancelamento' },
+        CreateLightTable: { code: 'criando_tabelas_otimizadas', label: 'Criando tabelas otimizadas para conciliação' },
         ConciliacaoAB: { code: 'conciliando', label: 'Conciliando bases A x B' },
+        CleanupLightTable: { code: 'limpando_tabelas_temporarias', label: 'Limpando tabelas temporárias' },
     };
 
     return async ({ stepName, stepIndex, totalSteps: totalFromCtx }: StageReportParams): Promise<void> => {
@@ -61,6 +67,8 @@ async function handleFatal(jobId: number | null, err: unknown): Promise<never> {
     const message = err instanceof Error ? err.message : String(err);
     try { await jobsRepo.updateJobStatus(jobId, 'FAILED', message); } catch { /* ignore */ }
     try { await jobsRepo.setJobPipelineStage(jobId, 'failed', null, 'Conciliação interrompida'); } catch { /* ignore */ }
+    // Cleanup light tables on failure
+    try { await lightTableService.dropAllLightTablesForJob(jobId); } catch { /* ignore */ }
     process.exit(1);
 }
 
@@ -132,6 +140,8 @@ async function main(): Promise<void> {
         } catch (err: any) {
             const msg = err && err.message ? err.message : String(err);
             console.error(`${LOG_PREFIX} pipeline failed for job`, jobId, msg);
+            // Cleanup light tables on failure
+            try { await lightTableService.dropAllLightTablesForJob(jobId); } catch { /* ignore */ }
             await jobsRepo.setJobPipelineStage(jobId, 'failed', null, 'Conciliação interrompida');
             await jobsRepo.updateJobStatus(jobId, 'FAILED', msg);
             process.exit(1);

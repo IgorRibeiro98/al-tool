@@ -40,7 +40,7 @@ function buildRowObject(
 
     columns.forEach((c, idx) => {
         const raw = rowArr ? rowArr[idx] : undefined;
-        // Extract the original string representation if available (__num__ from JSONL)
+        // Extract the original value (Arrow preserves types natively)
         const valRaw = raw && typeof raw === 'object' && (raw as any).__num__
             ? (raw as any).__num__
             : raw;

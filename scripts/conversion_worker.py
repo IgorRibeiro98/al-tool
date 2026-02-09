@@ -30,7 +30,7 @@ BUSY_TIMEOUT_MS = int(os.environ.get('SQLITE_BUSY_TIMEOUT') or os.environ.get('B
 JOURNAL_MODE = os.environ.get('SQLITE_JOURNAL_MODE') or os.environ.get('JOURNAL_MODE') or 'WAL'
 BACKOFF_MAX_SECONDS = float(os.environ.get('WORKER_BACKOFF_MAX_SECONDS', '30'))
 
-CONVERTER_SCRIPT = os.path.join(SCRIPT_DIR, 'xlsb_to_xlsx.py')
+CONVERTER_SCRIPT = os.path.join(SCRIPT_DIR, 'xlsb_to_arrow.py')
 
 # Runtime state
 running = True
@@ -116,10 +116,10 @@ def resolve_uploaded_path(arquivo_caminho: Optional[str]) -> Tuple[Optional[str]
     return None, candidates
 
 
-def claim_pending(conn: sqlite3.Connection, max_retries: int = 3) -> Optional[Tuple[int, Optional[str]]]:
+def claim_pending(conn: sqlite3.Connection, max_retries: int = 3) -> Optional[Tuple[int, Optional[str], int, int]]:
     """Atomically claim a single PENDING base and mark it RUNNING.
 
-    Returns (base_id, arquivo_caminho) or None when nothing to claim.
+    Returns (base_id, arquivo_caminho, header_linha_inicial, header_coluna_inicial) or None when nothing to claim.
     Uses retry with exponential backoff for database lock contention.
     """
     cur = conn.cursor()
@@ -129,12 +129,12 @@ def claim_pending(conn: sqlite3.Connection, max_retries: int = 3) -> Optional[Tu
         try:
             cur.execute("BEGIN IMMEDIATE")
             try:
-                cur.execute("SELECT id, arquivo_caminho FROM bases WHERE conversion_status = 'PENDING' ORDER BY id LIMIT 1")
+                cur.execute("SELECT id, arquivo_caminho, COALESCE(header_linha_inicial, 1), COALESCE(header_coluna_inicial, 1) FROM bases WHERE conversion_status = 'PENDING' ORDER BY id LIMIT 1")
                 row = cur.fetchone()
                 if not row:
                     conn.commit()
                     return None
-                base_id, arquivo_caminho = row
+                base_id, arquivo_caminho, header_linha, header_coluna = row
 
                 cur.execute(
                     "UPDATE bases SET conversion_status = 'RUNNING', conversion_started_at = ? WHERE id = ? AND conversion_status = 'PENDING'",
@@ -144,7 +144,7 @@ def claim_pending(conn: sqlite3.Connection, max_retries: int = 3) -> Optional[Tu
                     conn.commit()
                     return None
                 conn.commit()
-                return int(base_id), arquivo_caminho
+                return int(base_id), arquivo_caminho, int(header_linha), int(header_coluna)
             except Exception:
                 try:
                     conn.rollback()
@@ -161,13 +161,13 @@ def claim_pending(conn: sqlite3.Connection, max_retries: int = 3) -> Optional[Tu
     return None
 
 
-def update_status(conn: sqlite3.Connection, base_id: int, status: str, jsonl_rel: Optional[str] = None, error_msg: Optional[str] = None, max_retries: int = 3) -> None:
+def update_status(conn: sqlite3.Connection, base_id: int, status: str, arrow_rel: Optional[str] = None, error_msg: Optional[str] = None, max_retries: int = 3) -> None:
     cur = conn.cursor()
     fields = ['conversion_status = ?']
     params: List[object] = [status]
-    if jsonl_rel is not None:
-        fields.append('arquivo_jsonl_path = ?')
-        params.append(jsonl_rel)
+    if arrow_rel is not None:
+        fields.append('arquivo_arrow_path = ?')
+        params.append(arrow_rel)
     fields.append('conversion_finished_at = ?')
     params.append(now_iso())
     if error_msg is not None:
@@ -192,10 +192,14 @@ def update_status(conn: sqlite3.Connection, base_id: int, status: str, jsonl_rel
             raise
 
 
-def run_conversion(abs_input: str, abs_output: str) -> Tuple[int, str, str]:
+def run_conversion(abs_input: str, abs_output: str, header_row: int = 1, start_col: int = 1) -> Tuple[int, str, str]:
     """Run the converter script and return (rc, stdout, stderr)."""
     python_cmd = os.environ.get('PYTHON_EXECUTABLE') or sys.executable or 'python'
-    cmd = [python_cmd, CONVERTER_SCRIPT, '--jsonl', abs_input, abs_output]
+    cmd = [
+        python_cmd, CONVERTER_SCRIPT, abs_input, abs_output,
+        '--header-row', str(header_row),
+        '--start-col', str(start_col),
+    ]
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out = p.stdout.decode('utf-8', errors='replace')
     err = p.stderr.decode('utf-8', errors='replace')
@@ -265,14 +269,14 @@ def main_loop() -> None:
                 time.sleep(POLL_INTERVAL)
                 continue
 
-            base_id, arquivo_caminho = claimed
+            base_id, arquivo_caminho, header_linha, header_coluna = claimed
             stats['claimed'] += 1
             
             # Check if there are more pending jobs for faster polling
             pending_count = count_pending(conn)
             use_fast_poll = pending_count > 0
             
-            log(f"Claimed base id={base_id} file={arquivo_caminho} (claimed={stats['claimed']}, pending={pending_count})")
+            log(f"Claimed base id={base_id} file={arquivo_caminho} header_row={header_linha} start_col={header_coluna} (claimed={stats['claimed']}, pending={pending_count})")
 
             abs_input, candidates = resolve_uploaded_path(arquivo_caminho)
             if abs_input is None:
@@ -287,13 +291,13 @@ def main_loop() -> None:
                 time.sleep(FAST_POLL_INTERVAL if use_fast_poll else POLL_INTERVAL)
                 continue
 
-            abs_output = os.path.join(INGESTS_DIR, f"{base_id}.jsonl")
+            abs_output = os.path.join(INGESTS_DIR, f"{base_id}.arrow")
             ensure_dir(os.path.dirname(abs_output))
 
             try:
-                rc, out, err = run_conversion(abs_input, abs_output)
+                rc, out, err = run_conversion(abs_input, abs_output, header_row=header_linha, start_col=header_coluna)
                 if rc == 0:
-                    update_status(conn, base_id, 'READY', jsonl_rel=abs_output)
+                    update_status(conn, base_id, 'READY', arrow_rel=abs_output)
                     stats['converted'] += 1
                     log(f"Converted base {base_id} -> {abs_output} (ok={stats['converted']} fail={stats['failed']})")
                 else:

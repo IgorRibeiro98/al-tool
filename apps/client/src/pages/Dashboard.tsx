@@ -1,15 +1,12 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { FC } from "react";
+import { useNavigate } from "react-router-dom";
+import { Database, CheckCircle2, PlayCircle, Plus, Eraser, Trash, Loader2 } from "lucide-react";
+import { toast } from 'sonner';
 import { MetricCard } from "@/components/MetricCard";
 import { StatusChip } from "@/components/StatusChip";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Database, CheckCircle2, PlayCircle, Plus, Eraser, Trash } from "lucide-react";
-import { useNavigate } from "react-router-dom";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { fetchBases } from '@/services/baseService';
-import { fetchConciliacoes } from '@/services/conciliacaoService';
-import { fetchConfigsConciliacao, fetchConfigsEstorno, fetchConfigsCancelamento, fetchConfigsMapeamento } from '@/services/configsService';
-import { maintenanceCleanup, maintenanceCleanupStorage } from '@/services/maintenanceService';
-import { toast } from 'sonner';
 import {
     AlertDialog,
     AlertDialogAction,
@@ -20,15 +17,22 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { fetchBases } from '@/services/baseService';
+import { fetchConciliacoes } from '@/services/conciliacaoService';
+import { fetchConfigsConciliacao, fetchConfigsEstorno, fetchConfigsCancelamento, fetchConfigsMapeamento } from '@/services/configsService';
+import { maintenanceCleanup, maintenanceCleanupStorage } from '@/services/maintenanceService';
 
-const SCOPE = 'Dashboard';
 const DAYS_30_MS = 30 * 24 * 60 * 60 * 1000;
-const MSG_CLEANUP_FAILED = 'Falha ao executar limpeza';
-const MSG_CLEANUP_STORAGE_FAILED = 'Falha ao limpar arquivos';
-const MSG_CLEANUP_DONE = 'Limpeza concluída';
-const MSG_CLEANUP_STORAGE_DONE = 'Limpeza de arquivos concluída';
 
-const formatDateOrEmpty = (d?: string | null) => {
+const MESSAGES = {
+    CLEANUP_FAILED: 'Falha ao executar limpeza',
+    CLEANUP_STORAGE_FAILED: 'Falha ao limpar arquivos',
+    CLEANUP_DONE: 'Limpeza concluída',
+    CLEANUP_STORAGE_DONE: 'Limpeza de arquivos concluída',
+    LOAD_FAILED: 'Falha ao carregar dados do dashboard',
+} as const;
+
+const formatDateOrEmpty = (d?: string | null): string => {
     if (!d) return '';
     try {
         return new Date(d).toLocaleDateString('pt-BR');
@@ -37,9 +41,13 @@ const formatDateOrEmpty = (d?: string | null) => {
     }
 };
 
-const JobRow = ({ job, onView }: { job: JobConciliacao; onView: (id: number) => void }) => (
+type JobRowProps = {
+    job: JobConciliacao;
+    onView: (id: number) => void;
+};
+
+const JobRow: FC<JobRowProps> = ({ job, onView }) => (
     <div
-        key={job.id}
         className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50 transition-colors cursor-pointer"
         onClick={() => onView(job.id)}
     >
@@ -49,12 +57,12 @@ const JobRow = ({ job, onView }: { job: JobConciliacao; onView: (id: number) => 
         </div>
         <div className="flex items-center gap-4">
             <span className="text-sm text-muted-foreground">{formatDateOrEmpty(job.created_at)}</span>
-            <StatusChip status={(job.status || 'PENDING') as any} />
+            <StatusChip status={(job.status || 'PENDING') as JobStatus} />
         </div>
     </div>
 );
 
-const Dashboard: React.FC = () => {
+const Dashboard: FC = () => {
     const navigate = useNavigate();
 
     const [bases, setBases] = useState<Base[]>([]);
@@ -79,23 +87,15 @@ const Dashboard: React.FC = () => {
                 fetchConfigsMapeamento(),
             ]);
 
-            const basesData = basesRes.data?.data || basesRes.data || [];
-            const jobsData = jobsRes.data?.data || jobsRes.data || [];
-            const cfgCData = cfgCRes.data?.data || cfgCRes.data || [];
-            const cfgEData = cfgERes.data?.data || cfgERes.data || [];
-            const cfgCancData = cfgCancRes.data?.data || cfgCancRes.data || [];
-            const cfgMapData = cfgMapRes.data?.data || cfgMapRes.data || [];
-
-            setBases(basesData as Base[]);
-            setConciliacoes(jobsData as JobConciliacao[]);
-            setConfigsConciliacao(cfgCData as ConfigConciliacao[]);
-            setConfigsEstorno(cfgEData as ConfigEstorno[]);
-            setConfigsCancelamento(cfgCancData as ConfigCancelamento[]);
-            setConfigsMapeamento(cfgMapData as ConfigMapeamento[]);
+            setBases((basesRes.data?.data || basesRes.data || []) as Base[]);
+            setConciliacoes((jobsRes.data?.data || jobsRes.data || []) as JobConciliacao[]);
+            setConfigsConciliacao((cfgCRes.data?.data || cfgCRes.data || []) as ConfigConciliacao[]);
+            setConfigsEstorno((cfgERes.data?.data || cfgERes.data || []) as ConfigEstorno[]);
+            setConfigsCancelamento((cfgCancRes.data?.data || cfgCancRes.data || []) as ConfigCancelamento[]);
+            setConfigsMapeamento((cfgMapRes.data?.data || cfgMapRes.data || []) as ConfigMapeamento[]);
         } catch (err) {
-            // eslint-disable-next-line no-console
-            console.error(`${SCOPE} - failed to load dashboard data`, err);
-            // best-effort: clear affected states
+            console.error('Dashboard: failed to load data', err);
+            toast.error(MESSAGES.LOAD_FAILED);
             setBases([]);
             setConciliacoes([]);
             setConfigsConciliacao([]);
@@ -115,15 +115,14 @@ const Dashboard: React.FC = () => {
         try {
             const res = await maintenanceCleanup();
             const payload = res.data || res || {};
-            toast.success(MSG_CLEANUP_DONE, {
+            toast.success(MESSAGES.CLEANUP_DONE, {
                 description: `Uploads: ${payload.deletedUploads ?? 0}, Ingests: ${payload.deletedIngests ?? 0}, Exports: ${payload.deletedExports ?? 0}, Bases removidas: ${payload.deletedBases ?? 0}, Conciliações removidas: ${payload.deletedJobs ?? 0}, Tabelas base dropadas: ${(payload.droppedTables || []).length}, Resultados dropados: ${(payload.droppedResultTables || []).length}`,
             });
-            // refresh data after cleanup
             await loadAll();
-        } catch (e: any) {
-            // eslint-disable-next-line no-console
-            console.error(`${SCOPE} - cleanup failed`, e);
-            toast.error(MSG_CLEANUP_FAILED, { description: e?.response?.data?.error || e?.message });
+        } catch (e: unknown) {
+            const err = e as { response?: { data?: { error?: string } }; message?: string };
+            console.error('Dashboard: cleanup failed', e);
+            toast.error(MESSAGES.CLEANUP_FAILED, { description: err?.response?.data?.error || err?.message });
         } finally {
             setCleaning(false);
         }
@@ -135,13 +134,13 @@ const Dashboard: React.FC = () => {
         try {
             const res = await maintenanceCleanupStorage();
             const payload = res.data || res || {};
-            toast.success(MSG_CLEANUP_STORAGE_DONE, {
+            toast.success(MESSAGES.CLEANUP_STORAGE_DONE, {
                 description: `Uploads: ${payload.deletedUploads ?? 0}, Ingests: ${payload.deletedIngests ?? 0}, Exports: ${payload.deletedExports ?? 0}`,
             });
-        } catch (e: any) {
-            // eslint-disable-next-line no-console
-            console.error(`${SCOPE} - cleanup storage failed`, e);
-            toast.error(MSG_CLEANUP_STORAGE_FAILED, { description: e?.response?.data?.error || e?.message });
+        } catch (e: unknown) {
+            const err = e as { response?: { data?: { error?: string } }; message?: string };
+            console.error('Dashboard: cleanup storage failed', e);
+            toast.error(MESSAGES.CLEANUP_STORAGE_FAILED, { description: err?.response?.data?.error || err?.message });
         } finally {
             setCleaningStorage(false);
         }
@@ -210,11 +209,11 @@ const Dashboard: React.FC = () => {
                             Nova Conciliação
                         </Button>
                         <Button className="w-full justify-start" variant="secondary" onClick={() => setConfirmCleanupOpen(true)} disabled={cleaning}>
-                            <Eraser className="mr-2 h-4 w-4" />
+                            {cleaning ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Eraser className="mr-2 h-4 w-4" />}
                             {cleaning ? 'Limpando...' : 'Limpar dados da aplicação'}
                         </Button>
                         <Button className="w-full justify-start" variant="outline" onClick={() => setConfirmCleanupStorageOpen(true)} disabled={cleaningStorage}>
-                            <Trash className="mr-2 h-4 w-4" />
+                            {cleaningStorage ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash className="mr-2 h-4 w-4" />}
                             {cleaningStorage ? 'Limpando arquivos...' : 'Limpar apenas arquivos'}
                         </Button>
                     </CardContent>
@@ -247,24 +246,12 @@ const Dashboard: React.FC = () => {
                 </CardHeader>
                 <CardContent>
                     <div className="space-y-4">
-                        {recentJobs.map((job) => (
-                            <div
-                                key={job.id}
-                                className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50 transition-colors cursor-pointer"
-                                onClick={() => navigate(`/conciliacoes/${job.id}`)}
-                            >
-                                <div className="flex-1">
-                                    <p className="font-medium">{job.nome || `Job ${job.id}`}</p>
-                                    <p className="text-sm text-muted-foreground">Config: {job.config_conciliacao_id}</p>
-                                </div>
-                                <div className="flex items-center gap-4">
-                                    <span className="text-sm text-muted-foreground">{job.created_at ? new Date(job.created_at).toLocaleDateString('pt-BR') : ''}</span>
-                                    <StatusChip status={(job.status || 'PENDING') as any} />
-                                </div>
-                            </div>
-                        ))}
-                        {recentJobs.length === 0 && (
-                            <div className="text-sm text-muted-foreground">Nenhum job encontrado</div>
+                        {recentJobs.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">Nenhum job encontrado</p>
+                        ) : (
+                            recentJobs.map((job) => (
+                                <JobRow key={job.id} job={job} onView={(id) => navigate(`/conciliacoes/${id}`)} />
+                            ))
                         )}
                     </div>
                 </CardContent>

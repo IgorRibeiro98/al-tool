@@ -10,6 +10,7 @@ import { useForm } from "react-hook-form";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import type { FC } from 'react';
 import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
 import {
     AlertDialog,
@@ -40,7 +41,7 @@ const formSchema = z.object({
 
 type FormValues = z.infer<typeof formSchema>;
 
-const EditConfigEstorno = () => {
+const EditConfigEstorno: FC = () => {
     const { id } = useParams();
     const navigate = useNavigate();
 
@@ -76,7 +77,7 @@ const EditConfigEstorno = () => {
         fetchBases()
             .then(r => { if (!mounted) return; setBases((r.data?.data || r.data || []) as Base[]); })
             .catch(() => setBases([]))
-        ;
+            ;
         return () => { mounted = false; };
     }, []);
 

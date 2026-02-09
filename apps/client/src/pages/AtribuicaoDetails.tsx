@@ -1,23 +1,30 @@
-import React, { FC, useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import type { FC } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { toast } from 'sonner';
+import { ArrowLeft, ArrowRightLeft, Play, Download, RefreshCw, Search, Loader2 } from 'lucide-react';
+import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
+import { StatusChip } from '@/components/StatusChip';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Input } from '@/components/ui/input';
-import { ArrowLeft, ArrowRightLeft, Play, Download, RefreshCw, Search } from 'lucide-react';
-import { useToast } from '@/hooks/use-toast';
 import * as atribuicaoService from '@/services/atribuicaoService';
 import { downloadFromResponse } from '@/lib/download';
 import type { AtribuicaoRun } from '@/services/atribuicaoService';
 
-const STATUS_COLORS: Record<string, string> = {
-    PENDING: 'bg-yellow-500',
-    RUNNING: 'bg-blue-500',
-    DONE: 'bg-green-500',
-    FAILED: 'bg-red-500',
-};
+const POLL_INTERVAL_MS = 2000;
+
+const MESSAGES = {
+    LOAD_FAIL: 'Falha ao carregar atribuição',
+    START_SUCCESS: 'Execução iniciada',
+    START_FAIL: 'Falha ao iniciar',
+    EXPORT_SUCCESS: 'Download iniciado',
+    EXPORT_PROCESSING: 'Aguarde o processamento...',
+    EXPORT_FAIL: 'Falha ao exportar',
+} as const;
 
 const STATUS_LABELS: Record<string, string> = {
     PENDING: 'Pendente',
@@ -26,10 +33,18 @@ const STATUS_LABELS: Record<string, string> = {
     FAILED: 'Falhou',
 };
 
+const getStatusChip = (status?: string): 'pending' | 'running' | 'done' | 'failed' => {
+    if (!status) return 'pending';
+    const s = status.toUpperCase();
+    if (s === 'DONE') return 'done';
+    if (s === 'RUNNING') return 'running';
+    if (s === 'FAILED') return 'failed';
+    return 'pending';
+};
+
 const AtribuicaoDetails: FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
-    const { toast } = useToast();
 
     const [run, setRun] = useState<AtribuicaoRun | null>(null);
     const [loading, setLoading] = useState(true);
@@ -64,13 +79,13 @@ const AtribuicaoDetails: FC = () => {
         try {
             const res = await atribuicaoService.getRun(runId);
             setRun(res.data);
-        } catch (err: any) {
+        } catch (err) {
             console.error('Failed to load run', err);
-            toast({ title: 'Erro', description: 'Falha ao carregar atribuição', variant: 'destructive' });
+            toast.error(MESSAGES.LOAD_FAIL);
         } finally {
             setLoading(false);
         }
-    }, [runId, toast]);
+    }, [runId]);
 
     const loadResults = useCallback(async () => {
         if (!runId || !run || run.status !== 'DONE') return;
@@ -152,54 +167,45 @@ const AtribuicaoDetails: FC = () => {
     // Auto-refresh when running
     useEffect(() => {
         if (!run || run.status !== 'RUNNING') return;
-        const interval = setInterval(loadRun, 2000);
+        const interval = setInterval(loadRun, POLL_INTERVAL_MS);
         return () => clearInterval(interval);
     }, [run, loadRun]);
 
-    const handleStart = async () => {
+    const handleStart = useCallback(async () => {
         if (!runId) return;
         setStarting(true);
         try {
             await atribuicaoService.startRun(runId);
-            toast({ title: 'Iniciado', description: 'Execução iniciada' });
+            toast.success(MESSAGES.START_SUCCESS);
             loadRun();
-        } catch (err: any) {
-            toast({
-                title: 'Erro',
-                description: err?.response?.data?.error || 'Falha ao iniciar',
-                variant: 'destructive',
-            });
+        } catch (err: unknown) {
+            const e = err as { response?: { data?: { error?: string } } };
+            toast.error(e?.response?.data?.error || MESSAGES.START_FAIL);
         } finally {
             setStarting(false);
         }
-    };
+    }, [runId, loadRun]);
 
-    const handleExport = async () => {
+    const handleExport = useCallback(async () => {
         if (!runId) return;
         setExporting(true);
         try {
-            // Dispara exportação (GET /export)
             const res = await atribuicaoService.getExportStatus(runId);
             if (res.data.status === 'ready') {
-                // Download direto usando helper que respeita content-disposition
                 const fileRes = await atribuicaoService.downloadExportFile(runId);
                 downloadFromResponse(fileRes, run?.nome || undefined);
-                toast({ title: 'Sucesso', description: 'Download iniciado' });
+                toast.success(MESSAGES.EXPORT_SUCCESS);
             } else {
-                // Dispara processamento
                 await atribuicaoService.getExportStatus(runId);
-                toast({ title: 'Exportação iniciada', description: 'Aguarde o processamento...' });
+                toast.info('Exportação iniciada', { description: MESSAGES.EXPORT_PROCESSING });
             }
-        } catch (err: any) {
-            toast({
-                title: 'Erro',
-                description: err?.response?.data?.error || 'Falha ao exportar',
-                variant: 'destructive',
-            });
+        } catch (err: unknown) {
+            const e = err as { response?: { data?: { error?: string } } };
+            toast.error(e?.response?.data?.error || MESSAGES.EXPORT_FAIL);
         } finally {
             setExporting(false);
         }
-    };
+    }, [runId, run]);
 
     const handleSearch = (e: React.FormEvent) => {
         e.preventDefault();
@@ -208,17 +214,18 @@ const AtribuicaoDetails: FC = () => {
     };
 
     if (loading) {
-        return (
-            <div className="p-6 flex items-center justify-center">
-                <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
-            </div>
-        );
+        return <PageSkeletonWrapper loading={true}><div /></PageSkeletonWrapper>;
     }
 
     if (!run) {
         return (
-            <div className="p-6">
-                <p className="text-muted-foreground">Atribuição não encontrada</p>
+            <div className="space-y-6">
+                <div className="flex items-center gap-4">
+                    <Button variant="ghost" size="icon" onClick={() => navigate('/atribuicoes')}>
+                        <ArrowLeft className="h-4 w-4" />
+                    </Button>
+                    <p className="text-muted-foreground">Atribuição não encontrada</p>
+                </div>
             </div>
         );
     }
@@ -233,27 +240,28 @@ const AtribuicaoDetails: FC = () => {
     const displayCols = [...priorityCols.filter(c => columns.includes(c)), ...otherCols].slice(0, 10);
 
     return (
-        <div className="p-6 space-y-6">
+        <div className="space-y-6">
             {/* Header */}
             <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4">
                     <Button variant="ghost" size="icon" onClick={() => navigate('/atribuicoes')}>
-                        <ArrowLeft className="h-5 w-5" />
+                        <ArrowLeft className="h-4 w-4" />
                     </Button>
                     <div className="flex items-center gap-3">
                         <ArrowRightLeft className="h-8 w-8 text-primary" />
                         <div>
-                            <h1 className="text-2xl font-bold">{run.nome || `Atribuição #${run.id}`}</h1>
-                            <p className="text-sm text-muted-foreground">
+                            <h1 className="text-3xl font-bold">{run.nome || `Atribuição #${run.id}`}</h1>
+                            <p className="text-muted-foreground">
                                 {translatePipelineStage(run.pipeline_stage_label, run.pipeline_stage) || 'Aguardando'}
                             </p>
                         </div>
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
-                    <Badge className={STATUS_COLORS[run.status] || 'bg-gray-500'}>
-                        {STATUS_LABELS[run.status] || run.status}
-                    </Badge>
+                    <StatusChip
+                        status={getStatusChip(run.status)}
+                        label={STATUS_LABELS[run.status] || run.status}
+                    />
                     {canStart && (
                         <Button onClick={handleStart} disabled={starting}>
                             <Play className="h-4 w-4 mr-2" />

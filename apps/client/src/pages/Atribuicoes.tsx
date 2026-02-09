@@ -1,22 +1,25 @@
-import React, { FC, useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import type { FC } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
+import { Plus, RefreshCw, Eye, Trash2, ArrowRightLeft, Loader2 } from 'lucide-react';
+import PageSkeletonWrapper from '@/components/PageSkeletonWrapper';
+import { StatusChip } from '@/components/StatusChip';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Plus, RefreshCw, Eye, Trash2, ArrowRightLeft } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import { useToast } from '@/hooks/use-toast';
 import * as atribuicaoService from '@/services/atribuicaoService';
 import type { AtribuicaoRun } from '@/services/atribuicaoService';
 
-const STATUS_COLORS: Record<string, string> = {
-    PENDING: 'bg-yellow-500',
-    RUNNING: 'bg-blue-500',
-    DONE: 'bg-green-500',
-    FAILED: 'bg-red-500',
-};
+const POLL_INTERVAL_MS = 3000;
+
+const MESSAGES = {
+    LOAD_FAIL: 'Falha ao carregar atribuições',
+    DELETE_SUCCESS: 'Atribuição excluída com sucesso!',
+    DELETE_FAIL: 'Falha ao excluir atribuição',
+} as const;
 
 const STATUS_LABELS: Record<string, string> = {
     PENDING: 'Pendente',
@@ -25,28 +28,38 @@ const STATUS_LABELS: Record<string, string> = {
     FAILED: 'Falhou',
 };
 
+const getStatusChip = (status?: string): 'pending' | 'running' | 'done' | 'failed' => {
+    if (!status) return 'pending';
+    const s = status.toUpperCase();
+    if (s === 'DONE') return 'done';
+    if (s === 'RUNNING') return 'running';
+    if (s === 'FAILED') return 'failed';
+    return 'pending';
+};
+
 const Atribuicoes: FC = () => {
     const navigate = useNavigate();
-    const { toast } = useToast();
     const [runs, setRuns] = useState<AtribuicaoRun[]>([]);
     const [loading, setLoading] = useState(true);
     const [statusFilter, setStatusFilter] = useState<string>('all');
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
+    const [deleting, setDeleting] = useState(false);
 
-    const loadRuns = useCallback(async () => {
-        setLoading(true);
+    const loadRuns = useCallback(async (options?: { silent?: boolean }) => {
+        const { silent = false } = options || {};
+        if (!silent) setLoading(true);
         try {
             const status = statusFilter !== 'all' ? statusFilter : undefined;
             const res = await atribuicaoService.listRuns(1, 100, status);
             setRuns(res.data?.data || []);
-        } catch (err: any) {
+        } catch (err) {
             console.error('Failed to load runs', err);
-            toast({ title: 'Erro', description: 'Falha ao carregar atribuições', variant: 'destructive' });
+            if (!silent) toast.error(MESSAGES.LOAD_FAIL);
         } finally {
-            setLoading(false);
+            if (!silent) setLoading(false);
         }
-    }, [statusFilter, toast]);
+    }, [statusFilter]);
 
     useEffect(() => {
         loadRuns();
@@ -56,23 +69,31 @@ const Atribuicoes: FC = () => {
     useEffect(() => {
         const hasRunning = runs.some(r => r.status === 'RUNNING');
         if (!hasRunning) return;
-        const interval = setInterval(loadRuns, 3000);
+        const interval = setInterval(() => loadRuns({ silent: true }), POLL_INTERVAL_MS);
         return () => clearInterval(interval);
     }, [runs, loadRuns]);
 
-    const handleDelete = async () => {
+    const handleDelete = useCallback(async () => {
         if (!pendingDeleteId) return;
+        setDeleting(true);
         try {
             await atribuicaoService.deleteRun(pendingDeleteId);
-            toast({ title: 'Sucesso', description: 'Atribuição deletada' });
-            loadRuns();
-        } catch (err: any) {
-            toast({ title: 'Erro', description: err?.response?.data?.error || 'Falha ao deletar', variant: 'destructive' });
+            toast.success(MESSAGES.DELETE_SUCCESS);
+            await loadRuns({ silent: true });
+        } catch (err: unknown) {
+            const e = err as { response?: { data?: { error?: string } } };
+            toast.error(e?.response?.data?.error || MESSAGES.DELETE_FAIL);
         } finally {
+            setDeleting(false);
             setDeleteDialogOpen(false);
             setPendingDeleteId(null);
         }
-    };
+    }, [pendingDeleteId, loadRuns]);
+
+    const confirmDelete = useCallback((id: number) => {
+        setPendingDeleteId(id);
+        setDeleteDialogOpen(true);
+    }, []);
 
     const formatDate = (dateStr?: string) => {
         if (!dateStr) return '-';
@@ -84,127 +105,127 @@ const Atribuicoes: FC = () => {
     };
 
     return (
-        <div className="p-6 space-y-6">
-            <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                    <ArrowRightLeft className="h-8 w-8 text-primary" />
-                    <h1 className="text-2xl font-bold">Atribuições</h1>
-                </div>
-                <div className="flex items-center gap-2">
-                    <Select value={statusFilter} onValueChange={setStatusFilter}>
-                        <SelectTrigger className="w-40">
-                            <SelectValue placeholder="Filtrar status" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="all">Todos</SelectItem>
-                            <SelectItem value="PENDING">Pendente</SelectItem>
-                            <SelectItem value="RUNNING">Executando</SelectItem>
-                            <SelectItem value="DONE">Concluído</SelectItem>
-                            <SelectItem value="FAILED">Falhou</SelectItem>
-                        </SelectContent>
-                    </Select>
-                    <Button variant="outline" size="icon" onClick={loadRuns} disabled={loading}>
-                        <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                    </Button>
-                    <Button onClick={() => navigate('/atribuicoes/new')}>
-                        <Plus className="h-4 w-4 mr-2" />
-                        Nova Atribuição
-                    </Button>
-                </div>
-            </div>
-
-            <Card>
-                <CardHeader>
-                    <CardTitle>Execuções de Atribuição</CardTitle>
-                </CardHeader>
-                <CardContent>
-                    {loading && runs.length === 0 ? (
-                        <div className="text-center py-8 text-muted-foreground">Carregando...</div>
-                    ) : runs.length === 0 ? (
-                        <div className="text-center py-8 text-muted-foreground">
-                            Nenhuma atribuição encontrada. Clique em "Nova Atribuição" para começar.
+        <PageSkeletonWrapper loading={loading && runs.length === 0}>
+            <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <ArrowRightLeft className="h-8 w-8 text-primary" />
+                        <div>
+                            <h1 className="text-3xl font-bold">Atribuições</h1>
+                            <p className="text-muted-foreground">Gerenciar importação de colunas entre bases</p>
                         </div>
-                    ) : (
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>ID</TableHead>
-                                    <TableHead>Nome</TableHead>
-                                    <TableHead>Origem</TableHead>
-                                    <TableHead>Destino</TableHead>
-                                    <TableHead>Status</TableHead>
-                                    <TableHead>Data</TableHead>
-                                    <TableHead className="text-right">Ações</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Select value={statusFilter} onValueChange={setStatusFilter}>
+                            <SelectTrigger className="w-40">
+                                <SelectValue placeholder="Filtrar status" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">Todos</SelectItem>
+                                <SelectItem value="PENDING">Pendente</SelectItem>
+                                <SelectItem value="RUNNING">Executando</SelectItem>
+                                <SelectItem value="DONE">Concluído</SelectItem>
+                                <SelectItem value="FAILED">Falhou</SelectItem>
+                            </SelectContent>
+                        </Select>
+                        <Button variant="outline" size="icon" onClick={() => loadRuns()} disabled={loading}>
+                            {loading ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                                <RefreshCw className="h-4 w-4" />
+                            )}
+                        </Button>
+                        <Button onClick={() => navigate('/atribuicoes/new')}>
+                            <Plus className="h-4 w-4 mr-2" />
+                            Nova Atribuição
+                        </Button>
+                    </div>
+                </div>
+
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Execuções de Atribuição</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        {runs.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">
+                                Nenhuma atribuição encontrada. Clique em "Nova Atribuição" para começar.
+                            </p>
+                        ) : (
+                            <div className="space-y-4">
                                 {runs.map((run) => (
-                                    <TableRow key={run.id}>
-                                        <TableCell className="font-mono">{run.id}</TableCell>
-                                        <TableCell>{run.nome || '-'}</TableCell>
-                                        <TableCell>
-                                            <div className="flex flex-col">
-                                                <span>{run.base_origem?.nome || `Base ${run.base_origem_id}`}</span>
-                                                <span className="text-xs text-muted-foreground">{run.base_origem?.tipo}</span>
+                                    <div
+                                        key={run.id}
+                                        className="flex flex-col gap-4 rounded-lg border p-4 transition-colors hover:bg-muted/50 md:flex-row md:items-center md:justify-between"
+                                    >
+                                        <div className="flex-1 space-y-1">
+                                            <p className="font-medium">{run.nome || `Atribuição #${run.id}`}</p>
+                                            <div className="text-sm text-muted-foreground flex flex-wrap gap-x-2 gap-y-1">
+                                                <span>Origem: {run.base_origem?.nome || `Base ${run.base_origem_id}`} ({run.base_origem?.tipo})</span>
+                                                <span>→</span>
+                                                <span>Destino: {run.base_destino?.nome || `Base ${run.base_destino_id}`} ({run.base_destino?.tipo})</span>
                                             </div>
-                                        </TableCell>
-                                        <TableCell>
-                                            <div className="flex flex-col">
-                                                <span>{run.base_destino?.nome || `Base ${run.base_destino_id}`}</span>
-                                                <span className="text-xs text-muted-foreground">{run.base_destino?.tipo}</span>
+                                        </div>
+                                        <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-6">
+                                            <div className="text-sm text-muted-foreground">
+                                                {formatDate(run.created_at)}
                                             </div>
-                                        </TableCell>
-                                        <TableCell>
-                                            <Badge className={STATUS_COLORS[run.status] || 'bg-gray-500'}>
-                                                {STATUS_LABELS[run.status] || run.status}
-                                            </Badge>
-                                        </TableCell>
-                                        <TableCell>{formatDate(run.created_at)}</TableCell>
-                                        <TableCell className="text-right">
-                                            <div className="flex items-center justify-end gap-2">
+                                            <StatusChip
+                                                status={getStatusChip(run.status)}
+                                                label={STATUS_LABELS[run.status] || run.status}
+                                            />
+                                            <div className="flex items-center gap-2">
                                                 <Button
                                                     variant="ghost"
                                                     size="icon"
                                                     onClick={() => navigate(`/atribuicoes/${run.id}`)}
+                                                    aria-label="Ver detalhes"
                                                 >
                                                     <Eye className="h-4 w-4" />
                                                 </Button>
                                                 <Button
-                                                    variant="ghost"
+                                                    variant="destructive"
                                                     size="icon"
-                                                    onClick={() => {
-                                                        setPendingDeleteId(run.id);
-                                                        setDeleteDialogOpen(true);
-                                                    }}
+                                                    onClick={() => confirmDelete(run.id)}
                                                     disabled={run.status === 'RUNNING'}
+                                                    aria-label="Excluir"
                                                 >
                                                     <Trash2 className="h-4 w-4" />
                                                 </Button>
                                             </div>
-                                        </TableCell>
-                                    </TableRow>
+                                        </div>
+                                    </div>
                                 ))}
-                            </TableBody>
-                        </Table>
-                    )}
-                </CardContent>
-            </Card>
+                            </div>
+                        )}
+                    </CardContent>
+                </Card>
 
-            <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Confirmar exclusão</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            Tem certeza que deseja excluir esta atribuição? Esta ação não pode ser desfeita.
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                        <AlertDialogAction onClick={handleDelete}>Excluir</AlertDialogAction>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-        </div>
+                <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+                    <AlertDialogContent>
+                        <AlertDialogHeader>
+                            <AlertDialogTitle>Confirmar exclusão</AlertDialogTitle>
+                            <AlertDialogDescription>
+                                Tem certeza que deseja excluir esta atribuição? Esta ação não pode ser desfeita.
+                            </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                            <AlertDialogCancel disabled={deleting}>Cancelar</AlertDialogCancel>
+                            <AlertDialogAction onClick={handleDelete} disabled={deleting}>
+                                {deleting ? (
+                                    <>
+                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                        Excluindo...
+                                    </>
+                                ) : (
+                                    'Excluir'
+                                )}
+                            </AlertDialogAction>
+                        </AlertDialogFooter>
+                    </AlertDialogContent>
+                </AlertDialog>
+            </div>
+        </PageSkeletonWrapper>
     );
 };
 
