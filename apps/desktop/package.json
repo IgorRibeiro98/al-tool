@@ -15,15 +15,7 @@
         "dist": "electron-builder"
     },
     "dependencies": {
-        "better-sqlite3": "^12.4.6",
-        "dotenv": "^16.4.5",
-        "archiver": "^5.3.2",
-        "cors": "^2.8.5",
-        "exceljs": "^4.4.0",
-        "express": "^5.1.0",
-        "knex": "^3.1.0",
-        "multer": "^2.0.2",
-        "xlsx": "^0.18.5"
+        "dotenv": "^16.4.5"
     },
     "devDependencies": {
         "electron": "39.2.4",
@@ -44,20 +36,6 @@
                 "to": ".env"
             },
             {
-                "from": "../api/dist",
-                "to": "api/dist",
-                "filter": [
-                    "**/*"
-                ]
-            },
-            {
-                "from": "../api/migrations",
-                "to": "api/migrations",
-                "filter": [
-                    "**/*"
-                ]
-            },
-            {
                 "from": "../client/dist",
                 "to": "client/dist",
                 "filter": [
@@ -65,32 +43,8 @@
                 ]
             },
             {
-                "from": "../api/node_modules",
-                "to": "api/node_modules",
-                "filter": [
-                    "**/*"
-                ]
-            },
-            {
-                "from": "../../scripts",
-                "to": "scripts",
-                "filter": [
-                    "conversion_worker.py",
-                    "xlsb_to_arrow.py",
-                    "xlsx_to_arrow.js",
-                    "requirements.txt"
-                ]
-            },
-            {
-                "from": "./python-runtime",
-                "to": "python",
-                "filter": [
-                    "**/*"
-                ]
-            },
-            {
-                "from": "./python-runtime-win",
-                "to": "python-win",
+                "from": "../../packaging/dist/altool-sidecar",
+                "to": "altool-sidecar",
                 "filter": [
                     "**/*"
                 ]

@@ -42,13 +42,16 @@ apps/api/db/*.sqlite
 *.sqlite3
 *.sqlite
 
-# Storage (uploaded files and exports)
-apps/api/storage/
-storage/ingests/
-apps/api/storage/uploads/
-apps/api/storage/exports/
-apps/api/db/
-apps/api/db/*.sqlite3*/
+# Storage — dados locais/runtime + planilhas reais (não versionar; ~149MB, sensível)
+/storage/
+
+# v2: artefatos de build/runtime do sidecar e do empacotamento
+**/.venv/
+packaging/dist/
+packaging/build/
+*.duckdb
+*.duckdb.wal
+**/__pycache__/
 
 # Temporary
 .cache/

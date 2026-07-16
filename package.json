@@ -3,28 +3,17 @@
     "private": true,
     "version": "0.0.0",
     "workspaces": [
-        "apps/*",
-        "packages/*"
+        "apps/*"
     ],
     "scripts": {
-        "api:dev": "npm --workspace=apps/api run dev",
-        "api:build": "npm --workspace=apps/api run build",
-        "api:start": "npm --workspace=apps/api run start",
+        "client:dev": "npm --workspace=apps/client run dev",
+        "client:build": "npm --workspace=apps/client run build",
         "desktop:dev": "npm --workspace=apps/desktop run dev",
         "desktop:build": "npm --workspace=apps/desktop run build",
-        "client:build": "npm --workspace=apps/client run build",
-        "client:dev": "npm --workspace=apps/client run dev",
-        "app:dist": "npm run python:setup && npm run client:build && npm run api:build && npm run desktop:build && npm run rebuild:native && npm --workspace=apps/desktop run dist",
-        "python:prepare-win": "python scripts/prepare_python_runtime_win.py",
-        "python:prepare-win:force": "python scripts/prepare_python_runtime_win.py --force",
-        "install:all": "npm install",
-        "rebuild:native": "electron-rebuild -f -w better-sqlite3",
-        "python:setup": "python3 scripts/python_setup.py"
-    },
-    "devDependencies": {
-        "@electron/rebuild": "^4.0.1"
-    },
-    "dependencies": {
-        "dotenv": "^17.2.3"
+        "backend:dev": "cd backend && . .venv/bin/activate && python -m altool.main",
+        "backend:test": "cd backend && . .venv/bin/activate && pytest",
+        "sidecar:build": "bash packaging/build-sidecar.sh",
+        "app:dist": "npm run client:build && npm run sidecar:build && npm run desktop:build && npm --workspace=apps/desktop run dist",
+        "install:all": "npm install"
     }
 }

@@ -1,5 +1,7 @@
 # AL-Tool — Conciliação Contábil × Fiscal
 
+> ⚠️ **Backend migrado para Python (v2).** O backend Node/Express (`apps/api`) foi **aposentado no cutover**: agora um **sidecar Python** (FastAPI + DuckDB + Polars) faz todo o trabalho, spawnado pelo Electron. O React (congelado) consome o mesmo contrato REST. As seções abaixo descrevem a arquitetura **v1 (Node)** e servem de referência histórica. Para a v2, veja **[docs/remake-v2-python.md](docs/remake-v2-python.md)** e **[backend/README.md](backend/README.md)**. A equivalência v1≡v2 está comprovada em **[oracle/](oracle/README.md)**.
+
 <p align="center">
   <img src="https://img.shields.io/badge/Node.js-18+-339933?logo=nodedotjs&logoColor=white" alt="Node.js 18+"/>
   <img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white" alt="TypeScript"/>

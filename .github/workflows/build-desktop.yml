@@ -1,0 +1,74 @@
+name: build-desktop
+
+# Builda o app desktop (sidecar Python + client React + Electron) nos 3 SOs.
+# PyInstaller não faz cross-compile → cada runner gera o binário do seu SO.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ---------------- backend Python: instala, testa, empacota o sidecar ----------------
+      - name: Install backend (editable + dev + pyinstaller)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "./backend[dev]" pyinstaller
+
+      - name: Backend tests (unit; integração é pulada sem storage/ref)
+        working-directory: backend
+        run: pytest
+
+      - name: Build sidecar (PyInstaller, spec cross-platform)
+        run: pyinstaller --noconfirm --distpath packaging/dist --workpath packaging/build packaging/altool-sidecar.spec
+
+      - name: Smoke test do sidecar
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then BIN="packaging/dist/altool-sidecar/altool-sidecar.exe"; else BIN="packaging/dist/altool-sidecar/altool-sidecar"; fi
+          APP_PORT=8099 "$BIN" &
+          for i in $(seq 1 40); do curl -sf http://127.0.0.1:8099/health && break; sleep 0.5; done
+          curl -sf http://127.0.0.1:8099/health || (echo "sidecar não respondeu" && exit 1)
+
+      # ---------------- frontend + Electron ----------------
+      - name: Install JS deps
+        run: npm install --no-audit --no-fund
+
+      - name: Build client (React)
+        run: npm run client:build
+
+      - name: Build desktop (tsc)
+        run: npm run desktop:build
+
+      - name: Package installer (electron-builder)
+        run: npm --workspace=apps/desktop run dist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'   # sem assinatura no CI (adicionar certs depois)
+
+      - name: Upload instalador
+        uses: actions/upload-artifact@v4
+        with:
+          name: al-tool-${{ matrix.os }}
+          path: |
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/*.dmg
+            apps/desktop/dist/*.deb
+            apps/desktop/dist/*.AppImage
+          if-no-files-found: ignore
